@@ -55,7 +55,11 @@ cd wav_work
 cp "$FPGA_DIR"/ip/*.mif .
 rm -rf work && "${BIN}vlib" work >/dev/null
 compile() { "${BIN}vcom" -quiet -2008 -work work "$@" || exit 1; }
-compile "$FPGA_DIR"/ip/*.vhd
+if [ "${IP_MODELS:-0}" = 1 ]; then   # behavioural IP models instead of altera_mf
+  compile "$SIM_DIR"/models/sim_rom.vhd "$SIM_DIR"/models/sim_dpram.vhd "$SIM_DIR"/models/sim_dcfifo.vhd "$SIM_DIR"/models/ip/*.vhd
+else
+  compile "$FPGA_DIR"/ip/*.vhd
+fi
 compile "$FPGA_DIR"/rtl/fx_pkg.vhd "$FPGA_DIR"/rtl/overdrive.vhd "$FPGA_DIR"/rtl/distortion.vhd \
         "$FPGA_DIR"/rtl/chorus.vhd "$FPGA_DIR"/rtl/tremolo_v2.vhd "$FPGA_DIR"/rtl/echo.vhd \
         "$FPGA_DIR"/rtl/comb_filter.vhd "$FPGA_DIR"/rtl/allpass_filter.vhd "$FPGA_DIR"/rtl/reverbe.vhd \

@@ -8,6 +8,7 @@
 #
 # Set MODELSIM_BIN if vsim/vcom are not on PATH, e.g.
 #   MODELSIM_BIN=/d/intelFPGA_lite/18.1/modelsim_ase/win32aloem ./run_sim.sh
+# Set IP_MODELS=1 to use the behavioural IP models (sim/models) instead of altera_mf.
 # Results: sim/work/<test>.log, captured samples in sim/out/<test>.txt
 # -----------------------------------------------------------------------------
 set -u
@@ -27,7 +28,11 @@ cp "$FPGA_DIR"/ip/*.mif .            # altsyncram loads init files from the cwd
 
 rm -rf work && "$VLIB" work >/dev/null
 compile() { "$VCOM" -quiet -2008 -work work "$@" || exit 1; }
-compile "$FPGA_DIR"/ip/*.vhd
+if [ "${IP_MODELS:-0}" = 1 ]; then   # behavioural IP models instead of altera_mf
+  compile "$SIM_DIR"/models/sim_rom.vhd "$SIM_DIR"/models/sim_dpram.vhd "$SIM_DIR"/models/sim_dcfifo.vhd "$SIM_DIR"/models/ip/*.vhd
+else
+  compile "$FPGA_DIR"/ip/*.vhd
+fi
 compile "$FPGA_DIR"/rtl/fx_pkg.vhd
 compile "$FPGA_DIR"/rtl/ADC_CONTROLLER.vhd "$FPGA_DIR"/rtl/DAC_CONTROLLER.vhd \
         "$FPGA_DIR"/rtl/overdrive.vhd "$FPGA_DIR"/rtl/distortion.vhd \

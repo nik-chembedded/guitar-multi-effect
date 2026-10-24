@@ -68,3 +68,8 @@ sim/par_*/
 sim/wav/
 sim/wav_work/
 sim/audio/*.ogg
+
+# IP model equivalence / comparison runs (generated)
+sim/models/work_equiv/
+sim/mdl/
+sim/out_altera/
