@@ -1,0 +1,62 @@
+# ---- Quartus build output / databases
+fpga/db/
+fpga/incremental_db/
+fpga/output_files/
+fpga/greybox_tmp/
+fpga/.qsys_edit/
+fpga/*.qws
+fpga/*.qdf
+fpga/c5_pin_model_dump.txt
+fpga/PLLJ_PLLSPE_INFO.txt
+*.rpt
+*.summary
+*.smsg
+*.done
+*.jdi
+*.sld
+*.pin
+*.sof
+*.pof
+*.rbf
+*.bak
+*~
+
+# ---- Platform Designer generated HDL (regenerate: qsys-generate my_audio.qsys --synthesis=VHDL)
+fpga/my_audio/
+fpga/my_audio.html
+fpga/my_audio.cmp
+
+# ---- Nios II SBT generated files (regenerate with create-this-app / create-this-bsp)
+fpga/software/.metadata/
+fpga/software/RemoteSystemsTempFiles/
+fpga/software/*/obj/
+fpga/software/*/Makefile
+fpga/software/*/*.elf
+fpga/software/*/*.map
+fpga/software/*/*.objdump
+fpga/software/*/.cproject
+fpga/software/*/.project
+fpga/software/*/.settings/
+fpga/software/audio_control_bsp/*
+!fpga/software/audio_control_bsp/settings.bsp
+!fpga/software/audio_control_bsp/create-this-bsp
+.metadata/
+
+# ---- Simulation
+sim/work/
+sim/out/
+transcript
+*.wlf
+modelsim.ini
+
+# ---- .NET / Visual Studio
+gui/**/bin/
+gui/**/obj/
+gui/.vs/
+*.user
+*.suo
+
+# ---- OS / editor
+Thumbs.db
+.DS_Store
+.vscode/

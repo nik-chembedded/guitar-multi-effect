@@ -1,0 +1,43 @@
+#!/bin/bash
+#
+# Creates the Nios II application makefile for audio_control and builds it.
+# Run from a "Nios II Command Shell" (needs $SOPC_KIT_NIOS2 and the nios2-* tools).
+# The BSP is (re)generated from ../audio_control_bsp/settings.bsp if needed.
+#
+BSP_DIR=../audio_control_bsp
+QUARTUS_PROJECT_DIR=../../
+NIOS2_APP_GEN_ARGS="--elf-name audio_control.elf --src-files main.c I2C.c debug.c"
+
+if [ -z "${SOPC_KIT_NIOS2}" ]; then
+    echo "Required \$SOPC_KIT_NIOS2 environment variable is not set!"
+    exit 1
+fi
+
+if [ -f ./Makefile ]; then
+    echo "Application has already been created! Delete Makefile to regenerate it."
+    exit 1
+fi
+
+if [ ! -f ${BSP_DIR}/public.mk ]; then
+    pushd ${BSP_DIR} >> /dev/null
+    ./create-this-bsp "$@" || { echo "create-this-bsp failed"; exit 1; }
+    popd >> /dev/null
+fi
+
+SKIP_MAKE=
+for arg in "$@"; do
+    [ "$arg" = "--no-make" ] && SKIP_MAKE=1
+done
+
+cmd="nios2-app-generate-makefile --bsp-dir ${BSP_DIR} --set QUARTUS_PROJECT_DIR=${QUARTUS_PROJECT_DIR} ${NIOS2_APP_GEN_ARGS}"
+echo "create-this-app: Running \"${cmd}\""
+$cmd || { echo "nios2-app-generate-makefile failed"; exit 1; }
+
+if [ -z "$SKIP_MAKE" ]; then
+    make || { echo "make failed"; exit 1; }
+    echo
+    echo "To download and run:"
+    echo "    nios2-configure-sof ../../output_files/My_Audio.sof"
+    echo "    make download-elf"
+fi
+exit 0
