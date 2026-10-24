@@ -60,3 +60,11 @@ gui/.vs/
 Thumbs.db
 .DS_Store
 .vscode/
+
+# per-test parallel simulation dirs
+sim/par_*/
+
+# frame-level WAV simulation (generated)
+sim/wav/
+sim/wav_work/
+sim/audio/*.ogg

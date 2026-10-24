@@ -21,8 +21,10 @@ set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_
 
 # ---- Platform Designer system (generate with: qsys-generate my_audio.qsys --synthesis=VHDL)
 set_global_assignment -name QIP_FILE my_audio/synthesis/my_audio.qip
+set_global_assignment -name SDC_FILE My_Audio.sdc
 
 # ---- RTL
+set_global_assignment -name VHDL_FILE rtl/fx_pkg.vhd
 set_global_assignment -name VHDL_FILE rtl/top_project.vhd
 set_global_assignment -name VHDL_FILE rtl/audio_processor.vhd
 set_global_assignment -name VHDL_FILE rtl/ADC_CONTROLLER.vhd

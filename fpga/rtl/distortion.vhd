@@ -67,9 +67,12 @@ END COMPONENT;
 
 
 	signal data_temp : std_logic_vector(15 downto 0);
-	signal temp_int  : integer;
-	signal data_to_addr  : integer;
+	signal temp_int  : integer range -32768 to 32767;
+	signal data_to_addr  : integer range 0 to 16383 := 0;   -- |x| saturated to the table size
 	signal d_addr  : std_logic_vector(13 downto 0);
+	signal neg_d   : boolean := false;                      -- sign of the sample in the ROM
+	signal dry_d   : integer range -32768 to 32767 := 0;    -- dry sample aligned with the ROM output
+	signal wet     : integer range -32768 to 32767;
 	
 	signal temp_depth   : std_logic_vector(7 downto 0);
    signal invert_depth : std_logic_vector(7 downto 0);
@@ -100,14 +103,19 @@ begin
 			
 			temp_int <= to_integer(signed(data_in));
 			
+			-- The transfer curves only cover |x| = 0..16383 (14-bit address).
+			-- Saturate the address instead of letting |x| >= 16384 wrap around,
+			-- and remember the sign so the curve is applied symmetrically.
 			process(AUD_DACLRCLK)
 			begin
 				if rising_edge(AUD_DACLRCLK) then
-					if temp_int < 0 then
-						data_to_addr <= (-1) * temp_int;
+					if abs(temp_int) > 16383 then
+						data_to_addr <= 16383;
 					else
-						data_to_addr <= temp_int;
-				end if;
+						data_to_addr <= abs(temp_int);
+					end if;
+					neg_d <= temp_int < 0;
+					dry_d <= temp_int;
 			 end if;
 			end process;
 			
@@ -139,7 +147,7 @@ ROM_hard : dist_ROM_hard port map(
 								);
 								
 			temp_type <= d_type(1 downto 0);
-			process(temp_type)
+			process(temp_type, soft_out_temp, med_out_temp, hard_out_temp)   -- all mux inputs (simulation)
 			begin
 			case (temp_type) is
 			when "00"   => data_temp <= soft_out_temp;
@@ -184,8 +192,11 @@ ROM_hard : dist_ROM_hard port map(
 			invert_depth <= std_logic_vector(255 - unsigned(temp_depth));
 			int_depth    <= to_integer(unsigned(temp_depth));
 			
-			a <= int_depth * to_integer(signed(data_temp));
-			b <= to_integer(unsigned(invert_depth)) * to_integer(signed(data_in));
+			-- restore the sign of the waveshaped sample (the ROM holds |f(|x|)|)
+			wet <= -to_integer(signed(data_temp)) when neg_d else to_integer(signed(data_temp));
+
+			a <= int_depth * wet;
+			b <= to_integer(unsigned(invert_depth)) * dry_d;
 			c <= a + b;
 			
 			out_dat <= std_logic_vector(to_signed(c, out_dat'length));

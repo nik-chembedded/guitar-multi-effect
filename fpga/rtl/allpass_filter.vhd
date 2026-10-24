@@ -3,6 +3,7 @@
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
+use work.fx_pkg.all;
 
 entity allpass_filter is
 generic (TAPS : integer:=677;
@@ -44,7 +45,7 @@ END COMPONENT;
 
 
 signal read_pointer  : std_logic_vector(11 DOWNTO 0);
-signal write_pointer : std_logic_vector(11 DOWNTO 0);
+signal write_pointer : std_logic_vector(11 DOWNTO 0) := (others => '0');
 
 signal temp_adder    : std_logic_vector(15 DOWNTO 0);
 signal delayline_in  : std_logic_vector(15 DOWNTO 0);
@@ -81,9 +82,9 @@ COUNTER_PROC: 	process(AUD_DACLRCLK)
 				   end process;				
 				       read_pointer <= std_logic_vector( unsigned(write_pointer) - int_TAPS );
 						 
-					delayline_in <= std_logic_vector( signed(data_in) + signed(gain_feedback) );
+					delayline_in <= sat16_slv( to_integer(signed(data_in)) + to_integer(signed(gain_feedback)) );
 					
-					adder_out    <= std_logic_vector( signed(delayline_out) + signed(neg_gain_feedback) );
+					adder_out    <= sat16_slv( to_integer(signed(delayline_out)) + to_integer(signed(neg_gain_feedback)) );
 
 DELAY_LINE : fcomb_RAM4 port map(
 								clock	  => AUD_DACLRCLK,

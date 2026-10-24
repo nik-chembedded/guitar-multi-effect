@@ -1,178 +1,208 @@
+/*
+ * audio_control - Nios II firmware for the guitar multi-effect (DE1-SoC)
+ *
+ *  - initialises the audio codec over I2C (bit-banged on two PIOs)
+ *  - receives 3-byte command frames from the PC GUI on the UART (9600 8N1)
+ *    and writes them to the effect registers / codec
+ *
+ * Frame format (see docs/register_map.md):
+ *   [cmd][hi][lo]   cmd 0x00..0x0E : effect register cmd = (hi << 8) | lo
+ *                   cmd 0xCD       : codec register write, hi = (reg << 1) | d8, lo = d7..d0
+ *                   cmd 0xEC       : re-run the default codec initialisation
+ */
 
-
-#include <stdio.h>
-#include "sys/alt_stdio.h"
-#include "sys/alt_stdio.h"
 #include <stdio.h>
 #include <unistd.h>
 #include "system.h"
-#include "altera_avalon_pio_regs.h"
 #include "alt_types.h"
 #include "sys/alt_irq.h"
 #include "altera_avalon_uart_regs.h"
-#include "altera_avalon_uart.h"
 
 #include "my_includes.h"
 #include "I2C.h"
-#include <unistd.h>
 
-#define effects_enable 0
-#define od_drive 1
-#define od_gain 2
-#define tremolo_wave 3
-#define tremolo_depth 4
-#define echo_time 5
-#define echo_level 7
-
+/* ---- effect registers (RegistersControl, 16-bit, offset = reg * 2) -------- */
+#define REG_EFFECTS_ENABLE   0x00
+#define REG_OD_DRIVE         0x01
+#define REG_OD_GAIN          0x02
+#define REG_TREM_WAVE        0x03
+#define REG_TREM_DEPTH       0x04
+#define REG_ECHO_TIME        0x05
+#define REG_ECHO_REPEAT      0x06
+#define REG_ECHO_LEVEL       0x07
+#define REG_DIST_MIX         0x08
+#define REG_DIST_TYPE        0x09
+#define REG_CHORUS_LEVEL     0x0A
+#define REG_CHORUS_DEPTH     0x0B
+#define REG_CHORUS_RATE      0x0C
+#define REG_REVERB_MIX       0x0D
+#define REG_REVERB_TYPE      0x0E
+#define REG_LAST             REG_REVERB_TYPE
 
 #define Effect_Update(REG, DATA) \
-  IOWR_16DIRECT((REGISTERSCONTROL_0_BASE),(REG*2), (DATA));
+  IOWR_16DIRECT(REGISTERSCONTROL_0_BASE, (REG) * 2, (DATA))
 
-#define codec_addr 0x34
-#define codec_update 0xCD
-#define codec_preset 0xEC
+/* ---- UART commands --------------------------------------------------------- */
+#define CMD_CODEC_UPDATE     0xCD
+#define CMD_CODEC_PRESET     0xEC
 
+#define codec_addr           0x34      /* WM8731 / SSM2603 I2C address */
 
-volatile int edge_capture;
-alt_u8 buffer_flag = 0;
-alt_u8 b_index = 0;
+#define UART_BAUD_RATE       9600
+#define FRAME_LEN            3
+/* A partially received frame is discarded if no byte arrives for this long,
+ * so the parser re-synchronises after a lost byte (the PC sends the 3 bytes
+ * of a frame a few ms apart). */
+#define FRAME_TIMEOUT_MS     50
 
- alt_u16 bufferto_data_format(alt_u8* buffer)
- {
-	 alt_u16 data = 0;
-	 data = data | buffer[1];
-	 data = data << 8;
-	 data = data | buffer[2];
-	 return data;
- }
+/* ---- state shared between the UART ISR and main() -------------------------- */
+static volatile alt_u8  rx_frame[FRAME_LEN];   /* last complete frame        */
+static volatile alt_u8  frame_ready  = 0;      /* rx_frame holds a new frame */
+static volatile alt_u8  rx_index     = 0;      /* bytes of the frame so far  */
+static volatile alt_u8  rx_activity  = 0;      /* set by ISR on every byte   */
+static volatile alt_u32 rx_overruns  = 0;      /* frames dropped / UART errors */
 
-static void handle_UART_interrupts(void* context, alt_u32 id)
+static alt_u8 isr_buf[FRAME_LEN];
+
+static int is_valid_command(alt_u8 cmd)
 {
-	alt_u8* buffer = (alt_u8*)context;
-
-	if(b_index != 2)
-	{
-		buffer[b_index] = IORD_ALTERA_AVALON_UART_RXDATA(UART_BASE);
-		++b_index;
-		buffer_flag = 0;
-	}
-	else
-	{
-		buffer[b_index] = IORD_ALTERA_AVALON_UART_RXDATA(UART_BASE);
-		buffer_flag = 1;
-		b_index = 0;
-	}
-
-	 IOWR_ALTERA_AVALON_UART_STATUS(UART_BASE, 0);
+    return cmd <= REG_LAST || cmd == CMD_CODEC_UPDATE || cmd == CMD_CODEC_PRESET;
 }
 
-void i2c_send(alt_u8 adress,alt_u16 data)
+static void handle_UART_interrupts(void* context)
 {
-   alt_u8 addr;
-   alt_u8 send_data;
-   alt_u8 temp = data >> 8;
-   addr = (adress << 1) | temp;
-   send_data = data & 0x00FF;
-   I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,addr,send_data);
+    alt_u32 status = IORD_ALTERA_AVALON_UART_STATUS(UART_BASE);
+    alt_u8  byte   = IORD_ALTERA_AVALON_UART_RXDATA(UART_BASE);
+
+    (void)context;
+    IOWR_ALTERA_AVALON_UART_STATUS(UART_BASE, 0);   /* clear error flags */
+    rx_activity = 1;
+
+    if (status & (ALTERA_AVALON_UART_STATUS_FE_MSK |
+                  ALTERA_AVALON_UART_STATUS_PE_MSK |
+                  ALTERA_AVALON_UART_STATUS_ROE_MSK)) {
+        rx_index = 0;                               /* corrupted: start over */
+        rx_overruns++;
+        return;
+    }
+
+    if (rx_index == 0 && !is_valid_command(byte))
+        return;                                     /* not a frame start: skip */
+
+    isr_buf[rx_index++] = byte;
+
+    if (rx_index == FRAME_LEN) {
+        rx_index = 0;
+        if (frame_ready) {
+            rx_overruns++;                          /* main() too slow: drop */
+        } else {
+            rx_frame[0] = isr_buf[0];
+            rx_frame[1] = isr_buf[1];
+            rx_frame[2] = isr_buf[2];
+            frame_ready = 1;
+        }
+    }
 }
 
-void InitUart1(unsigned int BaudRate)
+static void InitUart(unsigned int BaudRate)
 {
-unsigned int divisor;
-divisor = (ALT_CPU_FREQ/9600) +1;
-IOWR_ALTERA_AVALON_UART_DIVISOR(UART_BASE, divisor);
-IOWR_ALTERA_AVALON_UART_CONTROL(UART_BASE, ALTERA_AVALON_UART_CONTROL_RRDY_MSK);
+    /* Altera UART: baud = clk / (divisor + 1) */
+    unsigned int divisor = (UART_FREQ + BaudRate / 2) / BaudRate - 1;
+    IOWR_ALTERA_AVALON_UART_DIVISOR(UART_BASE, divisor);
+    IOWR_ALTERA_AVALON_UART_CONTROL(UART_BASE, ALTERA_AVALON_UART_CONTROL_RRDY_MSK);
 }
 
-
-void update_codec_regs(alt_u8 address,alt_u8 data)
+static void update_codec_regs(alt_u8 address, alt_u8 data)
 {
-	 I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,address,data);
-	 //printf("Codec addr : %X\n",address);
-	 //printf("Codec data : %X\n",data);
-}
-void init_codec()
-{
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x1E,0x00); // Software Reset Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x12,0x00); // Active Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x00,0x19); // Left-Channel ADC Input Volume Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x02,0x19); // Right-Channel ADC Input Volume Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x04,0x78); // Left-Channel DAC Volume Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x06,0x78); // Right-Channel DAC Volume Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x08,0x10); // Analog Audio Path Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x0A,0x00); // Digital Audio Path Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x0C,0x00); // Power Managment Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x0E,0x42); // Digital Audio I/F Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x10,0x02); // Sampling Rate Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x20,0x7B); // ALC Control 1 Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x22,0x32); // ALC Control 2 Register
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x24,0x00); // Noise Gate Register
-	usleep(500000);
-	I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x12,0x01); // Active Register
+    I2C_Write(I2C_SCL_BASE, I2C_SDA_BASE, codec_addr, address, data);
 }
 
-int main()
+static void init_codec(void)
 {
-  alt_u8 rx_buffer[3] = {'A','B','C'};
-  alt_u16 dat = 0;
-  alt_u16 addr = 0;
-  alt_irq_init(0);
-  InitUart1(9600);
-  alt_ic_isr_register(UART_IRQ_INTERRUPT_CONTROLLER_ID,UART_IRQ,handle_UART_interrupts,rx_buffer,0);
-  alt_ic_irq_enable(UART_IRQ_INTERRUPT_CONTROLLER_ID,UART_IRQ);
-  //printf("Hello from Nios II!\n");
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x1E,0x00);	// Software Reset Register 					- R15
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x12,0x00);	// Active Register							- R9
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x00,0x19);	// Left-Channel ADC Input Volume Register   - R0
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x02,0x19);  	// Right-Channel ADC Input Volume Register  - R1
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x04,0x78);	// Left-Channel DAC Volume Register			- R2
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x06,0x78);	// Right-Channel DAC Volume Register		- R3
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x08,0x10);	// Analog Audio Path Register				- R4           CHECK WHY ITS 0x10
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x0A,0x00);	// Digital Audio Path Register				- R5
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x0C,0x00);	// Power Managment Register					- R6
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x0E,0x42);	// Digital Audio I/F Register				- R7
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x10,0x02);	// Sampling Rate Register					- R8
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x20,0x7B);	// ALC Control 1 Register					- R16
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x22,0x32);	// ALC Control 2 Register					- R17
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x24,0x00);	// Noise Gate Register						- R18
-
-  usleep(500000);
-  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x12,0x01);    // Active Register
-
-	  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x00,0x1A); //1E
-	  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x02,0x1A);
-
-	  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x04,0x7A); //7C
-	  I2C_Write(I2C_SCL_BASE,I2C_SDA_BASE,codec_addr,0x06,0x7A);
-
-	  Effect_Update(effects_enable,0x0000);
-	  Effect_Update(od_drive,0);
-	  Effect_Update(od_gain,1);
-	  Effect_Update(tremolo_wave,0x0000);
-	  Effect_Update(tremolo_depth,0x0000);
-	  Effect_Update(echo_time,0x0000);
-	  Effect_Update(echo_level,0x0001);
-
-	  while(1)
-	  {
-			 if(buffer_flag)
-			 {
-				 addr = rx_buffer[0];
-				 if(rx_buffer[0] == codec_update)
-					 update_codec_regs(rx_buffer[1],rx_buffer[2]);
-				 else if(rx_buffer[0] == codec_preset)
-					 init_codec();
-				 else
-				 {
-					 dat = bufferto_data_format(rx_buffer);
-					 Effect_Update(addr,dat);
-					 //printf("Regs addr : %X\n",rx_buffer[0]);
-					 //printf("Regs data : %X\n",dat);
-				 }
-				 buffer_flag = 0;
-				 b_index = 0 ;
-			 }
-	  }
-  return 0;
+    update_codec_regs(0x1E, 0x00); // R15 Software Reset
+    update_codec_regs(0x12, 0x00); // R9  Active = 0
+    update_codec_regs(0x00, 0x1A); // R0  Left  line-in volume
+    update_codec_regs(0x02, 0x1A); // R1  Right line-in volume
+    update_codec_regs(0x04, 0x7A); // R2  Left  headphone volume
+    update_codec_regs(0x06, 0x7A); // R3  Right headphone volume
+    update_codec_regs(0x08, 0x10); // R4  Analog path: DAC select, line input
+    update_codec_regs(0x0A, 0x00); // R5  Digital path
+    update_codec_regs(0x0C, 0x00); // R6  Power down control: all on
+    update_codec_regs(0x0E, 0x42); // R7  Interface: master, I2S, 16 bit
+    update_codec_regs(0x10, 0x02); // R8  Sampling: normal mode, 384fs, 48 kHz
+    update_codec_regs(0x20, 0x7B); // R16 ALC control 1
+    update_codec_regs(0x22, 0x32); // R17 ALC control 2
+    update_codec_regs(0x24, 0x00); // R18 Noise gate
+    usleep(500000);
+    update_codec_regs(0x12, 0x01); // R9  Active = 1
 }
 
+static void init_effects(void)
+{
+    /* All effects off; parameters at the GUI's start-up values */
+    Effect_Update(REG_EFFECTS_ENABLE, 0x0000);
+    Effect_Update(REG_OD_DRIVE,       0);
+    Effect_Update(REG_OD_GAIN,        1);
+    Effect_Update(REG_TREM_WAVE,      0);
+    Effect_Update(REG_TREM_DEPTH,     0);
+    Effect_Update(REG_ECHO_TIME,      0);
+    Effect_Update(REG_ECHO_REPEAT,    0);
+    Effect_Update(REG_ECHO_LEVEL,     1);
+    Effect_Update(REG_DIST_MIX,       0);
+    Effect_Update(REG_DIST_TYPE,      0);
+    Effect_Update(REG_CHORUS_LEVEL,   0);
+    Effect_Update(REG_CHORUS_DEPTH,   0);
+    Effect_Update(REG_CHORUS_RATE,    0);
+    Effect_Update(REG_REVERB_MIX,     0);
+    Effect_Update(REG_REVERB_TYPE,    0);
+}
+
+int main(void)
+{
+    alt_u8  frame[FRAME_LEN];
+    alt_u32 idle_ms = 0;
+    alt_irq_context irq_ctx;
+
+    init_codec();
+    init_effects();
+
+    InitUart(UART_BAUD_RATE);
+    alt_ic_isr_register(UART_IRQ_INTERRUPT_CONTROLLER_ID, UART_IRQ,
+                        handle_UART_interrupts, NULL, NULL);
+    alt_ic_irq_enable(UART_IRQ_INTERRUPT_CONTROLLER_ID, UART_IRQ);
+
+    while (1)
+    {
+        if (frame_ready)
+        {
+            /* take a consistent copy of the frame, then release the buffer */
+            irq_ctx  = alt_irq_disable_all();
+            frame[0] = rx_frame[0];
+            frame[1] = rx_frame[1];
+            frame[2] = rx_frame[2];
+            frame_ready = 0;
+            alt_irq_enable_all(irq_ctx);
+
+            if (frame[0] == CMD_CODEC_UPDATE)
+                update_codec_regs(frame[1], frame[2]);
+            else if (frame[0] == CMD_CODEC_PRESET)
+                init_codec();
+            else
+                Effect_Update(frame[0], ((alt_u16)frame[1] << 8) | frame[2]);
+            continue;
+        }
+
+        /* re-synchronise: drop a partial frame after FRAME_TIMEOUT_MS of silence */
+        usleep(1000);
+        if (rx_activity) {
+            rx_activity = 0;
+            idle_ms = 0;
+        } else if (rx_index != 0 && ++idle_ms >= FRAME_TIMEOUT_MS) {
+            irq_ctx  = alt_irq_disable_all();
+            rx_index = 0;
+            alt_irq_enable_all(irq_ctx);
+            idle_ms  = 0;
+        }
+    }
+    return 0;
+}

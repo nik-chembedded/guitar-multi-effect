@@ -2,6 +2,7 @@
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
+use work.fx_pkg.all;
 
 entity reverbe is
 port(
@@ -61,6 +62,7 @@ signal cf3_out : std_logic_vector(15 downto 0);
 signal cf4_out : std_logic_vector(15 downto 0);
 
 signal cf_combined   : std_logic_vector(15 downto 0); 
+signal comb_in       : std_logic_vector(15 downto 0);   -- reverb input attenuated by 4 (12 dB headroom)
 signal cf_normalized : std_logic_vector(15 downto 0);
 
 signal apf1_out : std_logic_vector(15 downto 0);
@@ -179,12 +181,17 @@ begin
 			end process;
 
 
+-- The comb filters have feedback gains up to ~0.83 (DC gain up to ~6x) and
+-- four of them are summed: attenuate the input by 4 for headroom (the
+-- adders below also saturate instead of wrapping).
+comb_in <= std_logic_vector( shift_right(signed(data_in), 2) );
+
 CF1 : comb_filter generic map(TAPS => 1429 , GAIN => 52000)
 						port map(
 							AUD_DACLRCLK => AUD_DACLRCLK,
 							int_TAPS     => cf1_taps,
 							int_GAIN     => cf1_gain,
-							data_in      => data_in,
+							data_in      => comb_in,
 							data_out     => cf1_out
 									);
 
@@ -193,7 +200,7 @@ CF2 : comb_filter generic map(TAPS => 1783 , GAIN => 51500)
 							AUD_DACLRCLK => AUD_DACLRCLK,
 							int_TAPS     => cf2_taps,
 							int_GAIN     => cf2_gain,							
-							data_in      => data_in,
+							data_in      => comb_in,
 							data_out     => cf2_out
 									);
 									
@@ -202,7 +209,7 @@ CF3 : comb_filter generic map(TAPS => 1937 , GAIN => 50000)
 							AUD_DACLRCLK => AUD_DACLRCLK,
 							int_TAPS     => cf3_taps,
 							int_GAIN     => cf3_gain,								
-							data_in      => data_in,
+							data_in      => comb_in,
 							data_out     => cf3_out
 									);
 									
@@ -211,11 +218,12 @@ CF4 : comb_filter generic map(TAPS => 2017 , GAIN => 50500)
 							AUD_DACLRCLK => AUD_DACLRCLK,
 							int_TAPS     => cf4_taps,
 							int_GAIN     => cf4_gain,								
-							data_in      => data_in,
+							data_in      => comb_in,
 							data_out     => cf4_out
 									);	
 									
-							cf_combined <= std_logic_vector( signed(cf1_out) + signed(cf2_out) + signed(cf3_out) + signed(cf4_out) );	
+							cf_combined <= sat16_slv( to_integer(signed(cf1_out)) + to_integer(signed(cf2_out))
+			                         + to_integer(signed(cf3_out)) + to_integer(signed(cf4_out)) );	
 						    
 							--cf_normalized <= std_logic_vector( signed(cf_combined) / 4 ); 
 									

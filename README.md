@@ -30,25 +30,20 @@ Signal chain: `ADC → Overdrive → Distortion → Chorus → Tremolo → Echo 
 
 ## Block diagram
 
-```
-                       DE1-SoC / Cyclone V
- PC GUI      UART     +--------------------------------------------------------------+
- (C#, .NET) ------->  | Nios II  --Avalon-MM-->  RegistersControl (15 x 16-bit regs)  |
- 9600 8N1   GPIO_0    |   |  \--- I2C (PIO bit-bang) ---> codec config               |
-                      |   SDRAM (program)                    | effect parameters      |
-                      |                                       v                        |
- Guitar --> codec --I2S--> ADC_CONTROLLER -> FIFO -> FX_chain -> DAC_CONTROLLER --I2S--> codec --> Amp
-            (WM8731)  |                                                              |
-                      +--------------------------------------------------------------+
-```
+![Current system block diagram](docs/img/01_current_system.svg)
+
+More diagrams, covering the audio datapath with its clock domains and the proposed v2
+architecture, are in [docs/architecture.md](docs/architecture.md).
 
 ## Repository layout
 
 ```
 fpga/                    Quartus project (My_Audio.qpf / .qsf)
-  rtl/                   hand-written VHDL (top level, I2S, effects, register block)
+  My_Audio.sdc           timing constraints
+  rtl/                   hand-written VHDL (top level, I2S, effects, register block,
+                         fx_pkg = shared saturation helpers)
   ip/                    Intel megafunction wrappers (FIFO, RAM, ROM) + .mif tables
-  my_audio.qsys          Platform Designer system (Nios II, SDRAM, UART, PIO, PLLs)
+  my_audio.qsys          Platform Designer system (Nios II/e, SDRAM, UART, PIO, PLLs)
   RegistersControl_hw.tcl  Platform Designer component for the register block
   software/
     audio_control/       Nios II application (UART command parser, codec init)
@@ -57,6 +52,8 @@ sim/                     ModelSim testbench (codec model + self-checking tests)
 gui/                     Windows control GUI (C# WinForms, .NET 5)
 docs/
   register_map.md        effect registers, field encodings, UART protocol
+  FIXES.md               bugs found in the original code, fixes, verification
+  architecture.md        block diagrams (current system, datapath, proposed v2)
 ```
 
 ## Board setup (DE1-SoC)
@@ -101,10 +98,24 @@ effect. See [sim/README.md](sim/README.md).
 MODELSIM_BIN=/path/to/modelsim_ase/win32aloem ./sim/run_sim.sh
 ```
 
+A second, frame-level testbench streams **real guitar recordings** through the
+effect chain and writes the processed audio as WAV files:
+
+```bash
+MODELSIM_BIN=/path/to/modelsim_ase/win32aloem PYTHON=python3 ./sim/run_wav.sh the_lick_e_minor all
+```
+
 ## Status
 
-Work in progress. Known issues are tracked in [docs/](docs/). The C# GUI is
-kept as-is and will be replaced by a new GUI.
+Work in progress.
+
+* The critical bugs found in the original code are fixed. See
+  [docs/FIXES.md](docs/FIXES.md) for the list, the remaining known limitations
+  and the verification results.
+* The design builds in Quartus Prime **Lite** without IP evaluation mode
+  (Nios II/e) and meets timing.
+* The firmware fixes are compile-tested but not yet tested on the board.
+* The C# GUI is kept as-is and will be replaced by a new GUI.
 
 ## Third-party code
 

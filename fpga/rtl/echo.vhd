@@ -1,6 +1,7 @@
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
+use work.fx_pkg.all;
 
 entity echo is
 port(
@@ -34,7 +35,7 @@ END COMPONENT;
 
 
 signal read_pointer : std_logic_vector(15 downto 0);
-signal write_pointer : std_logic_vector(15 downto 0);
+signal write_pointer : std_logic_vector(15 downto 0) := (others => '0');
 
 signal data_temp : std_logic_vector(15 downto 0);
 signal data_divided : std_logic_vector(15 downto 0); 
@@ -91,20 +92,23 @@ DELAY_RAM :     echo_ram port map(
 						result <= std_logic_vector(to_signed(c, result'length));
 		            data_divided <= result(31 downto 16);
 						
+						-- Feedback = repeat * delayed (independent of the output level), so
+						-- echo n has amplitude level * repeat^(n-1) * x.
 						echo_rep 	<= e_repeat(7 downto 0);
 						d        	<= to_integer(unsigned(echo_rep));
-						e        	<= to_integer(signed(data_divided));
+						e        	<= to_integer(signed(data_temp));
 						f        	<= d*e;
 						rep_result  <= std_logic_vector(to_signed(f, rep_result'length));
 					   rep_result_div <= rep_result(23 downto 8);
-						
-						data_in_feedback <= std_logic_vector( signed(rep_result_div) + signed(data_in) );
-		 
+
+						data_in_feedback <= sat16_slv( to_integer(signed(rep_result_div)) + to_integer(signed(data_in)) );
+
 	 	 process(AUD_DACLRCLK)
 	    begin
 		  if rising_edge(AUD_DACLRCLK) then
 			if(echo_enable = '1') then
-				 data_out <= std_logic_vector( signed(data_divided) + signed(data_in_feedback) );
+				 -- dry + level * delayed (the feedback path is not added to the output twice)
+				 data_out <= sat16_slv( to_integer(signed(data_divided)) + to_integer(signed(data_in)) );
 			else
 				 data_out <= data_in;
 			end if;

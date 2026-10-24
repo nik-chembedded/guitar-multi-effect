@@ -14,7 +14,7 @@
 --   overdrive   clip @ 3000, gain 4, 440 Hz sine -> bit-exact against a reference model
 --   distortion  medium curve, full wet, 440 Hz   -> no wrap glitches, symmetric output (no DC)
 --   tremolo     5 Hz sine LFO, full depth        -> envelope must be modulated
---   chorus      depth 200, rate 20, 440 Hz       -> no X, no wrap glitches, wet differs from dry
+--   chorus      impulse train, depth 200 then 50 -> delay sweeps >100 samples, stays <= 52+lat after depth change
 --   echo        1200 samples, level 0.5, rep 0.5 -> echo 1 = 0.5*x, echo 2 = 0.25*x at k*1200
 --   reverb      heavy room, 50 % mix, tone burst -> no wrap glitches, decaying tail
 --
@@ -263,7 +263,7 @@ begin
       elsif TEST = "chorus" then
         chorus_level   <= slv16(32768);
         chorus_depth   <= slv16(200);
-        chorus_rate    <= slv16(20);
+        chorus_rate    <= slv16(0);      -- one LFO step every 4 samples
         effects_enable <= slv16(16#10#);
       elsif TEST = "reverb" then
         reverb_type    <= slv16(3);      -- heavy
@@ -281,7 +281,9 @@ begin
       elsif TEST = "bypass" then
         uniform(seed1, seed2, r);
         return integer(trunc(r * 65535.0)) - 32768;          -- full-scale PRBS
-      elsif TEST = "overdrive" or TEST = "chorus" then
+      elsif TEST = "chorus" then
+        if n mod 250 = 100 then return 16000; else return 0; end if;  -- impulse train
+      elsif TEST = "overdrive" then
         return sine(n, 440.0, 12000.0);
       elsif TEST = "distortion" then
         return sine(n, 440.0, 24000.0);
@@ -383,10 +385,41 @@ begin
 
       elsif TEST = "chorus" then
         check_wrap;
-        find_latency(lat, e);
-        info("dry/wet difference over 400 frames = " & integer'image(e));
-        if e < 1000 then
-          fail("output identical to input - effect not active");
+        -- Impulse every 250 frames: measure the delay of each wet copy.
+        -- depth = 200 until frame 2000, then 50 (regression for the LFO
+        -- run-away when the depth is lowered while sweeping up).
+        bmin := integer'high; bmax := 0; m := 0;
+        for k in 0 to N_FRAMES / 250 - 1 loop
+          p0 := -1;
+          for n in k * 250 + 100 to k * 250 + 140 loop
+            exit when n >= n_rx;
+            if resp(n) > 8000 then p0 := n; exit; end if;
+          end loop;
+          next when p0 < 0 or p0 + 240 >= n_rx;
+          pk := -1;
+          for n in p0 + 1 to p0 + 240 loop
+            if abs resp(n) > 3000 then pk := n; exit; end if;
+          end loop;
+          if pk < 0 then
+            fail("wet copy of impulse " & integer'image(k) & " not found within 240 frames");
+          else
+            info("impulse " & integer'image(k) & " (frame " & integer'image(k * 250 + 100)
+                 & "): delay " & integer'image(pk - p0) & ", wet " & integer'image(resp(pk)));
+            if k * 250 + 100 < 2000 then
+              if pk - p0 < bmin then bmin := pk - p0; end if;
+              if pk - p0 > bmax then bmax := pk - p0; end if;
+            elsif k * 250 + 100 >= 2800 and pk - p0 > m then
+              m := pk - p0;
+            end if;
+          end if;
+        end loop;
+        info("depth 200: delay " & integer'image(bmin) & " .. " & integer'image(bmax)
+             & ", after depth -> 50: max delay " & integer'image(m));
+        if bmax - bmin < 100 then
+          fail("delay does not sweep (depth 200)");
+        end if;
+        if m = 0 or m > 52 + 6 then
+          fail("delay not limited after lowering the depth to 50");
         end if;
 
       elsif TEST = "echo" then
@@ -397,15 +430,25 @@ begin
         else
           info("dry impulse at output frame " & integer'image(p0)
                & " = " & integer'image(resp(p0)));
-          m := peak_near(resp, p0 + 1200, 3);
-          info("echo 1 = " & integer'image(m) & " (expected 8000)");
-          if abs (m - 8000) > 400 then
-            fail("echo 1 amplitude wrong");
-          end if;
-          m := peak_near(resp, p0 + 2400, 3);
-          info("echo 2 = " & integer'image(m) & " (expected 4000)");
-          if abs (m - 4000) > 400 then
-            fail("echo 2 amplitude wrong");
+          -- measured delay per repeat: echo_time plus the delay-RAM latency
+          pk := first_above(resp(p0 + 1100 to n_rx - 1), 2000);
+          if pk < 0 then
+            fail("echo 1 not found");
+          else
+            info("delay per repeat = " & integer'image(pk - p0) & " frames (echo_time = 1200)");
+            if pk - p0 < 1200 or pk - p0 > 1208 then
+              fail("echo delay outside 1200..1208 frames");
+            end if;
+            m := peak_near(resp, pk, 1);
+            info("echo 1 = " & integer'image(m) & " (expected 8000)");
+            if abs (m - 8000) > 400 then
+              fail("echo 1 amplitude wrong");
+            end if;
+            m := peak_near(resp, p0 + 2 * (pk - p0), 1);
+            info("echo 2 = " & integer'image(m) & " (expected 4000)");
+            if abs (m - 4000) > 400 then
+              fail("echo 2 amplitude wrong");
+            end if;
           end if;
         end if;
 
@@ -437,6 +480,9 @@ begin
       wait until rising_edge(frame_start) or rising_edge(dac_valid);
       if frame_start = '1' then
         n_tx := n_tx + 1;
+        if TEST = "chorus" and n_tx = 2000 then
+          chorus_depth <= slv16(50);     -- lower the depth while the LFO is running
+        end if;
         if n_tx < N_FRAMES then
           adc_left <= stim(n_tx);
         else
@@ -448,6 +494,9 @@ begin
           n_meta := n_meta + 1;
         end if;
         n_rx := n_rx + 1;
+        if n_rx mod 480 = 0 then
+          info("progress " & integer'image(n_rx) & "/" & integer'image(N_FRAMES) & " frames");
+        end if;
       end if;
     end loop;
 

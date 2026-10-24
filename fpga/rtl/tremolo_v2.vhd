@@ -97,19 +97,19 @@ COMPONENT saw_10hz IS
 END COMPONENT;
 
 
-signal counter_7hz   : integer range 0 to 9600;
+signal counter_7hz   : integer range 0 to 6856 := 0;   -- sine_7hz_8bit.mif : 6857 entries
 signal addr_7hz      : std_logic_vector(12 downto 0);
 
-signal counter_5hz   : integer range 0 to 6857;
+signal counter_5hz   : integer range 0 to 9599 := 0;   -- *_5hz_8bit.mif    : 9600 entries
 signal addr_5hz      : std_logic_vector(13 downto 0);
 
-signal counter_10hz   : integer range 0 to 4600;
+signal counter_10hz   : integer range 0 to 4799 := 0;  -- *_10hz mif        : 4800 entries
 signal addr_10hz      : std_logic_vector(12 downto 0);
 
-signal counter_12hz   : integer range 0 to 4000;
+signal counter_12hz   : integer range 0 to 3999 := 0;  -- sine_12hz_8bit.mif : 4000 entries
 signal addr_12hz      : std_logic_vector(11 downto 0);
 
-signal counter_15hz   : integer range 0 to 3200;
+signal counter_15hz   : integer range 0 to 3199 := 0;  -- sine_15hz_8bit.mif : 3200 entries
 signal addr_15hz      : std_logic_vector(11 downto 0);
 
 
@@ -127,7 +127,10 @@ signal temp_triangle_10hz : std_logic_vector(7 downto 0);
 
 signal temp_saw_10hz : std_logic_vector(7 downto 0);
 
-signal result    : std_logic_vector(23 downto 0);
+signal result    : std_logic_vector(31 downto 0);
+
+-- LFO value after smoothing, 8 fractional bits (0 .. 255*256)
+signal lfo_s     : integer range 0 to 65535 := 0;
 
 signal temp_depth   : std_logic_vector(7 downto 0);
 signal invert_depth : std_logic_vector(7 downto 0);
@@ -135,8 +138,8 @@ signal int_depth   : integer;
 
 signal out_dat : std_logic_vector(23 downto 0); 
 
-signal temp  : integer;
-signal sine  : integer;
+signal temp  : integer := 0;
+signal sine  : integer range 0 to 255;
 signal data  : integer;
 
 signal a,b,c : integer;
@@ -183,7 +186,7 @@ cyclic_counter_7hz : process(AUD_DACLRCLK)
 cyclic_counter_10hz : process(AUD_DACLRCLK)
                      begin
 								if rising_edge(AUD_DACLRCLK) and en_10hz = '1' then
-									if counter_10hz >= 4599 then
+									if counter_10hz >= 4799 then
 										counter_10hz <= 0;
 									else
 										counter_10hz <= counter_10hz + 1;
@@ -215,27 +218,34 @@ cyclic_counter_15hz : process(AUD_DACLRCLK)
                  
 					  sine <= to_integer(unsigned(temp_sine));
 					  data <= to_integer(signed(data_in));
-					  
-					  process(CLK_18MHZ)
+
+					  -- One-pole smoothing of the LFO (time constant 32 samples, ~0.7 ms):
+					  -- removes the click of hard-edged waveforms (sawtooth reset) and the
+					  -- zipper steps of the 8-bit tables without reducing the depth of the
+					  -- 5..15 Hz LFOs.
+					  lfo_smooth : process(AUD_DACLRCLK)
 					  begin
-					   if rising_edge(CLK_18MHZ) then
---						 if abs(data) < 20 then
---						     temp <= data;
---						 else
-							  temp   <= data * sine ;
---						  end if;
+						if rising_edge(AUD_DACLRCLK) then
+							lfo_s <= lfo_s + (sine * 256 - lfo_s) / 32;
 						end if;
 					  end process;
 
-					  
-					  result <= std_logic_vector(to_signed(temp, result'length)); --- check why unsigned
+					  process(CLK_18MHZ)
+					  begin
+					   if rising_edge(CLK_18MHZ) then
+							  temp   <= data * lfo_s;     -- |data| * 65280 < 2^31
+						end if;
+					  end process;
+
+
+					  result <= std_logic_vector(to_signed(temp, result'length));
 					  
 					  
 					  temp_depth   <= t_depth(7 downto 0);
 					  invert_depth <= std_logic_vector(255 - unsigned(temp_depth));
 					  int_depth    <= to_integer(unsigned(temp_depth));
 					  
-					  a <= int_depth * to_integer(signed(result(23 downto 8)));
+					  a <= int_depth * to_integer(signed(result(31 downto 16)));   -- data * lfo / 65536
 					  b <= to_integer(unsigned(invert_depth)) * data;
 					  c <= a + b;
 					  

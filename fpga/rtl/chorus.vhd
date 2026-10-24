@@ -2,6 +2,7 @@
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
+use work.fx_pkg.all;
 
 entity chorus is
 port(
@@ -30,13 +31,13 @@ COMPONENT chorus_RAM IS
 END COMPONENT;
 
 
-signal counter_187 : integer range 0 to 1023; -- 1023
-signal counter_144 : integer range 0 to 1023;
-signal clk_375     : std_logic;
-signal up_dwn      : std_logic;
+signal counter_187 : integer range 0 to 1023 := 0; -- LFO step divider
+signal counter_144 : integer range 0 to 1023 := 2; -- current delay [samples]
+signal clk_375     : std_logic := '1';
+signal up_dwn      : std_logic := '0';
 
 signal read_pointer : std_logic_vector(9 downto 0);
-signal write_pointer : std_logic_vector(9 downto 0);
+signal write_pointer : std_logic_vector(9 downto 0) := (others => '0');
 
 signal ram_out : std_logic_vector(15 downto 0);
 signal kmult_out : std_logic_vector(15 downto 0);
@@ -62,43 +63,48 @@ begin
 					rate_threshold <= to_integer(unsigned(temp_rate));
 					
 					temp_depth <= chorus_depth(9 downto 0);
-					depth_threshold <= to_integer(unsigned(temp_depth) + 2);
+					-- sweep limit = depth + 2, clamped to the 1024-word delay line
+					depth_threshold <= 1023 when to_integer(unsigned(temp_depth)) > 1021
+					                   else to_integer(unsigned(temp_depth)) + 2;
 
-clkdiv_proc : process(AUD_DACLRCLK)                      -------- chorus rate
+-- Triangle LFO for the delay length, entirely in the sample clock domain.
+-- (Previously a divided ripple clock "clk_375" drove a second process, and both
+-- used chorus_enable - a register from the Nios clock domain - as an
+-- asynchronous reset.) The step rate is unchanged: one step every
+-- 2*(rate+2) samples.
+lfo_proc : process(AUD_DACLRCLK)                      -------- chorus rate / depth
 				  begin
-				      if chorus_enable = '0' then
-							counter_187 <= 0;
-							clk_375     <= '1';
-						elsif rising_edge(AUD_DACLRCLK) then
-							if counter_187 > rate_threshold then  -- 120
-								clk_375 <= not(clk_375);
+						if rising_edge(AUD_DACLRCLK) then
+							if chorus_enable = '0' then
 								counter_187 <= 0;
+								clk_375     <= '1';
+								counter_144 <= 2;
+								up_dwn      <= '0';
+							elsif counter_187 > rate_threshold then
+								clk_375     <= not(clk_375);
+								counter_187 <= 0;
+								if clk_375 = '0' then             -- former rising edge of clk_375: one LFO step
+									if up_dwn = '0' then
+										-- ">=" so that lowering the depth while sweeping up turns
+										-- around immediately (with "=" the counter ran on to 1023
+										-- and wrapped to 0)
+										if counter_144 >= depth_threshold then
+											up_dwn      <= '1';
+											counter_144 <= counter_144 - 1;
+										else
+											counter_144 <= counter_144 + 1;
+										end if;
+									else
+										if counter_144 <= 2 then
+											up_dwn      <= '0';
+											counter_144 <= counter_144 + 1;
+										else
+											counter_144 <= counter_144 - 1;
+										end if;
+									end if;
+								end if;
 							else
 								counter_187 <= counter_187 + 1;
-							end if;
-						end if;							
-				  end process;
-				  
-updown_cntr : process(clk_375)							-------- chorus depth
-				  begin
-						if chorus_enable = '0' then
-							 counter_144 <= 0;
-							 up_dwn <= '0';
-						elsif rising_edge(clk_375) then
-							if up_dwn = '0' then
-								if counter_144 = depth_threshold then --510
-								    up_dwn <= '1';
-									 counter_144 <= counter_144 - 1;
-								else
-								 counter_144 <= counter_144 + 1;
-								end if;
-							elsif up_dwn = '1' then
-								if counter_144 = 2 then
-								    up_dwn <= '0';
-									 counter_144 <= counter_144 + 1;
-								else
-								 counter_144 <= counter_144 - 1;
-								end if;
 							end if;
 						end if;
 				  end process;
@@ -126,13 +132,13 @@ DELAY_RAM :     chorus_RAM port map(
 						c <= a*b;
 						result <= std_logic_vector(to_signed(c, result'length));
 		            data_divided <= result(31 downto 16);
-						data_in_feedback <= std_logic_vector( (signed(data_divided) / 64) + signed(data_in) );
-										
+						data_in_feedback <= sat16_slv( to_integer(signed(data_divided)) / 64 + to_integer(signed(data_in)) );
+
 	 	 process(AUD_DACLRCLK)
 	    begin
 		  if rising_edge(AUD_DACLRCLK) then
 			if(chorus_enable = '1') then
-				 data_out <= std_logic_vector(signed(data_in_feedback) + signed(data_divided));
+				 data_out <= sat16_slv( to_integer(signed(data_in_feedback)) + to_integer(signed(data_divided)) );
 			else
 				 data_out <= data_in;
 			end if;

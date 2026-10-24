@@ -28,6 +28,7 @@ cp "$FPGA_DIR"/ip/*.mif .            # altsyncram loads init files from the cwd
 rm -rf work && "$VLIB" work >/dev/null
 compile() { "$VCOM" -quiet -2008 -work work "$@" || exit 1; }
 compile "$FPGA_DIR"/ip/*.vhd
+compile "$FPGA_DIR"/rtl/fx_pkg.vhd
 compile "$FPGA_DIR"/rtl/ADC_CONTROLLER.vhd "$FPGA_DIR"/rtl/DAC_CONTROLLER.vhd \
         "$FPGA_DIR"/rtl/overdrive.vhd "$FPGA_DIR"/rtl/distortion.vhd \
         "$FPGA_DIR"/rtl/chorus.vhd "$FPGA_DIR"/rtl/tremolo_v2.vhd \
@@ -41,9 +42,9 @@ for t in $TESTS; do
   frames=4800
   [ "$t" = "tremolo" ] && frames=12000   # one full 5 Hz LFO period is 9600 frames
   printf '%-11s ... ' "$t"
-  "$VSIM" -c -quiet -t ps -L altera_mf work.tb_audio_processor \
+  "$VSIM" -c -quiet -t ns -L altera_mf work.tb_audio_processor \
       -gTEST="$t" -gN_FRAMES=$frames -gOUT_DIR=../out \
-      -do "set NumericStdNoWarnings 1; set StdArithNoWarnings 1; run -all; quit -f" > "$t.log" 2>&1
+      -do ../run_test.do < /dev/null > "$t.log" 2>&1
   if grep -q "RESULT: PASS" "$t.log"; then
     echo "PASS"; pass=$((pass+1)); summary="$summary\n  PASS  $t"
   else
