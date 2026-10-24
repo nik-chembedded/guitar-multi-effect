@@ -8,15 +8,16 @@ use work.fx_pkg.all;
 entity overdrive is
 port(
 
-      AUD_DACLRCLK  : in std_logic;
-		CLK_18MHZ     : in std_logic;
+      clk  : in std_logic;   -- system clock (v2 B1)
+      en_rise  : in std_logic;   -- strobe: v1 rising edge of this effect's sample clock
+      en_fall  : in std_logic;   -- strobe: v1 falling edge
 		od_enable     : in std_logic;
 		
 		drive     : in std_logic_vector(15 downto 0); 
 		gain      : in std_logic_vector(15 downto 0); 
 		
       data_in       : in std_logic_vector(15 downto 0);      
-      data_out      : out std_logic_vector(15 downto 0)
+      data_out      : out std_logic_vector(15 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
      );
 end entity;
 
@@ -40,9 +41,9 @@ begin
 	 t_gain  <= to_integer(unsigned(gain));
 	 
 	 
-    process(AUD_DACLRCLK)
+    process(clk)
 	 begin
-	   if rising_edge(AUD_DACLRCLK) then
+	   if rising_edge(clk) and en_rise = '1' then
 		     if temp_data >= t_drive then
 			      new_out <= t_drive;
 			  elsif temp_data <= (-1)*t_drive then
@@ -58,9 +59,9 @@ begin
 	 -- sensitivity list, so simulation did not match the synthesised logic)
 	 od_out <= t_gain * new_out;
 
-	 process(AUD_DACLRCLK)
+	 process(clk)
 	 begin
-		if rising_edge(AUD_DACLRCLK) then
+		if rising_edge(clk) and en_rise = '1' then
 			if(od_enable = '1') then
 				 data_out <= sat16_slv(od_out);   -- saturate instead of wrapping
 			else

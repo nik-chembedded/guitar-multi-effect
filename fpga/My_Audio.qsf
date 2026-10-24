@@ -1,10 +1,11 @@
 # -----------------------------------------------------------------------------
-# Guitar multi-effect - Quartus Prime 18.1 Lite project settings
+# Guitar multi-effect v2 - Quartus Prime Lite 18.1 project settings
 # Target board : Terasic DE1-SoC (Cyclone V SE 5CSEMA5F31C6)
+# No Platform Designer / Nios II: top_v2 = PLL + gme_core (see docs/v2_stepB_design.md)
 # -----------------------------------------------------------------------------
 set_global_assignment -name FAMILY "Cyclone V"
 set_global_assignment -name DEVICE 5CSEMA5F31C6
-set_global_assignment -name TOP_LEVEL_ENTITY top_project
+set_global_assignment -name TOP_LEVEL_ENTITY top_v2
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 18.1.0
 set_global_assignment -name PROJECT_CREATION_TIME_DATE "11:08:34  JULY 01, 2021"
 set_global_assignment -name LAST_QUARTUS_VERSION "18.1.0 Lite Edition"
@@ -19,28 +20,33 @@ set_global_assignment -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_RO
 set_global_assignment -name PARTITION_COLOR 16764057 -section_id Top
 set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
 
-# ---- Platform Designer system (generate with: qsys-generate my_audio.qsys --synthesis=VHDL)
-set_global_assignment -name QIP_FILE my_audio/synthesis/my_audio.qip
-set_global_assignment -name SDC_FILE My_Audio.sdc
+# ---- Constraints
+set_global_assignment -name SDC_FILE top_v2.sdc
 
 # ---- RTL
+set_global_assignment -name VERILOG_FILE rtl/pll_sys.v
 set_global_assignment -name VHDL_FILE rtl/fx_pkg.vhd
-set_global_assignment -name VHDL_FILE rtl/top_project.vhd
-set_global_assignment -name VHDL_FILE rtl/audio_processor.vhd
-set_global_assignment -name VHDL_FILE rtl/ADC_CONTROLLER.vhd
-set_global_assignment -name VHDL_FILE rtl/DAC_CONTROLLER.vhd
-set_global_assignment -name VHDL_FILE rtl/FX_chain.vhd
 set_global_assignment -name VHDL_FILE rtl/overdrive.vhd
 set_global_assignment -name VHDL_FILE rtl/distortion.vhd
 set_global_assignment -name VHDL_FILE rtl/chorus.vhd
 set_global_assignment -name VHDL_FILE rtl/tremolo_v2.vhd
 set_global_assignment -name VHDL_FILE rtl/echo.vhd
-set_global_assignment -name VHDL_FILE rtl/reverbe.vhd
 set_global_assignment -name VHDL_FILE rtl/comb_filter.vhd
 set_global_assignment -name VHDL_FILE rtl/allpass_filter.vhd
+set_global_assignment -name VHDL_FILE rtl/reverbe.vhd
+set_global_assignment -name VHDL_FILE rtl/FX_chain.vhd
+set_global_assignment -name VHDL_FILE rtl/i2s_core.vhd
+set_global_assignment -name VHDL_FILE rtl/uart_rx.vhd
+set_global_assignment -name VHDL_FILE rtl/uart_tx.vhd
+set_global_assignment -name VHDL_FILE rtl/reg_file.vhd
+set_global_assignment -name VHDL_FILE rtl/ctrl_uart.vhd
+set_global_assignment -name VHDL_FILE rtl/ctrl_block.vhd
+set_global_assignment -name VHDL_FILE rtl/i2c_master.vhd
+set_global_assignment -name VHDL_FILE rtl/codec_ctrl.vhd
+set_global_assignment -name VHDL_FILE rtl/gme_core.vhd
+set_global_assignment -name VHDL_FILE rtl/top_v2.vhd
 
-# ---- Intel megafunction wrappers (FIFO / RAM / ROM) and their .mif tables
-set_global_assignment -name QIP_FILE ip/my_fifo.qip
+# ---- Intel megafunction wrappers (RAM / ROM) and .mif tables
 set_global_assignment -name QIP_FILE ip/echo_ram.qip
 set_global_assignment -name QIP_FILE ip/chorus_RAM.qip
 set_global_assignment -name QIP_FILE ip/fcomb_RAM2.qip
@@ -69,113 +75,35 @@ set_global_assignment -name MIF_FILE ip/triangle_10hz_8bit.mif
 set_global_assignment -name MIF_FILE ip/triangle_5hz_8bit.mif
 
 # ---- Pin assignments (DE1-SoC)
-set_location_assignment PIN_AA13 -to sdram_we_n
-set_location_assignment PIN_AB12 -to reset_n
-set_location_assignment PIN_AB13 -to sdram_dqm[0]
-set_location_assignment PIN_AB15 -to sdram_addr[4]
-set_location_assignment PIN_AC12 -to LR_RESET
-set_location_assignment PIN_AC14 -to sdram_addr[5]
-set_location_assignment PIN_AC18 -to UART_RX
-set_location_assignment PIN_AC9 -to echo_enable
-set_location_assignment PIN_AD10 -to tremolo_enable
-set_location_assignment PIN_AD14 -to sdram_addr[6]
-set_location_assignment PIN_AE12 -to od_enable
-set_location_assignment PIN_AE13 -to sdram_ras_n
-set_location_assignment PIN_AE14 -to sdram_addr[3]
-set_location_assignment PIN_AF11 -to sdram_cas_n
-set_location_assignment PIN_AF13 -to sdram_ba[0]
-set_location_assignment PIN_AF14 -to clk
-set_location_assignment PIN_AF15 -to sdram_addr[7]
-set_location_assignment PIN_AG10 -to sdram_dq[5]
-set_location_assignment PIN_AG11 -to sdram_cs_n
-set_location_assignment PIN_AG12 -to sdram_addr[10]
-set_location_assignment PIN_AG13 -to sdram_addr[9]
-set_location_assignment PIN_AG15 -to sdram_addr[2]
-set_location_assignment PIN_AH10 -to sdram_dq[8]
-set_location_assignment PIN_AH12 -to sdram_clk
-set_location_assignment PIN_AH13 -to sdram_addr[11]
-set_location_assignment PIN_AH14 -to sdram_addr[1]
-set_location_assignment PIN_AH15 -to sdram_addr[8]
-set_location_assignment PIN_AH7 -to sdram_dq[13]
-set_location_assignment PIN_AH8 -to sdram_dq[12]
-set_location_assignment PIN_AH9 -to sdram_dq[11]
-set_location_assignment PIN_AJ10 -to sdram_dq[9]
-set_location_assignment PIN_AJ11 -to sdram_dq[7]
-set_location_assignment PIN_AJ12 -to sdram_ba[1]
-set_location_assignment PIN_AJ14 -to sdram_addr[12]
-set_location_assignment PIN_AJ5 -to sdram_dq[15]
-set_location_assignment PIN_AJ6 -to sdram_dq[14]
-set_location_assignment PIN_AJ7 -to sdram_dq[1]
-set_location_assignment PIN_AJ9 -to sdram_dq[10]
-set_location_assignment PIN_AK11 -to sdram_dq[6]
-set_location_assignment PIN_AK12 -to sdram_dqm[1]
-set_location_assignment PIN_AK13 -to sdram_cke
-set_location_assignment PIN_AK14 -to sdram_addr[0]
-set_location_assignment PIN_AK6 -to sdram_dq[0]
-set_location_assignment PIN_AK7 -to sdram_dq[2]
-set_location_assignment PIN_AK8 -to sdram_dq[3]
-set_location_assignment PIN_AK9 -to sdram_dq[4]
-set_location_assignment PIN_G7 -to aud_xck
+set_location_assignment PIN_AF14 -to CLOCK_50
+set_location_assignment PIN_AA14 -to KEY0
+set_location_assignment PIN_G7 -to AUD_XCK
 set_location_assignment PIN_H7 -to AUD_BCLK
-set_location_assignment PIN_H8 -to AUD_DACLRCLK
-set_location_assignment PIN_J12 -to i2c_scl
-set_location_assignment PIN_J7 -to AUD_DACDAT
-set_location_assignment PIN_K12 -to i2c_sda
+set_location_assignment PIN_K8 -to AUD_ADCLRCK
+set_location_assignment PIN_H8 -to AUD_DACLRCK
 set_location_assignment PIN_K7 -to AUD_ADCDAT
-set_location_assignment PIN_K8 -to AUD_ADCLRCLK
+set_location_assignment PIN_J7 -to AUD_DACDAT
+set_location_assignment PIN_J12 -to FPGA_I2C_SCLK
+set_location_assignment PIN_K12 -to FPGA_I2C_SDAT
+set_location_assignment PIN_AC18 -to UART_RX
 set_location_assignment PIN_Y17 -to UART_TX
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to AUD_ADCDAT
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to AUD_ADCLRCLK
+set_location_assignment PIN_V16 -to LEDR[0]
+set_location_assignment PIN_W16 -to LEDR[1]
+set_location_assignment PIN_V17 -to LEDR[2]
+set_location_assignment PIN_V18 -to LEDR[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to CLOCK_50
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to KEY0
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to AUD_XCK
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to AUD_BCLK
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to AUD_ADCLRCK
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to AUD_DACLRCK
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to AUD_ADCDAT
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to AUD_DACDAT
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to AUD_DACLRCLK
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LR_RESET
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to FPGA_I2C_SCLK
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to FPGA_I2C_SDAT
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to UART_RX
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to UART_TX
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to aud_xck
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to clk
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to echo_enable
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to i2c_scl
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to i2c_sda
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to od_enable
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to reset_n
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[0]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[10]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[11]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[12]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[1]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[2]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[3]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[4]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[5]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[6]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[7]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[8]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_addr[9]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_ba[0]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_ba[1]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_cas_n
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_cke
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_clk
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_cs_n
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[0]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[10]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[11]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[12]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[13]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[14]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[15]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[1]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[2]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[3]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[4]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[5]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[6]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[7]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[8]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dq[9]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dqm[0]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_dqm[1]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_ras_n
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sdram_we_n
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to tremolo_enable
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[2]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[3]

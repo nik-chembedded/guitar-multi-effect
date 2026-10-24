@@ -6,13 +6,15 @@ use work.fx_pkg.all;
 
 entity chorus is
 port(
-		AUD_DACLRCLK  : in std_logic;
+		clk  : in std_logic;   -- system clock (v2 B1)
+		en_rise  : in std_logic;   -- strobe: v1 rising edge of this effect's sample clock
+		en_fall  : in std_logic;   -- strobe: v1 falling edge
 		chorus_enable : in std_logic;
 		gain          : in std_logic_vector(15 downto 0);
 		chorus_rate   : in std_logic_vector(15 downto 0);
 		chorus_depth  : in std_logic_vector(15 downto 0);
 		data_in       : in std_logic_vector(15 downto 0);
-		data_out       : out std_logic_vector(15 downto 0)
+		data_out       : out std_logic_vector(15 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
 	 );
 end entity;
 
@@ -21,6 +23,7 @@ architecture rtl of chorus is
 COMPONENT chorus_RAM IS
 	PORT
 	(
+		clocken		: IN STD_LOGIC  := '1';
 		clock		: IN STD_LOGIC  := '1';
 		data		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
 		rdaddress		: IN STD_LOGIC_VECTOR (9 DOWNTO 0);
@@ -72,9 +75,9 @@ begin
 -- used chorus_enable - a register from the Nios clock domain - as an
 -- asynchronous reset.) The step rate is unchanged: one step every
 -- 2*(rate+2) samples.
-lfo_proc : process(AUD_DACLRCLK)                      -------- chorus rate / depth
+lfo_proc : process(clk)                      -------- chorus rate / depth
 				  begin
-						if rising_edge(AUD_DACLRCLK) then
+						if rising_edge(clk) and en_rise = '1' then
 							if chorus_enable = '0' then
 								counter_187 <= 0;
 								clk_375     <= '1';
@@ -109,9 +112,9 @@ lfo_proc : process(AUD_DACLRCLK)                      -------- chorus rate / dep
 						end if;
 				  end process;
 				  
-RAM_RW_proc: 	process(AUD_DACLRCLK)
+RAM_RW_proc: 	process(clk)
 				begin
-				 if falling_edge(AUD_DACLRCLK) then -- falling because it is left channel '0'
+				 if rising_edge(clk) and en_fall = '1' then -- falling because it is left channel '0'
 				    write_pointer <= std_logic_vector( unsigned(write_pointer) + 1 );			 
 				 end if;				
 				end process;
@@ -119,7 +122,8 @@ RAM_RW_proc: 	process(AUD_DACLRCLK)
 				read_pointer <= std_logic_vector( unsigned(write_pointer) - counter_144);				  
 
 DELAY_RAM :     chorus_RAM port map(
-								clock	  => AUD_DACLRCLK,
+								clock	  => clk,
+								clocken	  => en_rise,
 								data 	  => data_in_feedback,
 								rdaddress => read_pointer,
 								wraddress => write_pointer,
@@ -134,9 +138,9 @@ DELAY_RAM :     chorus_RAM port map(
 		            data_divided <= result(31 downto 16);
 						data_in_feedback <= sat16_slv( to_integer(signed(data_divided)) / 64 + to_integer(signed(data_in)) );
 
-	 	 process(AUD_DACLRCLK)
+	 	 process(clk)
 	    begin
-		  if rising_edge(AUD_DACLRCLK) then
+		  if rising_edge(clk) and en_rise = '1' then
 			if(chorus_enable = '1') then
 				 data_out <= sat16_slv( to_integer(signed(data_in_feedback)) + to_integer(signed(data_divided)) );
 			else

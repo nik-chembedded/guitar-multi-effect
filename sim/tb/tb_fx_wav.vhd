@@ -7,7 +7,7 @@
 -- FX_chain directly, one sample per LRCLK period, which makes it fast enough
 -- for seconds of real guitar audio. The datapath only counts LRCLK edges, so
 -- the sample-domain behaviour (LFO rates, delays) is the same as at 48 kHz;
--- CLK_18MHZ just needs a few cycles per LRCLK phase for the ROM lookups and
+-- the clock just needs a few cycles between the strobes for the ROM lookups and
 -- the tremolo multiplier.
 --
 -- Files (one signed 16-bit integer per line, 48 kHz mono):
@@ -26,7 +26,7 @@ entity tb_fx_wav is
     IN_FILE      : string  := "in.txt";
     OUT_FILE     : string  := "out.txt";
     TAIL_FRAMES  : natural := 24000;     -- 0.5 s
-    CLK_PER_HALF : positive := 8;        -- CLK_18MHZ cycles per LRCLK half period
+    CLK_PER_HALF : positive := 8;        -- clk cycles between sample_tick and half_tick
 
     EFFECTS      : natural := 0;         -- reg 0: bit0 OD, 1 TREM, 2 ECHO, 3 DIST, 4 CHORUS, 5 REVERB
     OD_DRIVE     : natural := 3000;      -- reg 1
@@ -56,7 +56,8 @@ architecture sim of tb_fx_wav is
   end function;
 
   signal clk      : std_logic := '0';
-  signal lrclk    : std_logic := '0';
+  signal stick    : std_logic := '0';   -- sample_tick
+  signal htick    : std_logic := '0';   -- half_tick
   signal running  : boolean := true;
   signal data_in  : std_logic_vector(15 downto 0) := (others => '0');
   signal data_out : std_logic_vector(15 downto 0);
@@ -68,8 +69,9 @@ begin
 
   dut : entity work.FX_chain
     port map (
-      AUD_DACLRCLK   => lrclk,
-      CLK_18MHZ      => clk,
+      clk            => clk,
+      sample_tick    => stick,
+      half_tick      => htick,
       od_enable      => '0',
       tremolo_enable => '0',
       echo_enable    => '0',
@@ -117,11 +119,16 @@ begin
       end if;
       data_in <= std_logic_vector(to_signed(s, 16));
 
-      -- one LRCLK period: low half, rising edge, high half, falling edge
+      -- one frame: sample_tick, then half_tick half a frame later (v2 B1:
+      -- 1-cycle strobes replace the v1 LRCLK rising / falling edges)
       for i in 1 to CLK_PER_HALF loop wait until rising_edge(clk); end loop;
-      lrclk <= '1';
-      for i in 1 to CLK_PER_HALF loop wait until rising_edge(clk); end loop;
-      lrclk <= '0';
+      stick <= '1';
+      wait until rising_edge(clk);
+      stick <= '0';
+      for i in 2 to CLK_PER_HALF loop wait until rising_edge(clk); end loop;
+      htick <= '1';
+      wait until rising_edge(clk);
+      htick <= '0';
       wait until rising_edge(clk);
 
       -- output of the chain (last stage registers on the falling LRCLK edge)

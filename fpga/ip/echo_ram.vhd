@@ -1,3 +1,4 @@
+-- v2: clock enable (clocken0) added by hand for the tick-enabled datapath.
 -- megafunction wizard: %RAM: 2-PORT%
 -- GENERATION: STANDARD
 -- VERSION: WM1.0
@@ -42,6 +43,7 @@ USE altera_mf.altera_mf_components.all;
 ENTITY echo_ram IS
 	PORT
 	(
+		clocken		: IN STD_LOGIC  := '1';
 		clock		: IN STD_LOGIC  := '1';
 		data		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
 		rdaddress		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
@@ -63,9 +65,9 @@ BEGIN
 	GENERIC MAP (
 		address_aclr_b => "NONE",
 		address_reg_b => "CLOCK0",
-		clock_enable_input_a => "BYPASS",
-		clock_enable_input_b => "BYPASS",
-		clock_enable_output_b => "BYPASS",
+		clock_enable_input_a => "NORMAL",
+		clock_enable_input_b => "NORMAL",
+		clock_enable_output_b => "NORMAL",
 		intended_device_family => "Cyclone V",
 		lpm_type => "altsyncram",
 		numwords_a => 65536,
@@ -85,6 +87,7 @@ BEGIN
 		address_a => wraddress,
 		address_b => rdaddress,
 		clock0 => clock,
+		clocken0 => clocken,
 		data_a => data,
 		wren_a => wren,
 		q_b => sub_wire0

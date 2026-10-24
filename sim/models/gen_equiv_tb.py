@@ -51,7 +51,7 @@ for i, (n, w, aw, rdw) in enumerate(rams):
     decl.append("  signal m%d_qi, m%d_qm : std_logic_vector(%d downto 0);" % (i, i, w - 1))
     for lib, suf in (("intel", "i"), ("model", "m")):
         inst.append("  m%d_%s : entity %s.%s port map (clock => clk, data => m%d_d, rdaddress => m%d_ra, "
-                    "wraddress => m%d_wa, wren => wren, q => m%d_q%s);" % (i, suf, lib, n, i, i, i, i, suf))
+                    "wraddress => m%d_wa, wren => wren, clocken => cen, q => m%d_q%s);" % (i, suf, lib, n, i, i, i, i, suf))
     # small address window so reads hit written words and collide with writes
     check.append("      m%d_wa <= std_logic_vector(to_unsigned(rnd(64), %d));" % (i, aw))
     check.append("      if rnd(4) = 0 then m%d_ra <= m%d_wa; else m%d_ra <= std_logic_vector(to_unsigned(rnd(64), %d)); end if;" % (i, i, i, aw))
@@ -77,6 +77,7 @@ architecture sim of tb_ip_equiv is
   signal done : boolean := false;
   signal rden : std_logic := '1';
   signal wren : std_logic := '0';
+  signal cen  : std_logic := '1';
 {decl}
 {fifo_decl}
 begin
@@ -114,6 +115,7 @@ begin
       wait for 1 ns;
       if rnd(8) = 0 then rden <= '0'; else rden <= '1'; end if;
       if rnd(2) = 0 then wren <= '1'; else wren <= '0'; end if;
+      if rnd(3) = 0 then cen <= '0'; else cen <= '1'; end if;
 {check}
     end loop;
     wait for 200 ns;
@@ -132,5 +134,5 @@ with open(OUT, "w", newline="\n") as f:
     f.write(tb.format(decl="\n".join(decl), fifo_decl="",
                       inst="\n".join(inst), fifo_inst="",
                       check="\n".join(check), fifo_proc=""))
-print("wrote %s: %d ROMs, %d RAMs, %d FIFOs (FIFOs: see tb_fifo_equiv.vhd)" %
+print("wrote %s: %d ROMs, %d RAMs (%d FIFOs ignored)" %
       (os.path.relpath(OUT, ROOT), len(roms), len(rams), len(fifos)))

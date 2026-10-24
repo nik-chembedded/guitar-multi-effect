@@ -3,9 +3,9 @@
 gen_ip_models.py - generate simulation replacements for the Intel IP wrappers.
 
 For every megafunction wrapper in fpga/ip/*.vhd (altsyncram ROM / dual-port
-RAM, dcfifo) this writes sim/models/ip/<name>.vhd: an entity with the same name
-and ports whose architecture instantiates the behavioural model (sim_rom,
-sim_dpram, sim_dcfifo). Simulators without altera_mf (GHDL) compile these
+RAM) this writes sim/models/ip/<name>.vhd: an entity with the same name and
+ports whose architecture instantiates the behavioural model (sim_rom,
+sim_dpram). Simulators without altera_mf (GHDL) compile these
 instead of fpga/ip/*.vhd.
 
     python3 sim/models/gen_ip_models.py
@@ -66,19 +66,10 @@ BEGIN
   m : entity work.sim_dpram
     generic map (WIDTH => {w}, ADDR_W => {aw})
     port map (clock => clock, data => data, rdaddress => rdaddress,
-              wraddress => wraddress, wren => wren, q => q);
+              wraddress => wraddress, wren => wren, clocken => {ce}, q => q);
 END sim;
-""".format(name=name, w=param(src, "width_a"), aw=param(src, "widthad_a"))
-        elif param(src, "lpm_numwords"):
-            kind = "dcfifo"
-            body = """ARCHITECTURE sim OF {name} IS
-BEGIN
-  m : entity work.sim_dcfifo
-    generic map (WIDTH => {w}, DEPTH => {d})
-    port map (data => data, rdclk => rdclk, rdreq => rdreq, wrclk => wrclk,
-              wrreq => wrreq, q => q, rdempty => rdempty, wrfull => wrfull);
-END sim;
-""".format(name=name, w=param(src, "lpm_width"), d=param(src, "lpm_numwords"))
+""".format(name=name, w=param(src, "width_a"), aw=param(src, "widthad_a"),
+           ce="clocken" if re.search(r"\bclocken\s*:\s*IN", src, re.I) else "'1'")
         else:
             print("skipping %s (unknown megafunction)" % fn)
             continue

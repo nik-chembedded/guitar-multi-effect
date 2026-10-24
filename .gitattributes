@@ -4,3 +4,5 @@ create-this-*   text eol=lf
 *.png           binary
 *.jpg           binary
 *.ico           binary
+*.npy           binary
+run_all.cmd     text eol=crlf

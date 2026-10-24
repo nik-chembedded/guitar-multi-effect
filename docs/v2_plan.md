@@ -38,7 +38,12 @@ Done: GHDL 5 + cocotb 2.1 in WSL2 and CI, verified IP models (`sim/models`),
 * **GitHub Actions CI:** run all tests on every push and pull request, and keep the WAV outputs as artefacts.
 * ModelSim stays usable as a second simulator for the Intel-IP-based top level.
 
-### B: Clocking, I²S and the UART control block
+### B: Clocking, I²S and the UART control block  (status: done in simulation, board test pending)
+
+Done: see [v2_stepB_design.md](v2_stepB_design.md). 49.152 MHz sys_clk with the FPGA
+as I²S master, effects on strobes (bit-exact to v1), UART control block, codec
+I²C init, `top_v2` without Nios II (timing met, 4 % logic).
+
 
 * **One system clock** from a PLL (MCLK 18.432 MHz, or 49.152 MHz = 1024 × fs), with
   a one-cycle **sample tick** at 48 kHz. BCLK/LRCLK are sampled as data, so all

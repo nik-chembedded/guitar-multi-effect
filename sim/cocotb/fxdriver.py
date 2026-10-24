@@ -1,10 +1,12 @@
 """
 fxdriver.py - frame-level driver for the FX_chain VHDL entity (cocotb).
 
-One audio frame = one LRCLK period of 2 * CLK_PER_HALF cycles of CLK_18MHZ
-(the same timing as sim/tb/tb_fx_wav.vhd). Samples are presented on the
-falling LRCLK edge, like the FIFO does in hardware, and the output is read
-one clock after the next falling edge.
+v2 (step B1): FX_chain runs on one clock `clk` with two 1-cycle strobes per
+audio frame: `sample_tick`, then `half_tick` CLK_PER_HALF cycles later (in
+hardware 512 cycles apart at 49.152 MHz; in simulation shorter, which is
+equivalent because the datapath only advances on the strobes). This is the
+same timing as sim/tb/tb_fx_wav.vhd. The input sample is presented before
+sample_tick; the output is read one clock after half_tick.
 """
 import cocotb
 from cocotb.clock import Clock
@@ -31,16 +33,17 @@ class FxChain:
 
     async def start(self, **params):
         d = self.dut
-        Clock(d.CLK_18MHZ, 10, unit="ns").start()
+        Clock(d.clk, 10, unit="ns").start()
         for p in PARAMS:
             getattr(d, p).value = 0
         for name in ("od_enable", "tremolo_enable", "echo_enable"):
             getattr(d, name).value = 0
         d.data_in_left.value = 0
         d.data_in_right.value = 0
-        d.AUD_DACLRCLK.value = 0
+        d.sample_tick.value = 0
+        d.half_tick.value = 0
         self.set(**params)
-        await ClockCycles(d.CLK_18MHZ, 4)
+        await ClockCycles(d.clk, 4)
 
     def set(self, **params):
         """Write effect registers, e.g. set(effects_enable=OD, od_drive=3000)."""
@@ -53,11 +56,15 @@ class FxChain:
         """Process one input sample, return the output sample of this frame."""
         d = self.dut
         d.data_in_left.value = int(sample) & 0xFFFF
-        await ClockCycles(d.CLK_18MHZ, CLK_PER_HALF)
-        d.AUD_DACLRCLK.value = 1
-        await ClockCycles(d.CLK_18MHZ, CLK_PER_HALF)
-        d.AUD_DACLRCLK.value = 0
-        await RisingEdge(d.CLK_18MHZ)
+        await ClockCycles(d.clk, CLK_PER_HALF)
+        d.sample_tick.value = 1
+        await RisingEdge(d.clk)
+        d.sample_tick.value = 0
+        await ClockCycles(d.clk, CLK_PER_HALF - 1)
+        d.half_tick.value = 1
+        await RisingEdge(d.clk)
+        d.half_tick.value = 0
+        await RisingEdge(d.clk)
         self.frames += 1
         out = d.data_out_left.value
         if not out.is_resolvable:

@@ -8,6 +8,7 @@
 --           -> q valid 2 clocks after rdaddress
 --   read_during_write_mode_mixed_ports = OLD_DATA (also used for DONT_CARE)
 --   power_up_uninitialized = FALSE -> contents start at 0
+--   optional clocken0: enables all input and output registers (v2)
 -- Used instead of altera_mf for simulators without Intel libraries (GHDL).
 -- -----------------------------------------------------------------------------
 library ieee;
@@ -25,6 +26,7 @@ entity sim_dpram is
     rdaddress : in  std_logic_vector(ADDR_W - 1 downto 0);
     wraddress : in  std_logic_vector(ADDR_W - 1 downto 0);
     wren      : in  std_logic := '0';
+    clocken   : in  std_logic := '1';   -- clock_enable_input/output = NORMAL
     q         : out std_logic_vector(WIDTH - 1 downto 0)
   );
 end entity;
@@ -41,7 +43,7 @@ begin
     variable mem     : mem_t := (others => (others => '0'));
     variable rd_word : std_logic_vector(WIDTH - 1 downto 0) := (others => '0');
   begin
-    if rising_edge(clock) then
+    if rising_edge(clock) and clocken = '1' then
       q_reg   <= rd_word;
       rd_word := mem(to_integer(unsigned(rdaddress)));
       if wren = '1' then

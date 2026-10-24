@@ -56,7 +56,7 @@ cp "$FPGA_DIR"/ip/*.mif .
 rm -rf work && "${BIN}vlib" work >/dev/null
 compile() { "${BIN}vcom" -quiet -2008 -work work "$@" || exit 1; }
 if [ "${IP_MODELS:-0}" = 1 ]; then   # behavioural IP models instead of altera_mf
-  compile "$SIM_DIR"/models/sim_rom.vhd "$SIM_DIR"/models/sim_dpram.vhd "$SIM_DIR"/models/sim_dcfifo.vhd "$SIM_DIR"/models/ip/*.vhd
+  compile "$SIM_DIR"/models/sim_rom.vhd "$SIM_DIR"/models/sim_dpram.vhd "$SIM_DIR"/models/ip/*.vhd
 else
   compile "$FPGA_DIR"/ip/*.vhd
 fi

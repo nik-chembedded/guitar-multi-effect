@@ -35,6 +35,14 @@ jobs:
         working-directory: sim/cocotb
         run: pytest -v -k test_fx_chain
 
+      - name: I2S core + bit-exact reference vs v1 (27 presets)
+        working-directory: sim/cocotb
+        run: pytest -v -k "test_i2s or test_reference"
+
+      - name: UART control, I2C/codec and full system tests
+        working-directory: sim/cocotb
+        run: pytest -v -k "test_ctrl or test_codec or test_system"
+
       - name: WAV regression (0.25 s per preset)
         working-directory: sim/cocotb
         env:

@@ -6,6 +6,7 @@ use ieee.std_logic_1164.all;
 ENTITY fcomb_RAM2 IS
 	PORT
 	(
+		clocken		: IN STD_LOGIC  := '1';
 		clock		: IN STD_LOGIC  := '1';
 		data		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
 		rdaddress		: IN STD_LOGIC_VECTOR (10 DOWNTO 0);
@@ -20,5 +21,5 @@ BEGIN
   m : entity work.sim_dpram
     generic map (WIDTH => 16, ADDR_W => 11)
     port map (clock => clock, data => data, rdaddress => rdaddress,
-              wraddress => wraddress, wren => wren, q => q);
+              wraddress => wraddress, wren => wren, clocken => clocken, q => q);
 END sim;

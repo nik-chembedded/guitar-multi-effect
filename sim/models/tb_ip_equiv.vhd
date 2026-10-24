@@ -16,6 +16,7 @@ architecture sim of tb_ip_equiv is
   signal done : boolean := false;
   signal rden : std_logic := '1';
   signal wren : std_logic := '0';
+  signal cen  : std_logic := '1';
   signal r0_a : std_logic_vector(13 downto 0) := (others => '0');
   signal r0_qi, r0_qm : std_logic_vector(15 downto 0);
   signal r1_a : std_logic_vector(13 downto 0) := (others => '0');
@@ -77,14 +78,14 @@ begin
   r9_m : entity model.triangle_10hz port map (address => r9_a, clock => clk, q => r9_qm);
   r10_i : entity intel.triangle_5hz port map (address => r10_a, clock => clk, q => r10_qi);
   r10_m : entity model.triangle_5hz port map (address => r10_a, clock => clk, q => r10_qm);
-  m0_i : entity intel.chorus_RAM port map (clock => clk, data => m0_d, rdaddress => m0_ra, wraddress => m0_wa, wren => wren, q => m0_qi);
-  m0_m : entity model.chorus_RAM port map (clock => clk, data => m0_d, rdaddress => m0_ra, wraddress => m0_wa, wren => wren, q => m0_qm);
-  m1_i : entity intel.echo_ram port map (clock => clk, data => m1_d, rdaddress => m1_ra, wraddress => m1_wa, wren => wren, q => m1_qi);
-  m1_m : entity model.echo_ram port map (clock => clk, data => m1_d, rdaddress => m1_ra, wraddress => m1_wa, wren => wren, q => m1_qm);
-  m2_i : entity intel.fcomb_RAM2 port map (clock => clk, data => m2_d, rdaddress => m2_ra, wraddress => m2_wa, wren => wren, q => m2_qi);
-  m2_m : entity model.fcomb_RAM2 port map (clock => clk, data => m2_d, rdaddress => m2_ra, wraddress => m2_wa, wren => wren, q => m2_qm);
-  m3_i : entity intel.fcomb_RAM4 port map (clock => clk, data => m3_d, rdaddress => m3_ra, wraddress => m3_wa, wren => wren, q => m3_qi);
-  m3_m : entity model.fcomb_RAM4 port map (clock => clk, data => m3_d, rdaddress => m3_ra, wraddress => m3_wa, wren => wren, q => m3_qm);
+  m0_i : entity intel.chorus_RAM port map (clock => clk, data => m0_d, rdaddress => m0_ra, wraddress => m0_wa, wren => wren, clocken => cen, q => m0_qi);
+  m0_m : entity model.chorus_RAM port map (clock => clk, data => m0_d, rdaddress => m0_ra, wraddress => m0_wa, wren => wren, clocken => cen, q => m0_qm);
+  m1_i : entity intel.echo_ram port map (clock => clk, data => m1_d, rdaddress => m1_ra, wraddress => m1_wa, wren => wren, clocken => cen, q => m1_qi);
+  m1_m : entity model.echo_ram port map (clock => clk, data => m1_d, rdaddress => m1_ra, wraddress => m1_wa, wren => wren, clocken => cen, q => m1_qm);
+  m2_i : entity intel.fcomb_RAM2 port map (clock => clk, data => m2_d, rdaddress => m2_ra, wraddress => m2_wa, wren => wren, clocken => cen, q => m2_qi);
+  m2_m : entity model.fcomb_RAM2 port map (clock => clk, data => m2_d, rdaddress => m2_ra, wraddress => m2_wa, wren => wren, clocken => cen, q => m2_qm);
+  m3_i : entity intel.fcomb_RAM4 port map (clock => clk, data => m3_d, rdaddress => m3_ra, wraddress => m3_wa, wren => wren, clocken => cen, q => m3_qi);
+  m3_m : entity model.fcomb_RAM4 port map (clock => clk, data => m3_d, rdaddress => m3_ra, wraddress => m3_wa, wren => wren, clocken => cen, q => m3_qm);
 
 
   stim : process
@@ -115,6 +116,7 @@ begin
       wait for 1 ns;
       if rnd(8) = 0 then rden <= '0'; else rden <= '1'; end if;
       if rnd(2) = 0 then wren <= '1'; else wren <= '0'; end if;
+      if rnd(3) = 0 then cen <= '0'; else cen <= '1'; end if;
       r0_a <= std_logic_vector(to_unsigned(rnd(16384), 14));
       cmp("dist_ROM_hard", r0_qi, r0_qm, false);
       r1_a <= std_logic_vector(to_unsigned(rnd(16384), 14));

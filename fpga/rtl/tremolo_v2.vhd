@@ -5,8 +5,9 @@ use IEEE.numeric_std.all;
 entity tremolo_v2 is
 port(
 
-      AUD_DACLRCLK  : in std_logic;
-		CLK_18MHZ     : in std_logic;
+      clk  : in std_logic;   -- system clock (v2 B1)
+      en_rise  : in std_logic;   -- strobe: v1 rising edge of this effect's sample clock
+      en_fall  : in std_logic;   -- strobe: v1 falling edge
 		tremolo_enable : in std_logic;
 		
 		t_wave			: in std_logic_vector(15 downto 0);
@@ -14,7 +15,7 @@ port(
 		
       data_in       : in std_logic_vector(15 downto 0);
       
-      data_out      : out std_logic_vector(15 downto 0)
+      data_out      : out std_logic_vector(15 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
      );
 end entity;
 
@@ -161,9 +162,9 @@ begin
 	addr_12hz <= std_logic_vector(to_unsigned(counter_12hz, addr_12hz'length));
 	addr_15hz <= std_logic_vector(to_unsigned(counter_15hz, addr_15hz'length));
 
-cyclic_counter_5hz : process(AUD_DACLRCLK)
+cyclic_counter_5hz : process(clk)
                      begin
-								if rising_edge(AUD_DACLRCLK) and en_5hz = '1' then
+								if rising_edge(clk) and en_rise = '1' and en_5hz = '1' then
 									if counter_5hz >= 9599 then
 										counter_5hz <= 0;
 									else
@@ -172,9 +173,9 @@ cyclic_counter_5hz : process(AUD_DACLRCLK)
 							end if;					  
 							end process;
 							
-cyclic_counter_7hz : process(AUD_DACLRCLK)
+cyclic_counter_7hz : process(clk)
                      begin
-								if rising_edge(AUD_DACLRCLK) and en_7hz = '1' then
+								if rising_edge(clk) and en_rise = '1' and en_7hz = '1' then
 									if counter_7hz >= 6856 then
 										counter_7hz <= 0;
 									else
@@ -183,9 +184,9 @@ cyclic_counter_7hz : process(AUD_DACLRCLK)
 							end if;					  
 							end process;
 							
-cyclic_counter_10hz : process(AUD_DACLRCLK)
+cyclic_counter_10hz : process(clk)
                      begin
-								if rising_edge(AUD_DACLRCLK) and en_10hz = '1' then
+								if rising_edge(clk) and en_rise = '1' and en_10hz = '1' then
 									if counter_10hz >= 4799 then
 										counter_10hz <= 0;
 									else
@@ -194,9 +195,9 @@ cyclic_counter_10hz : process(AUD_DACLRCLK)
 							end if;					  
 							end process;
 							
-cyclic_counter_12hz : process(AUD_DACLRCLK)
+cyclic_counter_12hz : process(clk)
                      begin
-								if rising_edge(AUD_DACLRCLK) and en_12hz = '1' then
+								if rising_edge(clk) and en_rise = '1' and en_12hz = '1' then
 									if counter_12hz >= 3999 then
 										counter_12hz <= 0;
 									else
@@ -205,9 +206,9 @@ cyclic_counter_12hz : process(AUD_DACLRCLK)
 							end if;					  
 							end process;							
 
-cyclic_counter_15hz : process(AUD_DACLRCLK)
+cyclic_counter_15hz : process(clk)
                      begin
-								if rising_edge(AUD_DACLRCLK) and en_15hz = '1' then
+								if rising_edge(clk) and en_rise = '1' and en_15hz = '1' then
 									if counter_15hz >= 3199 then
 										counter_15hz <= 0;
 									else
@@ -223,16 +224,16 @@ cyclic_counter_15hz : process(AUD_DACLRCLK)
 					  -- removes the click of hard-edged waveforms (sawtooth reset) and the
 					  -- zipper steps of the 8-bit tables without reducing the depth of the
 					  -- 5..15 Hz LFOs.
-					  lfo_smooth : process(AUD_DACLRCLK)
+					  lfo_smooth : process(clk)
 					  begin
-						if rising_edge(AUD_DACLRCLK) then
+						if rising_edge(clk) and en_rise = '1' then
 							lfo_s <= lfo_s + (sine * 256 - lfo_s) / 32;
 						end if;
 					  end process;
 
-					  process(CLK_18MHZ)
+					  process(clk)
 					  begin
-					   if rising_edge(CLK_18MHZ) then
+					   if rising_edge(clk) then
 							  temp   <= data * lfo_s;     -- |data| * 65280 < 2^31
 						end if;
 					  end process;
@@ -251,9 +252,9 @@ cyclic_counter_15hz : process(AUD_DACLRCLK)
 					  
 					  out_dat <= std_logic_vector(to_signed(c, out_dat'length)); -- was unsigned
 					  
-					   process(AUD_DACLRCLK)
+					   process(clk)
 						begin
-							if rising_edge(AUD_DACLRCLK) then
+							if rising_edge(clk) and en_rise = '1' then
 								if(tremolo_enable = '1') then
 									data_out <= out_dat(23 downto 8); --- divide by 256
 								else
@@ -265,59 +266,59 @@ cyclic_counter_15hz : process(AUD_DACLRCLK)
 
 ROM_5hz :  sine_5hz port map(
                      address => addr_5hz,
-							clock   => CLK_18MHZ,
+							clock   => clk,
 							q       => temp_sine_5hz
                            );
 									
 ROM_7hz :  sine_7hz port map(
                      address => addr_7hz,
-							clock   => CLK_18MHZ,
+							clock   => clk,
 							q       => temp_sine_7hz
                            );
 									
 ROM_10hz :  my_sin_10hz port map(
                      address => addr_10hz,
-							clock   => CLK_18MHZ,
+							clock   => clk,
 							q       => temp_sine_10hz
                            );
 								
 ROM_12hz :  sine_12hz port map(
                      address => addr_12hz,
-							clock   => CLK_18MHZ,
+							clock   => clk,
 							q       => temp_sine_12hz
                            );
 									
 ROM_15hz :  sine_15hz port map(
                      address => addr_15hz,
-							clock   => CLK_18MHZ,
+							clock   => clk,
 							q       => temp_sine_15hz
                            );	
 									
 									
 ROM_T_5hz :	  triangle_5hz port map(
                      address => addr_5hz,
-							clock   => CLK_18MHZ,
+							clock   => clk,
 							q       => temp_triangle_5hz
                            );									
 									
 ROM_T_10hz :	triangle_10hz port map(
                      address => addr_10hz,
-							clock   => CLK_18MHZ,
+							clock   => clk,
 							q       => temp_triangle_10hz
                            );	
 
 ROM_SAW_10hz :	saw_10hz port map(
                      address => addr_10hz,
-							clock   => CLK_18MHZ,
+							clock   => clk,
 							q       => temp_saw_10hz
                            );									
 									
 									
 					wave_sel <= t_wave(2 downto 0);
 					
-					process(AUD_DACLRCLK)
+					process(clk)
 					begin
-					 if rising_edge(AUD_DACLRCLK) then
+					 if rising_edge(clk) and en_rise = '1' then
 						case wave_sel is
 							when "000" 	=>  en_5hz  <= '1';
 												 en_7hz  <= '0';

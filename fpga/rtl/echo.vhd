@@ -5,7 +5,9 @@ use work.fx_pkg.all;
 
 entity echo is
 port(
-		AUD_DACLRCLK  : in std_logic;
+		clk  : in std_logic;   -- system clock (v2 B1)
+		en_rise  : in std_logic;   -- strobe: v1 rising edge of this effect's sample clock
+		en_fall  : in std_logic;   -- strobe: v1 falling edge
 		echo_enable   : in std_logic;
 		
 		e_time			: in std_logic_vector(15 downto 0);
@@ -13,7 +15,7 @@ port(
 		e_repeat			: in std_logic_vector(15 downto 0);	
 			
 		data_in       : in std_logic_vector(15 downto 0);
-		data_out       : out std_logic_vector(15 downto 0)
+		data_out       : out std_logic_vector(15 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
 );
 end entity;
 
@@ -24,6 +26,7 @@ architecture rtl of echo is
 COMPONENT echo_ram IS
 	PORT
 	(
+		clocken		: IN STD_LOGIC  := '1';
 		clock		: IN STD_LOGIC  := '1';
 		data		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
 		rdaddress		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
@@ -60,9 +63,9 @@ begin
 
 		interval <= to_integer(unsigned( e_time(14 downto 0) ));
 
-COUNTER_PROC: 	process(AUD_DACLRCLK)
+COUNTER_PROC: 	process(clk)
 				begin
-				 if falling_edge(AUD_DACLRCLK) then -- falling because it is left channel '0'
+				 if rising_edge(clk) and en_fall = '1' then -- falling because it is left channel '0'
 				    write_pointer <= std_logic_vector( unsigned(write_pointer) + 1 );			 
 				 end if;				
 				end process;
@@ -70,7 +73,8 @@ COUNTER_PROC: 	process(AUD_DACLRCLK)
 				read_pointer <= std_logic_vector( unsigned(write_pointer) - interval ); -- was +
 				
 DELAY_RAM :     echo_ram port map(
-								clock	  => AUD_DACLRCLK,
+								clock	  => clk,
+								clocken	  => en_rise,
 								data 	  => data_in_feedback,
 								rdaddress => read_pointer,
 								wraddress => write_pointer,
@@ -103,9 +107,9 @@ DELAY_RAM :     echo_ram port map(
 
 						data_in_feedback <= sat16_slv( to_integer(signed(rep_result_div)) + to_integer(signed(data_in)) );
 
-	 	 process(AUD_DACLRCLK)
+	 	 process(clk)
 	    begin
-		  if rising_edge(AUD_DACLRCLK) then
+		  if rising_edge(clk) and en_rise = '1' then
 			if(echo_enable = '1') then
 				 -- dry + level * delayed (the feedback path is not added to the output twice)
 				 data_out <= sat16_slv( to_integer(signed(data_divided)) + to_integer(signed(data_in)) );

@@ -11,7 +11,9 @@ generic (TAPS : integer:=677;
 			N_GAIN : integer:= -30000
 			);
 port(
-      AUD_DACLRCLK  : in std_logic;	
+      clk  : in std_logic;   -- system clock (v2 B1)
+      en_rise  : in std_logic;   -- strobe: v1 rising edge of this effect's sample clock
+      en_fall  : in std_logic;   -- strobe: v1 falling edge
 		int_TAPS      : in integer range 0 to 4095;
 		int_GAIN_pos  : in integer range -65535 to 65535;
 		int_GAIN_neg  : in integer range -65535 to 65535;
@@ -34,6 +36,7 @@ end component;
 COMPONENT fcomb_RAM4 IS
 	PORT
 	(
+		clocken		: IN STD_LOGIC  := '1';
 		clock		: IN STD_LOGIC  := '1';
 		data		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
 		rdaddress		: IN STD_LOGIC_VECTOR (11 DOWNTO 0);
@@ -74,9 +77,9 @@ begin
 --					pos_gain <= std_logic_vector(to_signed(P_GAIN, pos_gain'length));
 --					neg_gain <= std_logic_vector(to_signed(N_GAIN, neg_gain'length));
 
-COUNTER_PROC: 	process(AUD_DACLRCLK)
+COUNTER_PROC: 	process(clk)
 				   begin
-				     if falling_edge(AUD_DACLRCLK) then -- falling because it is left channel '0'
+				     if rising_edge(clk) and en_fall = '1' then -- falling because it is left channel '0'
 				        write_pointer <= std_logic_vector( unsigned(write_pointer) + 1 );			 
 				   end if;				
 				   end process;				
@@ -87,7 +90,8 @@ COUNTER_PROC: 	process(AUD_DACLRCLK)
 					adder_out    <= sat16_slv( to_integer(signed(delayline_out)) + to_integer(signed(neg_gain_feedback)) );
 
 DELAY_LINE : fcomb_RAM4 port map(
-								clock	  => AUD_DACLRCLK,
+								clock	  => clk,
+								clocken	  => en_rise,
 								data 	  => delayline_in,
 								rdaddress => read_pointer,
 								wraddress => write_pointer,

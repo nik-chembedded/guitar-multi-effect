@@ -8,8 +8,9 @@ use IEEE.numeric_std.all;
 entity distortion is
 port(
 
-      AUD_DACLRCLK  : in std_logic;
-		CLK_18MHZ     : in std_logic;
+      clk  : in std_logic;   -- system clock (v2 B1)
+      en_rise  : in std_logic;   -- strobe: v1 rising edge of this effect's sample clock
+      en_fall  : in std_logic;   -- strobe: v1 falling edge
 		dist_enable     : in std_logic;
 		
 		--drive     : in std_logic_vector(15 downto 0); 
@@ -18,7 +19,7 @@ port(
 		
       data_in       : in std_logic_vector(15 downto 0);
       
-      data_out      : out std_logic_vector(15 downto 0)
+      data_out      : out std_logic_vector(15 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
      );
 end entity;
 
@@ -106,9 +107,9 @@ begin
 			-- The transfer curves only cover |x| = 0..16383 (14-bit address).
 			-- Saturate the address instead of letting |x| >= 16384 wrap around,
 			-- and remember the sign so the curve is applied symmetrically.
-			process(AUD_DACLRCLK)
+			process(clk)
 			begin
-				if rising_edge(AUD_DACLRCLK) then
+				if rising_edge(clk) and en_rise = '1' then
 					if abs(temp_int) > 16383 then
 						data_to_addr <= 16383;
 					else
@@ -123,26 +124,26 @@ begin
 
 --ROM   : dist_ROM port map(
 --							address => d_addr,
---							clock   => CLK_18MHZ,
+--							clock   => clk,
 --							q       => data_temp
 --								);
 								
 ROM_soft : dist_ROM_soft port map(
 							address => d_addr,
 							rden    => soft_en,
-							clock   => CLK_18MHZ,
+							clock   => clk,
 							q       => soft_out_temp
 								);
 ROM_med  : dist_ROM_medium port map(
 							address => d_addr,
 							rden    => med_en,
-							clock   => CLK_18MHZ,
+							clock   => clk,
 							q       => med_out_temp
 								);
 ROM_hard : dist_ROM_hard port map(
 							address => d_addr,
 							rden    => hard_en,
-							clock   => CLK_18MHZ,
+							clock   => clk,
 							q       => hard_out_temp
 								);
 								
@@ -176,9 +177,9 @@ ROM_hard : dist_ROM_hard port map(
 			
 --										temp_int_sign <= to_integer(unsigned(data_temp));
 --										
---determine_sign_proc :			process(AUD_DACLRCLK)
+--determine_sign_proc :			process(clk)
 --										begin
---											if rising_edge(AUD_DACLRCLK) then
+--											if rising_edge(clk) and en_rise = '1' then
 --												if temp_int >= 0 then
 --												  int_sign <= temp_int_sign;	
 --												else
@@ -203,9 +204,9 @@ ROM_hard : dist_ROM_hard port map(
 			
 								
 
-	process(AUD_DACLRCLK)
+	process(clk)
 	 begin
-		if rising_edge(AUD_DACLRCLK) then
+		if rising_edge(clk) and en_rise = '1' then
 			if(dist_enable = '1') then
 				 data_out <= out_dat(23 downto 8);
 			else
