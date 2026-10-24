@@ -73,3 +73,10 @@ sim/audio/*.ogg
 sim/models/work_equiv/
 sim/mdl/
 sim/out_altera/
+
+# cocotb
+sim/cocotb/sim_build/
+sim/cocotb/results.xml
+__pycache__/
+.pytest_cache/
+sim/out/

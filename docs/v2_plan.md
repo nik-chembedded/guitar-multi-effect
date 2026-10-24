@@ -21,7 +21,11 @@ Starter 10.5b is kept for the Intel-IP-based checks.
 | **E** | Streaming chain with runtime routing | Any effect order selectable by register, tested |
 | **F** (phase 3) | HPS / Linux control | Web UI and MIDI control the effects through the AXI bridge |
 
-### A: Verification infrastructure
+### A: Verification infrastructure  (status: done)
+
+Done: GHDL 5 + cocotb 2.1 in WSL2 and CI, verified IP models (`sim/models`),
+7 effect tests + WAV regression in `sim/cocotb` (all pass, about 30 s), GitHub Actions workflow.
+
 
 * **Toolchain:** GHDL + cocotb in WSL2 Ubuntu (locally) and on GitHub Actions
   (Ubuntu), so both use the same Linux environment.

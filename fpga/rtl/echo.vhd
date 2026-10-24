@@ -43,12 +43,12 @@ signal data_divided : std_logic_vector(15 downto 0);
 signal data_in_feedback : std_logic_vector(15 downto 0); 
 
 signal result : std_logic_vector(31 downto 0); 
-signal  a : integer;
-signal  b : integer;
-signal  c : integer;
+signal  a : integer := 0;
+signal  b : integer := 0;
+signal  c : integer := 0;
 
 signal echo_rep   : std_logic_vector(7 downto 0);
-signal d,e,f      : integer;
+signal d,e,f      : integer := 0;
 signal rep_result : std_logic_vector(23 downto 0); 
 signal rep_result_div : std_logic_vector(15 downto 0); 
 

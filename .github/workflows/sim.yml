@@ -1,0 +1,50 @@
+name: simulation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  cocotb-ghdl:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GHDL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ghdl make g++
+          ghdl --version | head -1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cocotb
+        run: pip install "cocotb~=2.0" numpy pytest
+
+      - name: Check generated IP models are up to date
+        run: |
+          python sim/models/gen_ip_models.py
+          git diff --exit-code sim/models/ip
+
+      - name: Effect tests (cocotb + GHDL)
+        working-directory: sim/cocotb
+        run: pytest -v -k test_fx_chain
+
+      - name: WAV regression (0.25 s per preset)
+        working-directory: sim/cocotb
+        env:
+          GME_WAV_SECONDS: "0.25"
+        run: pytest -v -k test_wav
+
+      - name: Upload processed audio
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wav-outputs
+          path: sim/out/cocotb_wav/*.wav
+          if-no-files-found: ignore

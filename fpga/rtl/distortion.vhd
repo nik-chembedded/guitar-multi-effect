@@ -76,11 +76,11 @@ END COMPONENT;
 	
 	signal temp_depth   : std_logic_vector(7 downto 0);
    signal invert_depth : std_logic_vector(7 downto 0);
-   signal int_depth    : integer;
+   signal int_depth    : integer := 0;
 
-	signal a : integer;
-	signal b : integer;
-	signal c : integer;
+	signal a : integer := 0;
+	signal b : integer := 0;
+	signal c : integer := 0;
 	
 	signal out_dat : std_logic_vector(23 downto 0); 
 	
@@ -93,8 +93,8 @@ END COMPONENT;
 	signal temp_type    : std_logic_vector(1 downto 0);
 	
 	signal temp_data_sign : std_logic_vector(15 downto 0); 
-	signal temp_int_sign  : integer;
-	signal int_sign      :  integer;
+	signal temp_int_sign  : integer := 0;
+	signal int_sign      :  integer := 0;
 	
 begin
 

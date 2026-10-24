@@ -47,11 +47,11 @@ end component;
 
 	signal temp_mix   : std_logic_vector(7 downto 0);
    signal invert_mix : std_logic_vector(7 downto 0);
-   signal int_mix    : integer;
+   signal int_mix    : integer := 0;
 
-	signal a : integer;
-	signal b : integer;
-	signal c : integer;
+	signal a : integer := 0;
+	signal b : integer := 0;
+	signal c : integer := 0;
 	
 	signal out_dat : std_logic_vector(23 downto 0); 
 	

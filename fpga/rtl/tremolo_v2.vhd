@@ -134,15 +134,15 @@ signal lfo_s     : integer range 0 to 65535 := 0;
 
 signal temp_depth   : std_logic_vector(7 downto 0);
 signal invert_depth : std_logic_vector(7 downto 0);
-signal int_depth   : integer;
+signal int_depth   : integer := 0;
 
 signal out_dat : std_logic_vector(23 downto 0); 
 
 signal temp  : integer := 0;
 signal sine  : integer range 0 to 255;
-signal data  : integer;
+signal data  : integer := 0;
 
-signal a,b,c : integer;
+signal a,b,c : integer := 0;
 
 signal wave_sel : std_logic_vector(2 downto 0);
 signal en_5hz  : std_logic;

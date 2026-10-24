@@ -25,7 +25,7 @@ architecture rtl of overdrive is
 
   signal temp_data    : integer range -32768 to 32767;
   signal new_out : integer range -65535 to 65535 := 0;
-  signal od_out  : integer;
+  signal od_out  : integer := 0;
 
   signal t_drive : integer range 0 to 65535;
   signal t_gain  : integer range 0 to 65535;

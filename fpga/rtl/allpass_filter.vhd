@@ -56,18 +56,18 @@ signal delayline_out : std_logic_vector(15 DOWNTO 0);
 --signal pos_gain : std_logic_vector(15 DOWNTO 0);
 --signal neg_gain : std_logic_vector(15 DOWNTO 0);
 
-signal pos_gain : integer;
-signal neg_gain : integer;
+signal pos_gain : integer := 0;
+signal neg_gain : integer := 0;
 
 
 signal adder_out : std_logic_vector(15 DOWNTO 0);
 
 signal result : std_logic_vector(31 downto 0); 
 signal result_neg : std_logic_vector(31 downto 0); 
-signal  a : integer;
-signal  b : integer;
-signal  c : integer;
-signal  d : integer;
+signal  a : integer := 0;
+signal  b : integer := 0;
+signal  c : integer := 0;
+signal  d : integer := 0;
 
 begin
 

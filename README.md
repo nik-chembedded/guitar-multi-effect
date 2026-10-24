@@ -98,6 +98,9 @@ effect. See [sim/README.md](sim/README.md).
 MODELSIM_BIN=/path/to/modelsim_ase/win32aloem ./sim/run_sim.sh
 ```
 
+The same tests also run as **cocotb + GHDL** tests in Python (about 30 s, also in
+GitHub Actions on every push). See [sim/cocotb/README.md](sim/cocotb/README.md).
+
 A second, frame-level testbench streams **real guitar recordings** through the
 effect chain and writes the processed audio as WAV files:
 
