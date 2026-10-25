@@ -1,6 +1,8 @@
 # v2 step C: fixed-point library, 24-bit effects, parameter smoothing
 
-**Status:** done and verified in simulation; Quartus build meets timing. Board test pending.
+**Status:** done: verified in simulation, timing met, and **tested on the board** (2026-10-25,
+JTAG `.sof`: VERSION 0x0202, presets switch without clicks, level/mix changes glide,
+all effects, meter and codec writes OK).
 
 Goal: the whole effect chain processes **24-bit** samples (the codec's full
 resolution, was 16), user parameters change **without zipper noise**, and
