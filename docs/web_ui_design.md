@@ -1,11 +1,15 @@
 # Web UI for the guitar multi-effect (design, for review)
 
 Branch `web-ui` (worktree `../guitar-multi-effect-webui`), merged into `main` after
-step D. Status: design only, nothing implemented.
+step D. Status: design approved 2026-10-25 (with the two decisions below); implementation W1–W4.
+
+Decisions: (1) **step E (effect reordering) comes next** – the UI and API treat the
+chain order as data from the start; (2) **PC browser only** for now – desktop layout
+first, tested in the PC browser; phone layout is a later nice-to-have.
 
 ## Goals
 
-* Control everything from a phone or PC browser on the board's network: effects,
+* Control everything from a PC browser on the board's network: effects,
   presets, cabinets, EQ, dynamics, codec, levels.
 * The Python CLI (`gme_hps.py`) stays and **always has the full capabilities** of the
   current FPGA image: it is the fallback and the test tool.
@@ -50,7 +54,8 @@ step D. Status: design only, nothing implemented.
 | GET | `/api/state` | all parameter values (display units) + status |
 | POST | `/api/params` | `{id: value, ...}` set one or more parameters |
 | GET | `/api/levels` (SSE: `/api/levels/stream`) | input/output level, gain reduction, ~15 Hz |
-| GET / POST / DELETE | `/api/presets[/name]` | factory presets (read-only) + user presets (saved JSON) |
+| GET / POST / DELETE | `/api/presets[/name]` | factory presets (read-only) + user presets (saved JSON, incl. chain order) |
+| GET / POST | `/api/chain` | effect order: `{order: [ids], editable: bool}`; `editable` only when the FPGA VERSION supports routing (step E); until then POST returns 409 |
 | POST | `/api/cab` | `{slot: n}` load cabinet n (inactive bank, switch) |
 | POST | `/api/codec` | WM8731 register write (volumes, input select) |
 | GET / POST | `/api/raw/<reg>` | raw register access (expert, parity with the CLI) |
@@ -58,20 +63,24 @@ step D. Status: design only, nothing implemented.
 Errors are JSON `{error: text}` with HTTP 4xx. Writes are serialised by one lock
 (the hardware has one register port).
 
-## User interface (phone first, one page, vanilla HTML/CSS/JS)
+## User interface (PC browser first, one page, vanilla HTML/CSS/JS)
 
 * **Top bar:** connection state, FPGA version, codec / PLL status, input and output
   meters, mute button.
-* **Signal chain** in the order of the hardware: Overdrive → Distortion → Cabinet →
-  Chorus/Flanger/Vibrato → Tremolo → Echo → Reverb (+ EQ / dynamics once in the
-  chain). Each effect is a card with an on/off switch and its controls (sliders with
-  display units; selects for types, waveforms, cabinets).
+* **Signal chain** as a row of effect cards in the order reported by `/api/chain`
+  (today the fixed hardware order: Overdrive → Distortion → Cabinet →
+  Chorus/Flanger/Vibrato → Tremolo → Echo → Reverb, + EQ / dynamics once in the chain).
+  Each card: on/off switch and its controls (sliders with display units; selects for
+  types, waveforms, cabinets). **Step E:** when the chain is editable, cards can be
+  dragged to reorder; the order is part of presets. The card layout and the API do not
+  assume a fixed order, so step E needs no UI rework.
 * **Preset bar:** factory and user presets, save as / overwrite / delete.
 * **Cabinet card:** the 10 slots by name, load progress, active bank.
 * **Settings:** codec headphone / line volume, input gain; network info.
 * **Expert page:** all registers raw (read / write) for debugging.
 * Moving a slider sends at most ~20 updates/s (throttled); the FPGA smooths the
   values anyway, so there is no zipper noise.
+* Desktop layout (≥ 1280 px wide) first; it must stay usable down to ~1000 px.
 
 ## Deployment on the board
 
@@ -85,9 +94,8 @@ Errors are JSON `{error: text}` with HTTP 4xx. Writes are serialised by one lock
   `/etc/rc.local`), running `python gme_web.py --port 8080` as root (needed for
   `/dev/mem`). It starts only if VERSION reads `0x02xx`, so a different FPGA image is
   never touched.
-* Open `http://192.168.1.123:8080` on the PC; for the phone, the board must be on
-  the same network as the phone (e.g. board Ethernet on the home router), or later a
-  Wi-Fi dongle / USB gadget.
+* Open `http://192.168.1.123:8080` in the PC browser (PC and board on the direct
+  Ethernet link 192.168.1.x).
 
 ## Testing
 
@@ -96,7 +104,7 @@ Errors are JSON `{error: text}` with HTTP 4xx. Writes are serialised by one lock
 | Library | pytest on the PC with the `Mock` backend: every parameter round-trips (display unit → register → display unit), presets, cabinet loading writes the right register sequence, parameter table covers the register map |
 | CLI parity | every parameter in the table can be set and read by the CLI; old command lines keep working |
 | API | pytest starting the server on a free port with `Mock`, exercising every endpoint |
-| UI | the server with `Mock` on the PC, page checked in the browser (layout on phone width and desktop, controls change the mock registers, meters move), screenshots for review |
+| UI | the server with `Mock` on the PC, page checked in the PC browser (desktop layout, controls change the mock registers, meters move, chain order shown, reorder disabled until step E), screenshots for review |
 | Python 2.7 | the library and server are run with Python 2.7 on the board (no 2.7 on the PC); the syntax is kept 2.7-compatible and checked by a test that compiles the files with `python2` when available |
 | Board | `tools/board_smoke.sh`: over ssh, `gme_hps.py status`, `curl` every read endpoint, set and read back one parameter of each effect, check VERSION |
 
@@ -109,9 +117,7 @@ Errors are JSON `{error: text}` with HTTP 4xx. Writes are serialised by one lock
 5. **Merge into `main`** after step D; the parameters added by D3–D6 go into
    `params.json` as their registers are fixed on `main`.
 
-## Open points (your choice)
+## Settings
 
-* Port: 8080 (default) or 80.
-* Access protection: none (home network) or a simple shared key in a cookie.
-* Look: dark "pedalboard" style or plain.
-* User presets on the board's SD card (`/home/root/gme/presets/`).
+Decided: port 8080, no access key, dark "pedalboard" look, user presets on the SD card
+(`/home/root/gme/presets/`).
