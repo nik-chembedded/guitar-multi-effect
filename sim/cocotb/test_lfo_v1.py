@@ -1,6 +1,6 @@
 """
 test_lfo_v1.py - the generated LFO (v2 step D1) against the 8 v1 LFO tables
-(sim/models/legacy/mif, the former ROM contents), without simulation.
+(v1_lfo_tables/, the former ROM contents), without simulation.
 
 For every legacy waveform code 0..7: the v1 table holds one period of N samples
 (8-bit, 0..254). The new LFO (lfo_model, bit-exact to nco_lfo.vhd) must have
@@ -16,7 +16,7 @@ import numpy as np
 import golden
 import lfo_model as m
 
-MIF = Path(__file__).resolve().parents[1] / "models" / "legacy" / "mif"
+MIF = Path(__file__).resolve().parent / "v1_lfo_tables"
 TABLES = ["sine_5hz_8bit", "sine_7hz_8bit", "my_sin", "sine_12hz_8bit", "sine_15hz_8bit",
           "triangle_5hz_8bit", "triangle_10hz_8bit", "sawtooth_10hz_8bit"]
 DEPTH = {"sine_5hz_8bit": 9600, "sine_7hz_8bit": 6857, "my_sin": 4800, "sine_12hz_8bit": 4000,

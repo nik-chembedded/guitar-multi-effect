@@ -25,20 +25,17 @@ BUILD = Path(os.environ.get("GME_BUILD", HERE / "sim_build"))
 IP_MODELS = [MODELS / "sim_rom.vhd", MODELS / "sim_dpram.vhd", MODELS / "fx_dpram.vhd",
              *sorted((MODELS / "ip").glob("*.vhd"))]
 FX_RTL = [RTL / f for f in ("fx_pkg.vhd", "fx_xfade.vhd", "lfo_sine_pkg.vhd", "nco_lfo.vhd",
-                            "overdrive.vhd", "distortion.vhd", "chorus.vhd",
+                            "overdrive.vhd", "distortion.vhd", "mod_delay.vhd",
                             "tremolo_v2.vhd", "echo.vhd", "comb_filter.vhd",
                             "allpass_filter.vhd", "reverbe.vhd", "FX_chain.vhd")]
 GHDL_ARGS = ["--std=08", "-frelaxed"]
-# v1 ROM-table tremolo (simulation only), for the v1 reference tests
-LEGACY = MODELS / "legacy"
-LEGACY_TREM = [*sorted((LEGACY / "ip").glob("*.vhd")), LEGACY / "tremolo_legacy.vhd"]
 
 
 def run(toplevel, test_module, sources, testcase=None, parameters=None, extra_env=None, tag=""):
     build_dir = BUILD / (toplevel + tag)
     build_dir.mkdir(parents=True, exist_ok=True)
-    for mif in [*(ROOT / "fpga" / "ip").glob("*.mif"), *LEGACY.glob("mif/*.mif")]:
-        shutil.copy(mif, build_dir)                       # ROMs load .mif from the cwd
+    for mif in (ROOT / "fpga" / "ip").glob("*.mif"):      # ROMs load .mif from the cwd
+        shutil.copy(mif, build_dir)
     runner = get_runner(os.environ.get("SIM", "ghdl"))
     runner.build(sources=sources, hdl_toplevel=toplevel, build_args=GHDL_ARGS,
                  build_dir=build_dir, always=True, parameters=parameters or {})
@@ -108,13 +105,6 @@ def test_xfade():
         extra_env={"GME_DW": "24"}, tag="_xfade")
 
 
-def test_ref24():
-    """24-bit chain: bit-exact 24-bit golden models + the 27 v1 presets within 16-bit rounding."""
-    run("fx_chain", "test_ref24", IP_MODELS + FX_RTL + LEGACY_TREM,
-        parameters={"DW": 24, "ECHO_AW": 16, "LEGACY_TREM": True},
-        extra_env={"GME_DW": "24"}, tag="_ref24")
-
-
 def test_i2s():
     """I2S master core (v2 step B2) against a WM8731 slave model."""
     run("i2s_core", "test_i2s", [RTL / "i2s_core.vhd"])
@@ -145,14 +135,16 @@ def test_system():
         parameters={"INIT_WAIT_CLKS": 2000})
 
 
-def test_reference():
-    """Bit-exact against the recorded v1 outputs (GME_REF_MODE=record to re-record).
-    DW = 16, the v1 echo line size (64 k words) and the v1 ROM-table tremolo."""
-    run("fx_chain", "test_ref", IP_MODELS + FX_RTL + LEGACY_TREM,
-        parameters={"ECHO_AW": 16, "LEGACY_TREM": True}, tag="_v1")
+def test_refv2():
+    """24-bit chain bit-exact to the v2 references (GME_REF_MODE=record to re-record),
+    plus overdrive / distortion bit-exact to golden.py with full 24-bit input."""
+    run("fx_chain", "test_refv2", IP_MODELS + FX_RTL, parameters={"DW": 24},
+        extra_env={"GME_DW": "24", "GME_REF_MODE": os.environ.get("GME_REF_MODE", "check")},
+        tag="_refv2")
 
 
-WAV_PRESETS = ["dry", "overdrive", "dist_medium", "tremolo", "tremolo_saw", "chorus", "echo", "reverb"]
+WAV_PRESETS = ["dry", "overdrive", "dist_medium", "tremolo", "tremolo_saw", "chorus", "flanger", "vibrato",
+               "echo", "reverb"]
 
 
 @pytest.mark.parametrize("preset", WAV_PRESETS)

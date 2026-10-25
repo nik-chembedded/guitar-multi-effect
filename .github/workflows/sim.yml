@@ -37,11 +37,11 @@ jobs:
 
       - name: Fixed-point library, smoothing, click-free on/off, generated LFO, tremolo
         working-directory: sim/cocotb
-        run: pytest -v -k "test_fxlib or test_smooth or test_xfade or test_lfo or test_lfo_vs_v1 or test_trem"
+        run: pytest -v -k "test_fxlib or test_smooth or test_xfade or test_lfo or test_lfo_vs_v1 or test_trem or test_moddelay"
 
-      - name: I2S core + bit-exact reference vs v1 (27 presets, 16-bit and 24-bit chain)
+      - name: I2S core + v2 reference (31 presets, 24-bit chain, bit-exact)
         working-directory: sim/cocotb
-        run: pytest -v -k "test_i2s or test_reference or test_ref24"
+        run: pytest -v -k "test_i2s or test_refv2"
 
       - name: HPS control slave, I2C/codec and full system tests
         working-directory: sim/cocotb

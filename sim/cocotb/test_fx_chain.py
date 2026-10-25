@@ -113,28 +113,34 @@ async def test_tremolo(dut):
 
 @cocotb.test()
 async def test_chorus(dut):
-    """Delay sweeps 2..depth+2; lowering the depth mid-sweep is safe."""
+    """Modulated delay (step D2): the delay sweeps base +- depth with the LFO and
+    follows a depth change; impulses read with a fractional delay."""
     fx = FxChain(dut)
-    await fx.start(effects_enable=CHORUS, chorus_level=32768, chorus_depth=200, chorus_rate=0)
-    x = [16000 if n % 250 == 100 else 0 for n in range(4800)]
+    # triangle LFO 10 Hz (4800 frames), delay 100 +- 60 samples, 50 % wet
+    await fx.start(effects_enable=CHORUS, chorus_level=128, chorus_depth=60, chorus_rate=1000,
+                   mod_base=100, mod_shape=1)
+    x = [16000 if n % 250 == 30 else 0 for n in range(9600)]
     delays = []
 
     def on_frame(n):
-        if n == 2000:
-            fx.set(chorus_depth=50)
+        if n == 5000:
+            fx.set(chorus_depth=10)                  # sweep 90 .. 110 from here
     y = [s or 0 for s in await fx.run(x, on_frame=on_frame)]
     for k in range(len(x) // 250):
-        p0 = next((n for n in range(k * 250 + 100, k * 250 + 140) if y[n] > 8000), None)
+        p0 = next((n for n in range(k * 250 + 30, k * 250 + 40) if y[n] > 6000), None)
         if p0 is None or p0 + 240 >= len(y):
             continue
-        pk = next((n for n in range(p0 + 1, p0 + 240) if abs(y[n]) > 3000), None)
-        assert pk is not None, "wet copy of impulse %d not found" % k
-        delays.append((k * 250 + 100, pk - p0))
-    before = [d for f, d in delays if f < 2000]
-    after = [d for f, d in delays if f >= 2800]
-    dut._log.info("chorus delay %d..%d, after depth change max %d", min(before), max(before), max(after))
-    assert max(before) - min(before) > 100, "delay does not sweep"
-    assert max(after) <= 52 + 6, "delay not limited after lowering the depth"
+        seg = [abs(v) for v in y[p0 + 20:p0 + 200]]
+        pk = max(range(len(seg)), key=seg.__getitem__)
+        assert seg[pk] > 1500, "wet copy of impulse %d not found" % k
+        delays.append((k * 250 + 30, pk + 20))
+    before = [d for f, d in delays if f < 5000]
+    after = [d for f, d in delays if f >= 5600]
+    dut._log.info("mod delay %d..%d (expected 40..160), after depth 10: %d..%d (90..110)",
+                  min(before), max(before), min(after), max(after))
+    assert min(before) <= 50 and max(before) >= 150, "delay does not sweep base +- depth"
+    assert 38 <= min(before) and max(before) <= 162, "delay outside base +- depth"
+    assert 88 <= min(after) and max(after) <= 112, "depth change not followed"
     assert_no_wrap("chorus", y)
 
 
@@ -156,6 +162,30 @@ async def test_echo(dut):
     assert 1200 <= delay <= 1208, "echo delay %d" % delay
     assert abs(y[p1] - 8000) <= 400, "echo 1 = %d" % y[p1]
     assert abs(y[p0 + 2 * delay] - 4000) <= 400, "echo 2 = %d" % y[p0 + 2 * delay]
+
+
+@cocotb.test()
+async def test_echo_frac(dut):
+    """Fractional echo time (step D2): with echo_frac = 0 the echo is the input T
+    samples back; with echo_frac = f it is exactly the linear interpolation
+    between the samples T and T + 1 back."""
+    fx = FxChain(dut)
+    await fx.start(effects_enable=ECHO, echo_time=300, echo_level=40000, echo_repeat=0, echo_frac=0)
+    rnd = random.Random(9)
+    m = 12000 << fx.shift                              # full-width samples (16 or 24 bit)
+    x = [rnd.randint(-m, m) for _ in range(1500)]
+    y = [s or 0 for s in await fx.run(x, raw=True)]
+    # output = dry (chain latency d) + level * echo (d + l): find both
+    d, lat = next((d, l) for d in range(0, 8) for l in range(290, 320)
+                  if all(y[n] == x[n - d] + ((40000 * x[n - d - l]) >> 16) for n in range(700, 1500)))
+    fx.set(echo_frac=128)
+    x2 = [rnd.randint(-m, m) for _ in range(1500)]
+    y2 = [s or 0 for s in await fx.run(x2, raw=True)]
+    for n in range(700, 1500):
+        a, b = x2[n - d - lat], x2[n - d - lat - 1]
+        assert y2[n] == x2[n - d] + ((40000 * (a + (((b - a) * 128) >> 8))) >> 16), "echo_frac frame %d" % n
+    dut._log.info("echo: delay %d frames for echo_time 300 (chain latency %d), half-sample interpolation exact",
+                  lat, d)
 
 
 @cocotb.test()

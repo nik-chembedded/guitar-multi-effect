@@ -25,7 +25,8 @@ OD, TREM, ECHO, DIST, CHORUS, REVERB = 1, 2, 4, 8, 16, 32
 
 PARAMS = ("effects_enable", "od_drive", "od_gain", "trem_depth", "trem_wave",
           "echo_time", "echo_level", "echo_repeat", "chorus_rate", "chorus_level",
-          "chorus_depth", "dist_mix", "dist_type", "reverb_type", "reverb_mix", "trem_rate")
+          "chorus_depth", "dist_mix", "dist_type", "reverb_type", "reverb_mix", "trem_rate",
+          "mod_base", "mod_fb", "mod_shape", "echo_frac")
 
 
 def to_s16(v):
@@ -62,7 +63,7 @@ class FxChain:
         for name, value in params.items():
             if name not in PARAMS:
                 raise ValueError("unknown parameter " + name)
-            getattr(self.dut, name).value = int(value) & 0xFFFF
+            getattr(self.dut, name).value = int(value) & (0xFF if name == "echo_frac" else 0xFFFF)
 
     async def frame(self, sample, raw=False):
         """Process one input sample, return the output sample of this frame."""

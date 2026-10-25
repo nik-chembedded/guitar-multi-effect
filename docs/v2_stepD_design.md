@@ -1,6 +1,6 @@
 # v2 step D: better DSP blocks
 
-**Status:** D1 implemented and verified in simulation (board test pending); D2 design for review; D3 cabinet tools done.
+**Status:** D1 and D2 implemented and verified in simulation; D3–D5 blocks in development; board test at the end of step D.
 
 ## Overview
 
@@ -88,7 +88,7 @@ VERSION becomes `0x0203`. `gme_hps.py` gets `set trem_shape=… trem_rate=4.5`.
 | `test_lfo` (new, unit) | `nco_lfo` bit-exact to a Python model for all shapes and 10 rates; frequency within one phase step (11 µHz); measured 20 Hz period 2400 samples; phase continuous across rate changes; sine against `sin()` within 10⁻⁴ |
 | `test_fx_chain` tremolo | envelope at the set rate (5 Hz sine as today) and new free-mode rates; saw / square: largest step < 5 % (no click) |
 | tremolo golden | the whole tremolo (LFO + smoothing + mix) bit-exact to a Python model at 16 and 24 bit |
-| v1 reference | runs with the **v1 ROM-table tremolo kept as a simulation-only model** (`sim/models/legacy`, `FX_chain` generic `LEGACY_TREM`), so all 27 presets stay **bit-exact** (16 bit) / within tolerance (24 bit). A gain-curve comparison of the recordings did not work: 4 200 usable frames per preset are shorter than the slow LFO periods (up to 9 600), and the different tremolo output also changes the echo / reverb delay-line contents seen by later presets. |
+| v1 reference (until D2) | ran with the **v1 ROM-table tremolo kept as a simulation-only model** (`sim/models/legacy`, `FX_chain` generic `LEGACY_TREM`), so all 27 presets stay **bit-exact** (16 bit) / within tolerance (24 bit). A gain-curve comparison of the recordings did not work: 4 200 usable frames per preset are shorter than the slow LFO periods (up to 9 600), and the different tremolo output also changes the echo / reverb delay-line contents seen by later presets. |
 | `test_lfo_v1` (new, no simulation) | each of the 8 v1 tables against the new LFO over a full period: same period (±1 sample), shape within 2 % after phase alignment. Result: all within **0.22 %**, i.e. the v1 tables' own 8-bit steps |
 | `test_wav` | tremolo presets on real guitar, no clicks |
 | Quartus | timing; memory freed (expect about 305 → ~235 M10K) |
@@ -107,7 +107,7 @@ VERSION becomes `0x0203`. `gme_hps.py` gets `set trem_shape=… trem_rate=4.5`.
 The 8 LFO ROM wrappers and their `.mif` tables (`sine_*hz`, `my_sin_10hz`,
 `triangle_*hz`, `saw_10hz`, `*_8bit.mif`), and their simulation models.
 
-## D2: interpolated delay lines (design for review)
+## D2: interpolated delay lines
 
 ### Today
 
@@ -176,6 +176,26 @@ lfo: nco_lfo (D1), bipolar
 
 Cost: ~300–500 ALMs, 3–4 DSP blocks; memory unchanged (the 2048-word line
 replaces the 1024-word chorus RAM; +1 M10K at 24 bit).
+
+### D2 results (2026-10-25)
+
+* `mod_delay` (chorus / flanger / vibrato): bit-exact to `moddelay_model.py` at 16
+  and 24 bit (6000 samples, 8 settings incl. feedback ±0.99 and clamping); a static
+  delay of N samples is exactly N samples (independent check). In the chain the
+  delay sweeps 41…158 for a set 40…160 and follows a depth change (92…109).
+* Echo: fractional read pipeline built so that `echo_frac = 0` is **bit-exact to
+  v1** (confirmed against the 27 v1 recordings, incl. the `echo_time = 0` case);
+  `test_echo_frac`: half-sample interpolation exact at 16 and 24 bit.
+* Registers: 0x16–0x2F became an extension bank (one bus into the core); MOD_BASE,
+  MOD_FB, MOD_SHAPE added; mix/depth/rate/base/feedback and the echo time (with its
+  fraction) are smoothed. VERSION 0x0204.
+* **Reference switch:** after that last v1 check, the v1 recordings, the v1
+  reference tests and the simulation-only v1 copies of tremolo and chorus were
+  removed. `test_refv2` (31 presets on the 24-bit chain, recorded from the verified
+  D2 chain) is the regression anchor from now on; a step that changes an effect on
+  purpose re-records only the affected presets after verifying that effect.
+* Found on the way: a port named `frac` clashed with the generic `FRAC` (VHDL is
+  case-insensitive).
 
 ## D3 (preview): cabinet choices
 

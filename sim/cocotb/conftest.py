@@ -2,7 +2,7 @@
 conftest.py - start the slowest suites first, so that parallel runs
 (pytest -n auto, see sim/run_all.sh) finish as early as possible.
 """
-SLOW_FIRST = ["test_ref24", "test_reference", "test_wav", "test_system", "test_fx_chain_24",
+SLOW_FIRST = ["test_refv2", "test_wav", "test_system", "test_fx_chain_24",
               "test_fx_chain", "test_codec", "test_xfade", "test_trem", "test_moddelay"]
 
 

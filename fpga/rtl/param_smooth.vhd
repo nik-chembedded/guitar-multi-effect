@@ -23,7 +23,8 @@ entity param_smooth is
     rst    : in  std_logic;
     tick   : in  std_logic;
     target : in  std_logic_vector(WIDTH - 1 downto 0);
-    value  : out std_logic_vector(WIDTH - 1 downto 0)
+    value  : out std_logic_vector(WIDTH - 1 downto 0);
+    value_frac : out std_logic_vector(FRAC - 1 downto 0)   -- fraction of value (D2: echo time)
   );
 end entity;
 
@@ -57,5 +58,6 @@ begin
   end process;
 
   value <= std_logic_vector(y(L - 1 downto FRAC));
+  value_frac <= std_logic_vector(y(FRAC - 1 downto 0));
 
 end architecture;

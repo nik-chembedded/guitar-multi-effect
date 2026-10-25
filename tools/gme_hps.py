@@ -10,6 +10,8 @@ The FPGA registers sit behind the HPS lightweight bridge: register n is the
     python gme_hps.py write 0x00 0x0001          (register, value)
     python gme_hps.py set   od_drive=3000 od_gain=4 effects=OD
     python gme_hps.py set   effects=TREM trem_shape=square trem_hz=6.5 trem_depth=200
+    python gme_hps.py preset flanger             (also: chorus, vibrato, ambient, ...)
+    python gme_hps.py set   mod_fb=-26000        (flanger feedback, signed)
     python gme_hps.py preset crunch
     python gme_hps.py codec 0x00 0x080           (codec register, 9-bit value: mute line in)
     python gme_hps.py dump
@@ -36,6 +38,9 @@ REGS = {
     "chorus_rate": 0x0C, "reverb_mix": 0x0D, "reverb_type": 0x0E,
     "version": 0x10, "status": 0x11, "level_in": 0x12, "level_out": 0x13, "control": 0x14,
     "codec": 0x15, "trem_rate": 0x16,
+    # step D2: modulated delay (chorus / flanger / vibrato). chorus_level = mix 0..255,
+    # chorus_depth = depth in samples, chorus_rate = LFO rate in 0.01 Hz
+    "mod_base": 0x18, "mod_fb": 0x19, "mod_shape": 0x1A,
 }
 EFFECT_REGS = [k for k in sorted(REGS, key=REGS.get) if REGS[k] <= 0x0E]   # Python 2: dicts unordered
 EFFECT_BITS = {"OD": 1, "TREM": 2, "ECHO": 4, "DIST": 8, "CHORUS": 16, "REVERB": 32}
@@ -50,8 +55,14 @@ PRESETS = {
                    dist_type=2, dist_mix=220, echo_time=18000, echo_level=20000, echo_repeat=90,
                    reverb_type=2, reverb_mix=80),
     "ambient": dict(effects_enable=EFFECT_BITS["CHORUS"] | EFFECT_BITS["ECHO"] | EFFECT_BITS["REVERB"],
-                    chorus_level=30000, chorus_depth=400, chorus_rate=40, echo_time=24000,
-                    echo_level=26000, echo_repeat=140, reverb_type=3, reverb_mix=128),
+                    chorus_level=110, chorus_depth=144, chorus_rate=60, mod_base=720,
+                    echo_time=24000, echo_level=26000, echo_repeat=140, reverb_type=3, reverb_mix=128),
+    "chorus":  dict(effects_enable=EFFECT_BITS["CHORUS"], chorus_level=128, chorus_depth=144,
+                    chorus_rate=80, mod_base=720),
+    "flanger": dict(effects_enable=EFFECT_BITS["CHORUS"], chorus_level=128, chorus_depth=90,
+                    chorus_rate=30, mod_base=96, mod_fb=26000, mod_shape=1),
+    "vibrato": dict(effects_enable=EFFECT_BITS["CHORUS"], chorus_level=255, chorus_depth=100,
+                    chorus_rate=600, mod_base=240),
     "trem":   dict(effects_enable=EFFECT_BITS["TREM"], trem_wave=0, trem_depth=200),
     "pulse":  dict(effects_enable=EFFECT_BITS["TREM"], trem_wave=8 + TREM_SHAPES["square"],
                    trem_rate=650, trem_depth=180),
@@ -143,7 +154,7 @@ def selftest():
     assert ((0x02 & 0x7F) << 9) | 0x079 == 0x0479                 # CODEC word for R2 = 0x079
     assert parse_assignments(["trem_shape=square", "trem_hz=6.5"]) == {"trem_wave": 11, "trem_rate": 650}
     for p in PRESETS.values():
-        assert set(p) <= set(EFFECT_REGS) | {"trem_rate"}
+        assert set(p) <= set(EFFECT_REGS) | {"trem_rate", "mod_base", "mod_fb", "mod_shape"}
     print("selftest OK")
 
 
@@ -175,7 +186,7 @@ def main():
     elif a.cmd == "preset":
         if not a.args or a.args[0] not in PRESETS:
             raise SystemExit("presets: %s" % ", ".join(PRESETS))
-        keys = EFFECT_REGS + ["trem_rate"]
+        keys = EFFECT_REGS + ["trem_rate", "mod_base", "mod_fb", "mod_shape"]
         regs = dict((k, 0) for k in keys)
         regs.update(PRESETS[a.args[0]])
         for k in keys:

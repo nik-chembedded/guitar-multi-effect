@@ -26,7 +26,7 @@ use ieee.numeric_std.all;
 
 entity ctrl_avmm is
   generic (
-    VERSION : std_logic_vector(15 downto 0) := x"0203"
+    VERSION : std_logic_vector(15 downto 0) := x"0204"
   );
   port (
     clk        : in  std_logic;
@@ -54,8 +54,9 @@ entity ctrl_avmm is
     -- effect registers
     effects_enable, od_drive, od_gain, trem_wave, trem_depth,
     echo_time, echo_repeat, echo_level, dist_mix, dist_type,
-    chorus_level, chorus_depth, chorus_rate, reverb_mix, reverb_type, trem_rate
+    chorus_level, chorus_depth, chorus_rate, reverb_mix, reverb_type
                : out std_logic_vector(15 downto 0);
+    ext        : out std_logic_vector(26 * 16 - 1 downto 0);   -- registers 0x16 .. 0x2F
     codec_init : out std_logic;
     mute       : out std_logic
   );
@@ -104,7 +105,7 @@ begin
       echo_repeat => echo_repeat, echo_level => echo_level, dist_mix => dist_mix,
       dist_type => dist_type, chorus_level => chorus_level, chorus_depth => chorus_depth,
       chorus_rate => chorus_rate, reverb_mix => reverb_mix, reverb_type => reverb_type,
-      trem_rate => trem_rate, codec_init => codec_init, mute => mute);
+      ext => ext, codec_init => codec_init, mute => mute);
 
   -- CODEC register: one host I2C write at a time
   process(clk)

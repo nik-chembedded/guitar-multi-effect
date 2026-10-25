@@ -16,7 +16,7 @@ from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge
 EFFECT_REGS = ["effects_enable", "od_drive", "od_gain", "trem_wave", "trem_depth", "echo_time",
                "echo_repeat", "echo_level", "dist_mix", "dist_type", "chorus_level",
                "chorus_depth", "chorus_rate", "reverb_mix", "reverb_type"]
-VERSION = 0x0203
+VERSION = 0x0204
 CODEC = 0x15
 
 
@@ -105,9 +105,14 @@ async def test_write_read_all(dut):
         got = await h.read(reg)
         assert got == v & 0xFFFF, "reg %d read 0x%08X, wrote 0x%08X" % (reg, got, v)
         assert int(getattr(dut, EFFECT_REGS[reg]).value) == v & 0xFFFF, "output %s" % EFFECT_REGS[reg]
-    await h.write(0x16, 0xABCD1234)                       # TREM_RATE (step D1)
-    assert await h.read(0x16) == 0x1234 and int(dut.trem_rate.value) == 0x1234, "TREM_RATE"
-    dut._log.info("15 effect registers + TREM_RATE written / read back (bits 31..16 ignored, read 0)")
+    ext = [rnd.getrandbits(32) for _ in range(0x16, 0x30)]     # extension registers (step D)
+    for i, v in enumerate(ext):
+        await h.write(0x16 + i, v)
+    bus = int(dut.ext.value)
+    for i, v in enumerate(ext):
+        assert await h.read(0x16 + i) == v & 0xFFFF, "ext register 0x%02X" % (0x16 + i)
+        assert (bus >> (16 * i)) & 0xFFFF == v & 0xFFFF, "ext bus slice 0x%02X" % (0x16 + i)
+    dut._log.info("15 effect + 26 extension registers written / read back (bits 31..16 ignored, read 0)")
 
 
 @cocotb.test()
@@ -115,7 +120,7 @@ async def test_invalid_and_readonly(dut):
     """Unknown addresses read 0; writes to them and to read-only registers change nothing."""
     h = await setup(dut)
     await h.write(2, 0x1111)
-    for reg in (0x0F, 0x17, 0x20, 0x3F):
+    for reg in (0x0F, 0x30, 0x3F):
         await h.write(reg, 0xFFFF)
         assert await h.read(reg) == 0, "unknown register 0x%02X must read 0" % reg
     await h.write(0x10, 0xDEAD)

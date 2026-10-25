@@ -29,23 +29,27 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 2   | Overdrive Gain  | W   | `[15:0]`  | Gain Volume                   | Integer post-clip gain multiplier. GUI range 1 … 5. |
 | 3   | Tremolo Wave    | W   | `[3:0]`   | Waveform Selection            | LFO waveform/rate, see [(2)](#2-tremolo-waveform-selection). |
 | 4   | Tremolo Depth   | W   | `[7:0]`   | Modulation Depth Value        | 0 = dry … 255 = full modulation. |
-| 5   | Echo Time       | W   | `[14:0]`  | Echo Reflection Time Value    | Delay in samples @ 48 kHz (bit 15 must be `0`). 32767 ≈ 0.68 s. |
+| 5   | Echo Time       | W   | `[14:0]`  | Echo Reflection Time Value    | Delay in samples @ 48 kHz (bit 15 must be `0`). 32767 ≈ 0.68 s. Smoothed with a fractional part (step D2): changing it glides like a tape echo. |
 | 6   | Echo Repeat     | W   | `[7:0]`   | Repeat Decay Volume           | Feedback amount, 0 … 255 (/256). |
 | 7   | Echo Level      | W   | `[15:0]`  | Initial Reflection Volume     | Wet level, unsigned Q0.16 (65535 ≈ 1.0). GUI range 0 … 32000. |
 | 8   | Distortion Mix  | W   | `[7:0]`   | Distortion Mixed Signal Value | Dry/wet mix, 0 = dry … 255 = wet. |
 | 9   | Distortion Type | W   | `[1:0]`   | Distortion Type Selection     | Clipping curve, see [(3)](#3-distortion-type-selection). |
-| 10  | Chorus Level    | W   | `[15:0]`  | Chorus Mixed Signal Value     | Wet level, unsigned Q0.16. |
-| 11  | Chorus Depth    | W   | `[9:0]`   | Chorus Delay Depth Value      | LFO sweep depth in samples (sweeps 2 … depth+2). |
-| 12  | Chorus Rate     | W   | `[9:0]`   | Chorus Delay Rate Value       | LFO clock divider (higher = slower). |
+| 10  | Mod Mix         | W   | `[7:0]`   | Chorus / flanger / vibrato mix | Dry/wet 0 … 255 (step D2; v1: chorus level Q0.16). Smoothed. |
+| 11  | Mod Depth       | W   | `[10:0]`  | Modulation depth               | Delay swing ± depth samples around MOD_BASE (step D2). Smoothed. |
+| 12  | Mod Rate        | W   | `[15:0]`  | Modulation LFO rate            | 0.01 Hz (step D2; v1: clock divider). Smoothed. |
 | 13  | Reverb Mix      | W   | `[7:0]`   | Reverb Mixed Signal Value     | Dry/wet mix, 0 = dry … 255 = wet. |
 | 14  | Reverb Type     | W   | `[3:0]`   | Reverb Type Selection         | Room preset, see [(4)](#4-reverb-type-selection). |
-| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0203` = v2 step D1 (generated LFO); `0x0202` = step C (24-bit effects); `0x0201` = HPS control, 16-bit |
+| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0204` = step D2 (modulated delay, fractional echo); `0x0203` = D1 (generated LFO); `0x0202` = step C (24-bit); `0x0201` = HPS control, 16-bit |
 | 0x11 | STATUS         | R   | `[2:0]`   | | bit0 codec init done, bit1 codec NAK (init), bit2 PLL locked |
 | 0x12 | LEVEL_IN       | R   | `[15:0]`  | | input peak level (left, 16-bit magnitude, decays ~1/256 per sample) |
 | 0x13 | LEVEL_OUT      | R   | `[15:0]`  | | output peak level |
 | 0x14 | CONTROL        | R/W | `[1:0]`   | | bit0 = re-run codec init (self-clearing), bit1 = mute |
 | 0x15 | CODEC          | R/W | `[15:0]`  | | codec register write over I²C, see [(5)](#5-codec-register) |
 | 0x16 | TREM_RATE      | R/W | `[15:0]`  | | tremolo LFO rate in 0.01 Hz for free mode (e.g. 650 = 6.5 Hz; 1 … 2000 = 0.01 … 20 Hz), smoothed |
+| 0x18 | MOD_BASE       | R/W | `[10:0]`  | | modulated delay: centre delay in samples (1 … 2046; 48 = 1 ms), smoothed |
+| 0x19 | MOD_FB         | R/W | `[15:0]`  | | modulated delay feedback, signed Q15 (−32767 … 32767 = −1 … +1), smoothed |
+| 0x1A | MOD_SHAPE      | R/W | `[0]`     | | modulated delay LFO: 0 sine, 1 triangle |
+| 0x16 … 0x2F | (extension) | R/W | | | registers of step D; unused ones read back what was written |
 
 ## Field encodings
 
@@ -139,3 +143,16 @@ regs[0x00] = 0x0008                               # effects_enable = DIST
 Only access these addresses while the multi-effect FPGA image is loaded: with another
 image (or none) the bridge has no slave there and the access can hang or crash Linux.
 `gme_hps.py` reads VERSION first and refuses to write when it is not `0x02xx`.
+
+### (6) Modulated delay (step D2): chorus, flanger, vibrato
+
+One block (effect enable bit 4) with a fractional delay
+`MOD_BASE ± MOD_DEPTH · LFO` samples, feedback MOD_FB and mix (register 10):
+
+| Use | MOD_BASE | Depth (11) | Rate (12) | MOD_FB | Mix (10) |
+|-----|----------|------------|-----------|--------|----------|
+| Chorus | 720 (15 ms) | 144 (3 ms) | 80 (0.8 Hz) | 0 | 128 |
+| Flanger | 96 (2 ms) | 90 | 30 (0.3 Hz) | 26000 (+0.8) | 128 |
+| Vibrato | 240 (5 ms) | 100 | 600 (6 Hz) | 0 | 255 |
+
+(`gme_hps.py preset chorus | flanger | vibrato`)

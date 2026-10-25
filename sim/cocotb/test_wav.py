@@ -31,7 +31,12 @@ PRESETS = {
     "dist_medium":  dict(effects_enable=DIST, dist_type=1, dist_mix=255),
     "tremolo":      dict(effects_enable=TREM, trem_wave=0, trem_depth=200),
     "tremolo_saw":  dict(effects_enable=TREM, trem_wave=7, trem_depth=200),
-    "chorus":       dict(effects_enable=CHORUS, chorus_level=40000, chorus_depth=400, chorus_rate=40),
+    "chorus":       dict(effects_enable=CHORUS, chorus_level=128, chorus_depth=144, chorus_rate=80,
+                         mod_base=720),
+    "flanger":      dict(effects_enable=CHORUS, chorus_level=128, chorus_depth=90, chorus_rate=30,
+                         mod_base=96, mod_fb=26000, mod_shape=1),
+    "vibrato":      dict(effects_enable=CHORUS, chorus_level=255, chorus_depth=100, chorus_rate=600,
+                         mod_base=240),
     "echo":         dict(effects_enable=ECHO, echo_time=14400, echo_level=26000, echo_repeat=100),
     "reverb":       dict(effects_enable=REVERB, reverb_type=2, reverb_mix=100),
 }

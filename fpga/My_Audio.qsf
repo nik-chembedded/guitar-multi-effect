@@ -34,7 +34,7 @@ set_global_assignment -name VHDL_FILE rtl/lfo_sine_pkg.vhd
 set_global_assignment -name VHDL_FILE rtl/nco_lfo.vhd
 set_global_assignment -name VHDL_FILE rtl/overdrive.vhd
 set_global_assignment -name VHDL_FILE rtl/distortion.vhd
-set_global_assignment -name VHDL_FILE rtl/chorus.vhd
+set_global_assignment -name VHDL_FILE rtl/mod_delay.vhd
 set_global_assignment -name VHDL_FILE rtl/tremolo_v2.vhd
 set_global_assignment -name VHDL_FILE rtl/echo.vhd
 set_global_assignment -name VHDL_FILE rtl/comb_filter.vhd

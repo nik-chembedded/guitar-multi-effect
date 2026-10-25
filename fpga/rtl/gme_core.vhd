@@ -21,7 +21,7 @@ entity gme_core is
     INIT_WAIT_CLKS : positive := 491_520;          -- codec power-up pause (10 ms)
     SMOOTH         : boolean  := true;             -- parameter smoothing
     XFADE          : boolean  := true;             -- click-free effect on/off
-    VERSION        : std_logic_vector(15 downto 0) := x"0203"
+    VERSION        : std_logic_vector(15 downto 0) := x"0204"
   );
   port (
     clk        : in  std_logic;
@@ -58,10 +58,21 @@ architecture rtl of gme_core is
 
   signal effects_enable, od_drive, od_gain, trem_wave, trem_depth, echo_time, echo_repeat,
          echo_level, dist_mix, dist_type, chorus_level, chorus_depth, chorus_rate,
-         reverb_mix, reverb_type, trem_rate : std_logic_vector(15 downto 0);
+         reverb_mix, reverb_type : std_logic_vector(15 downto 0);
+  signal ext                    : std_logic_vector(26 * 16 - 1 downto 0);   -- registers 0x16 .. 0x2F
+  signal trem_rate, mod_base, mod_fb, mod_shape : std_logic_vector(15 downto 0);
   -- smoothed continuous parameters (to the chain)
   signal s_od_drive, s_trem_depth, s_echo_level, s_echo_repeat, s_dist_mix,
-         s_chorus_level, s_reverb_mix, s_trem_rate : std_logic_vector(15 downto 0);
+         s_chorus_level, s_reverb_mix, s_trem_rate, s_chorus_depth, s_chorus_rate,
+         s_mod_base, s_mod_fb, s_echo_time : std_logic_vector(15 downto 0);
+  signal fb_ofs, s_fb_ofs       : std_logic_vector(15 downto 0);            -- feedback, offset binary
+  signal s_echo_frac            : std_logic_vector(7 downto 0);
+
+  -- extension register 0x16 + i
+  function ext_reg(e : std_logic_vector; r : natural) return std_logic_vector is
+  begin
+    return e(16 * (r - 16#16#) + 15 downto 16 * (r - 16#16#));
+  end function;
   signal codec_init, mute       : std_logic;
 
   signal i2c_req, i2c_busy, i2c_done, i2c_nak : std_logic;
@@ -107,17 +118,27 @@ begin
       od_enable => '0', tremolo_enable => '0', echo_enable => '0',
       effects_enable => effects_enable, od_drive => s_od_drive, od_gain => od_gain,
       trem_depth => s_trem_depth, trem_wave => trem_wave, trem_rate => s_trem_rate,
-      echo_time => echo_time, echo_level => s_echo_level, echo_repeat => s_echo_repeat,
-      chorus_rate => chorus_rate, chorus_level => s_chorus_level, chorus_depth => chorus_depth,
+      echo_time => s_echo_time, echo_frac => s_echo_frac,
+      echo_level => s_echo_level, echo_repeat => s_echo_repeat,
+      chorus_rate => s_chorus_rate, chorus_level => s_chorus_level, chorus_depth => s_chorus_depth,
+      mod_base => s_mod_base, mod_fb => s_mod_fb, mod_shape => mod_shape,
       dist_mix => s_dist_mix, dist_type => dist_type,
       reverb_type => reverb_type, reverb_mix => s_reverb_mix,
       data_in_left  => rx_left,
       data_in_right => rx_right,
       data_out_left => fx_out, data_out_right => open);
 
-  -- parameter smoothing: levels, depths, mixes, drive. Not smoothed: gain
-  -- (integer factor), selectors, enables (crossfaded in FX_chain), delay
-  -- times and the chorus LFO settings.
+  trem_rate <= ext_reg(ext, 16#16#);
+  mod_base  <= ext_reg(ext, 16#18#);
+  mod_fb    <= ext_reg(ext, 16#19#);
+  mod_shape <= ext_reg(ext, 16#1A#);
+
+  -- parameter smoothing: levels, depths, mixes, drive, LFO rates, the modulated
+  -- delay's base / depth / feedback and the echo time (with fraction: tape-style
+  -- glide, step D2). Not smoothed: gain (integer factor), selectors, enables
+  -- (crossfaded in FX_chain). The signed feedback is smoothed in offset binary.
+  fb_ofs   <= (not mod_fb(15)) & mod_fb(14 downto 0);
+  s_mod_fb <= (not s_fb_ofs(15)) & s_fb_ofs(14 downto 0);
   smooth_on : if SMOOTH generate
     u_sm_drive  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => od_drive,     value => s_od_drive);
     u_sm_tdepth : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => trem_depth,   value => s_trem_depth);
@@ -127,11 +148,19 @@ begin
     u_sm_clevel : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => chorus_level, value => s_chorus_level);
     u_sm_rmix   : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => reverb_mix,   value => s_reverb_mix);
     u_sm_trate  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => trem_rate,    value => s_trem_rate);
+    u_sm_cdepth : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => chorus_depth, value => s_chorus_depth);
+    u_sm_crate  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => chorus_rate,  value => s_chorus_rate);
+    u_sm_mbase  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => mod_base,     value => s_mod_base);
+    u_sm_mfb    : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => fb_ofs,       value => s_fb_ofs);
+    u_sm_etime  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => echo_time,    value => s_echo_time,
+                                                     value_frac => s_echo_frac);
   end generate;
   smooth_off : if not SMOOTH generate
     s_od_drive <= od_drive;     s_trem_depth <= trem_depth;     s_echo_level <= echo_level;
     s_echo_repeat <= echo_repeat; s_dist_mix <= dist_mix;       s_chorus_level <= chorus_level;
-    s_reverb_mix <= reverb_mix;   s_trem_rate <= trem_rate;
+    s_reverb_mix <= reverb_mix;   s_trem_rate <= trem_rate;     s_chorus_depth <= chorus_depth;
+    s_chorus_rate <= chorus_rate; s_mod_base <= mod_base;       s_fb_ofs <= fb_ofs;
+    s_echo_time <= echo_time;     s_echo_frac <= (others => '0');
   end generate;
 
   -- mono effects: processed left channel to both outputs
@@ -154,7 +183,7 @@ begin
       trem_wave => trem_wave, trem_depth => trem_depth, echo_time => echo_time,
       echo_repeat => echo_repeat, echo_level => echo_level, dist_mix => dist_mix,
       dist_type => dist_type, chorus_level => chorus_level, chorus_depth => chorus_depth,
-      chorus_rate => chorus_rate, reverb_mix => reverb_mix, reverb_type => reverb_type, trem_rate => trem_rate,
+      chorus_rate => chorus_rate, reverb_mix => reverb_mix, reverb_type => reverb_type, ext => ext,
       codec_init => codec_init, mute => mute);
 
   u_codec : entity work.codec_ctrl
