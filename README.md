@@ -1,9 +1,10 @@
 # Guitar Multi-Effect: FPGA (VHDL) on the DE1-SoC
 
 A real-time multi-effect processor for electric guitar, implemented in VHDL on an
-Intel **Cyclone V** FPGA. **v2** (this branch, `main`) runs entirely in FPGA logic:
-one 49.152 MHz clock domain, the FPGA as I²S master, the codec configured over I²C
-by RTL, and a framed UART protocol for the host. There is no CPU.
+Intel **Cyclone V** SoC. **v2** (this branch, `main`) processes the audio entirely in
+FPGA logic: one 49.152 MHz clock domain, the FPGA as I²S master, the codec configured
+over I²C by RTL. **Linux on the on-chip ARM (HPS)** controls the effects through the
+lightweight HPS-to-FPGA bridge. There is no soft CPU.
 
 > **Target hardware:** Terasic **DE1-SoC** board (Cyclone V SE **5CSEMA5F31C6**,
 > on-board WM8731 audio codec).
@@ -14,7 +15,8 @@ by RTL, and a framed UART protocol for the host. There is no CPU.
   with its bugs fixed. See [docs/FIXES.md](docs/FIXES.md).
 * **v2** (`main`): the plan and progress are in [docs/v2_plan.md](docs/v2_plan.md);
   step B (clocking, I²S, control without the Nios II) is in
-  [docs/v2_stepB_design.md](docs/v2_stepB_design.md).
+  [docs/v2_stepB_design.md](docs/v2_stepB_design.md), the HPS control in
+  [docs/v2_hps_control.md](docs/v2_hps_control.md). The UART-controlled version is at the tag `v2-uart`.
 
 ## Effects
 
@@ -34,11 +36,12 @@ processed signal goes to both outputs.
 ## Architecture (v2)
 
 ```
-CLOCK_50 ─► PLL ─┬─ sys_clk 49.152 MHz ─► all logic (gme_core)
+CLOCK_50 ─► PLL ─┬─ sys_clk 49.152 MHz ─► all logic (gme_core) + HPS bridge
                  └─ MCLK 12.288 MHz ────► codec
-gme_core:  i2s_core (FPGA = I2S master, BCLK/LRCLK, sample_tick/half_tick)
-           FX_chain (effects, advance on the strobes)
-           ctrl_block (UART frame parser + register file)  ◄── PC: tools/gme_ctl.py
+HPS (ARM, Linux) ── lightweight bridge 0xFF200000 ── hps_sys (Platform Designer) ─┐
+gme_core:  i2s_core (FPGA = I2S master, BCLK/LRCLK, sample_tick/half_tick)       │
+           FX_chain (effects, advance on the strobes)                            │
+           ctrl_avmm (Avalon-MM slave + register file + CODEC register)  ◄───────┘  tools/gme_hps.py
            codec_ctrl (I2C master + codec init ROM)        ──► codec I2C
 ```
 
@@ -49,17 +52,19 @@ Diagrams of v1 and the planned v2 with the HPS are in [docs/architecture.md](doc
 ```
 fpga/                    Quartus project (My_Audio.qpf / .qsf), top level top_v2
   top_v2.sdc             timing constraints (one clock, multicycle effect paths)
+  hps_sys.qsys           Platform Designer system: HPS + bridge to our registers
+  hps/                   script that builds hps_sys.qsys from Terasic's GHRD
   rtl/                   VHDL: top_v2, gme_core, i2s_core, effects, FX_chain,
-                         uart_rx/tx, ctrl_uart, reg_file, ctrl_block,
-                         i2c_master, codec_ctrl, fx_pkg; pll_sys.v (altera_pll)
+                         ctrl_avmm, reg_file, i2c_master, codec_ctrl, fx_pkg;
+                         pll_sys.v (altera_pll)
   ip/                    Intel RAM/ROM wrappers + .mif tables
 sim/
   cocotb/                Python tests (GHDL): effects, v1 bit-exact reference,
-                         I2S, UART control, I2C/codec, full system, WAV audio
+                         I2S, HPS control slave, I2C/codec, full system, WAV audio
   models/                behavioural models of the Intel IP (+ equivalence proof)
   tb/, run_wav.sh        ModelSim frame-level WAV testbench
   audio/                 guitar test recordings (CC BY-SA)
-tools/gme_ctl.py         host control tool (UART, Python)
+tools/gme_hps.py         control tool, runs on the board's Linux (Python)
 docs/                    plan, step-B design, register map/protocol, fixes, diagrams
 ```
 
@@ -70,28 +75,30 @@ docs/                    plan, step-B design, register map/protocol, fixes, diag
 | `CLOCK_50` | PIN_AF14 | |
 | `KEY0` | KEY[0] (PIN_AA14) | press = reset |
 | Audio | LINE IN (blue) / LINE OUT (green) | codec configured automatically after reset |
-| `UART_RX` / `UART_TX` | GPIO_0 D0 (AC18) / D1 (Y17) | external **3.3 V** USB-UART adapter, 115200 8N1 |
+| HPS | Ethernet / USB-UART console | Linux from Terasic's SD card (MSEL `01010`), log in as root |
 | `LEDR[0..3]` | V16, W16, V17, V18 | PLL locked, codec init done, codec NAK, 1 Hz heartbeat |
 
 ## Building
 
 ```bash
 cd fpga
+qsys-generate hps_sys.qsys --synthesis=VERILOG --output-directory=hps_sys --family="Cyclone V" --part=5CSEMA5F31C6
 quartus_sh --flow compile My_Audio        # or open My_Audio.qpf in Quartus 18.1
+quartus_cpf -c -o bitstream_compression=off output_files/my_audio.sof output_files/soc_system.rbf
 ```
 
-There is no Platform Designer system and no software to build. Program
-`output_files/My_Audio.sof`, then control the board from the PC:
+Program `output_files/my_audio.sof` over JTAG while Linux runs, or put
+`soc_system.rbf` on the SD card (details: [docs/v2_hps_control.md](docs/v2_hps_control.md)).
+Then, on the board:
 
 ```bash
-pip install pyserial
-python tools/gme_ctl.py -p COM5 ping
-python tools/gme_ctl.py -p COM5 status
-python tools/gme_ctl.py -p COM5 preset crunch
-python tools/gme_ctl.py -p COM5 set effects=DIST+ECHO dist_type=2 echo_time=14400
+python gme_hps.py status
+python gme_hps.py preset crunch
+python gme_hps.py set effects=DIST+ECHO dist_type=2 echo_time=14400
+python gme_hps.py meter
 ```
 
-The registers and the protocol are documented in [docs/register_map.md](docs/register_map.md).
+The registers are documented in [docs/register_map.md](docs/register_map.md).
 
 ## Simulation
 
@@ -104,7 +111,7 @@ sim/run_all.sh          # or from Windows: sim\run_all.cmd   (quick | full | -k 
 
 The suite includes a **bit-exact comparison against v1** (27 recorded presets),
 unit tests of every new block, and an end-to-end system test (codec init over I²C →
-settings over UART → audio over I²S).
+settings over the HPS bridge → audio over I²S).
 
 ### Example: a test run
 
@@ -112,14 +119,13 @@ settings over UART → audio over I²S).
 > sim\run_all.cmd quick
 ghdl: GHDL 5.0.1 (Ubuntu 5.0.1+dfsg-1ubuntu1) [Dunoon edition]
 cocotb: 2.1.0, build dir: /home/nikita/build/gme
-selection: test_fx_chain or test_i2s or test_ctrl or test_codec or test_system
+selection: test_fx_chain or test_i2s or test_avmm or test_codec or test_system
  TESTS=7 PASS=7 FAIL=0 SKIP=0     effect chain (bypass, overdrive, distortion, tremolo, chorus, echo, reverb)
  TESTS=4 PASS=4 FAIL=0 SKIP=0     I2S master core
- TESTS=5 PASS=5 FAIL=0 SKIP=0     UART control block (1.536 Mbaud)
- TESTS=1 PASS=1 FAIL=0 SKIP=0     UART control block, ping at 115200 baud
+ TESTS=5 PASS=5 FAIL=0 SKIP=0     HPS control slave (Avalon-MM)
  TESTS=4 PASS=4 FAIL=0 SKIP=0     I2C master + codec init sequencer
  TESTS=3 PASS=3 FAIL=0 SKIP=0     gme_core end to end
-=========== 6 passed, 2 deselected in 104.66s (0:01:44) ===========
+=========== 5 passed, 2 deselected in 117.72s (0:01:57) ===========
 ```
 
 (The descriptions after each `TESTS=` line are added here for readability; the
@@ -127,26 +133,26 @@ script prints simulated time and speed in their place.)
 
 ### Example: what one test does
 
-`test_system.test_overdrive_via_uart` ([sim/cocotb/test_system.py](sim/cocotb/test_system.py))
+`test_system.test_overdrive_via_hps` ([sim/cocotb/test_system.py](sim/cocotb/test_system.py))
 simulates the whole design (`gme_core`) with Python models of the codec (I²S and I²C)
-and of the PC (UART):
+and of the HPS bridge (an Avalon-MM master):
 
 1. **Power-up:** the RTL configures the codec by itself; the I²C slave model records
    the 15 register writes and ACKs them.
-2. **Wait for the codec:** the test reads the STATUS register over UART until bit 0
-   (codec init done) is set. Every reply is checked for its `0x5A` header and its CRC-8.
-3. **Configure the effect over UART:** `WRITE od_drive = 3000`, `od_gain = 4`,
-   `effects_enable = OD`. Each request must be acknowledged with status `00`.
+2. **Wait for the codec:** the test reads the STATUS register until bit 0
+   (codec init done) is set.
+3. **Configure the effect over the bridge:** write `od_drive = 3000`, `od_gain = 4`,
+   `effects_enable = OD`, as Linux would at `0xFF200000 + 4·n`.
 4. **Stream audio:** the codec model sends 60 frames of random 24-bit stereo samples
    over I²S and records what the FPGA sends back.
 5. **Check:** every output frame, left and right, must equal the Python reference
    `golden.overdrive(x, 3000, 4)`, i.e. clip to ±3000, ×4, saturate, **bit for bit**
    (the expected latency is 8 frames). The input/output level registers are read
-   back over UART as well.
+   back over the bridge as well.
 
 ```
-cocotb.gme_core   overdrive set over UART, output bit-exact, latency 8; levels in 29405 / out 12456
-test_system.test_overdrive_via_uart     PASS
+cocotb.gme_core   overdrive set over the bridge, output bit-exact, latency 8; levels in 29405 / out 12456
+test_system.test_overdrive_via_hps      PASS
 ```
 
 A step-by-step description of the flow (pytest → GHDL → cocotb → RTL → checks) is in
@@ -157,14 +163,16 @@ and the equivalence proof of the IP models (`sim/models/run_equiv.sh`).
 
 ## Status
 
-* v2 step A (verification) and step B (single clock, I²S master, UART control,
-  codec I²C, new top level) are done and verified in simulation. The design meets
-  timing in Quartus (4 % of the logic).
-* Not yet tested on the board.
+* v2 step A (verification) and step B (single clock, I²S master, codec I²C, new top
+  level) are done; audio LINE IN → LINE OUT works on the board.
+* Control moved from UART to the HPS (Linux): verified in simulation, timing met in
+  Quartus (4 % of the logic). Board test of the HPS control pending.
 * Next: step C (fixed-point library, 24-bit effects), then D (new DSP blocks
   incl. FIR cabinet simulation).
 
 ## Third-party code
 
 * `fpga/ip/*` wrappers are generated by Intel Quartus MegaWizard / IP Catalog.
+* `fpga/hps/ghrd_soc_system.qsys` is Terasic's DE1-SoC Golden Hardware Reference Design
+  (DE1-SoC System CD); `hps_sys.qsys` is derived from it.
 * `sim/audio/*.wav`: CC BY-SA 4.0 recordings, see [sim/audio/README.md](sim/audio/README.md).

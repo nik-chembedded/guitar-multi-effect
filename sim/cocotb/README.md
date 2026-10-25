@@ -12,9 +12,9 @@ The same tests run locally (WSL2 Ubuntu) and in GitHub Actions on every push.
 | `test_fx_chain.py` | the 7 effect tests |
 | `test_ref.py` | bit-exact regression against the recorded v1 outputs in `ref/` (27 presets; `GME_REF_MODE=record` re-records) |
 | `test_i2s.py` | I²S master core (v2 B2) against a WM8731 slave model |
-| `test_ctrl.py` | UART control block: protocol, registers, errors, resync, codec requests |
+| `test_avmm.py` | HPS control slave (`ctrl_avmm`): Avalon-MM reads/writes, all registers, invalid/read-only addresses, CONTROL, CODEC register |
 | `test_codec.py` | I²C master + codec init sequencer against an I²C slave model |
-| `test_system.py` | `gme_core` end to end: codec init, UART control, I²S audio |
+| `test_system.py` | `gme_core` end to end: codec init, control over the HPS bridge (Avalon-MM), I²S audio |
 | `test_wav.py` | real guitar audio through 8 presets; writes WAVs, checks dry bit-exact / no X / no wrap / no tremolo clicks |
 | `test_runner.py` | pytest entry: builds with GHDL (`--std=08 -frelaxed`) and runs the cocotb modules |
 
@@ -48,7 +48,7 @@ pytest ─► test_runner.py ─► cocotb runner ─► ghdl -a (compile RTL + 
 
 1. **pytest** runs a function in `test_runner.py`, e.g. `test_system()`. That function names the top-level
    entity (`gme_core`), the cocotb module (`test_system`), the VHDL files, and generics for simulation
-   (e.g. `BAUD=1536000` so UART transfers take fewer clock cycles; the logic is unchanged).
+   (e.g. `INIT_WAIT_CLKS=2000` so the codec power-up pause takes fewer clock cycles; the logic is unchanged).
 2. **Build:** the `.mif` ROM tables are copied into the build directory, and GHDL compiles the files
    (`--std=08 -frelaxed`). The Intel RAM/ROM wrappers are replaced by `sim/models/ip/*.vhd`
    (same entities, proven equivalent to `altera_mf`). `top_v2` and the PLL are not simulated:
@@ -61,7 +61,7 @@ pytest ─► test_runner.py ─► cocotb runner ─► ghdl -a (compile RTL + 
    * `test_i2s.CodecSlave`: drives `adcdat` bit by bit on BCLK falling edges and rebuilds the words
      on `dacdat`;
    * `test_codec.I2cSlave`: resolves the open-drain bus, detects START/STOP, ACKs and records transfers;
-   * `test_ctrl.Host`: sends request frames on `uart_rx` and decodes replies on `uart_tx`.
+   * `test_avmm.AvmmHost`: plays the HPS lightweight bridge (Avalon-MM master: register *n* at byte address 4·*n*).
 5. **Checks:** plain `assert`s compare what came out of the RTL with the expectation: the Python
    reference maths in `golden.py` (bit-exact), the recorded v1 outputs in `ref/`, exact I²C byte
    sequences, protocol status codes, measured clock periods. A failing assert marks that cocotb
@@ -86,7 +86,7 @@ it through WSL):
 sim/run_all.sh                    # all suites (~10 min)
 sim/run_all.sh quick              # unit + system tests (~2 min)
 sim/run_all.sh full               # all, WAV regression on the whole clip
-sim/run_all.sh -k "test_i2s or test_ctrl"
+sim/run_all.sh -k "test_i2s or test_avmm"
 sim/run_all.sh --waves -k test_i2s            # + GTKWave waveform
 ```
 

@@ -1,7 +1,7 @@
 -- -----------------------------------------------------------------------------
 -- reg_file.vhd  (v2 step B3)
--- 16-bit control/status registers behind a simple bus. Written by the UART
--- control block now; in phase 3 by the HPS (AXI bridge) on the same bus.
+-- 16-bit control/status registers behind a simple bus, written by the HPS
+-- through ctrl_avmm (Avalon-MM slave on the lightweight bridge).
 --
 --   0x00..0x0E  effect registers, same meaning as v1 (docs/register_map.md)   R/W
 --   0x10        VERSION                                                        R
@@ -18,7 +18,7 @@ use ieee.numeric_std.all;
 
 entity reg_file is
   generic (
-    VERSION : std_logic_vector(15 downto 0) := x"0200"
+    VERSION : std_logic_vector(15 downto 0) := x"0201"
   );
   port (
     clk        : in  std_logic;

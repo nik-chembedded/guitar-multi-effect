@@ -31,6 +31,6 @@ set_multicycle_path -hold  -end 15 -from $fx   -to [get_registers {*|u_i2s|tx_* 
 # by construction, so no I/O timing is enforced.
 set_false_path -to   [get_ports {AUD_BCLK AUD_ADCLRCK AUD_DACLRCK AUD_DACDAT AUD_XCK}]
 set_false_path -from [get_ports {AUD_ADCDAT}]
-# Slow / asynchronous: I2C (100 kHz), UART (115200), push button, LEDs
-set_false_path -from [get_ports {KEY0 UART_RX FPGA_I2C_SDAT FPGA_I2C_SCLK}]
-set_false_path -to   [get_ports {UART_TX FPGA_I2C_SDAT FPGA_I2C_SCLK LEDR[*]}]
+# Slow / asynchronous: I2C (100 kHz), push button, LEDs
+set_false_path -from [get_ports {KEY0 FPGA_I2C_SDAT FPGA_I2C_SCLK}]
+set_false_path -to   [get_ports {FPGA_I2C_SDAT FPGA_I2C_SCLK LEDR[*]}]

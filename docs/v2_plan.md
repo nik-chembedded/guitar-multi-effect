@@ -15,7 +15,8 @@ Starter 10.5b is kept for the Intel-IP-based checks.
 | Step | What | Done when |
 |------|------|-----------|
 | **A** | Verification infrastructure (cocotb + GHDL) | v1 tests pass under cocotb/GHDL locally and in GitHub Actions |
-| **B** | Single clock domain + new I²S core + UART control block (Nios II removed) | Audio pass-through bit-exact in simulation; codec initialised and controlled over UART on the board |
+| **B** | Single clock domain + new I²S core + control block (Nios II removed) | Audio pass-through bit-exact in simulation; codec initialised and controlled on the board |
+| **B+** | HPS control (brought forward from F): Linux writes the registers over the lightweight bridge; UART removed | Board: registers from Linux, see [v2_hps_control.md](v2_hps_control.md) |
 | **C** | Fixed-point library | Unit-tested in cocotb against Python reference functions |
 | **D** | Better DSP blocks | Each effect bit-exact to its Python golden model; WAV demos |
 | **E** | Streaming chain with runtime routing | Any effect order selectable by register, tested |
@@ -86,8 +87,8 @@ I²C init, `top_v2` without Nios II (timing met, 4 % logic).
 ### F: Phase 3, HPS control
 
 * Linux on the ARM Cortex-A9: web UI (phone/browser), USB-MIDI, presets, meters.
-* The HPS-to-FPGA lightweight AXI bridge connects to the same register bus as the
-  UART block. DDR3 is used for a looper and cabinet impulse responses.
+* The lightweight bridge to the register file is done (step B+,
+  [v2_hps_control.md](v2_hps_control.md)). DDR3 is used for a looper and cabinet impulse responses.
 
 ## Conventions
 

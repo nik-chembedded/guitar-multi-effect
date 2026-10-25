@@ -80,3 +80,11 @@ sim/cocotb/results.xml
 __pycache__/
 .pytest_cache/
 sim/out/
+
+# HPS Platform Designer system: generated HDL and logs (regenerate, docs/v2_hps_control.md)
+fpga/hps_sys/
+fpga/hps_sys.sopcinfo
+fpga/hps/*.log
+fpga/hps_sdram_p0_summary.csv
+fpga/hps_isw_handoff/
+fpga/.qsys_edit/

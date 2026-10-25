@@ -3,7 +3,7 @@
 -- WM8731 configuration over I2C without a CPU:
 --   * after reset (and on init_start) an init sequence from a ROM is written:
 --     v2 settings - FPGA is I2S master, codec slave, 24-bit, 256 fs, 48 kHz
---   * afterwards host write requests (from ctrl_uart) are forwarded
+--   * afterwards host write requests (CODEC register, ctrl_avmm) are forwarded
 -- I2C writes are 16 bits: (register << 9) | 9-bit data, device address 0x34.
 -- -----------------------------------------------------------------------------
 library ieee;
@@ -19,7 +19,7 @@ entity codec_ctrl is
     clk        : in  std_logic;
     rst        : in  std_logic;
     init_start : in  std_logic;                -- re-run the init sequence
-    -- host requests (ctrl_uart)
+    -- host requests (ctrl_avmm)
     req        : in  std_logic;
     req_reg    : in  std_logic_vector(6 downto 0);
     req_data   : in  std_logic_vector(8 downto 0);

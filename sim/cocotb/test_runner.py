@@ -59,20 +59,12 @@ def test_i2s():
     run("i2s_core", "test_i2s", [RTL / "i2s_core.vhd"])
 
 
-CTRL_RTL = [RTL / f for f in ("uart_rx.vhd", "uart_tx.vhd", "reg_file.vhd", "ctrl_uart.vhd",
-                               "ctrl_block.vhd")]
+CTRL_RTL = [RTL / f for f in ("reg_file.vhd", "ctrl_avmm.vhd")]
 
 
-def test_ctrl():
-    """UART control block (v2 step B3) at 1.536 Mbaud (fast simulation)."""
-    run("ctrl_block", "test_ctrl", CTRL_RTL, parameters={"BAUD": 1536000, "TIMEOUT_CLKS": 20000},
-        extra_env={"GME_BAUD": "1536000", "GME_TIMEOUT": "20000"}, tag="_fast")
-
-
-def test_ctrl_115200():
-    """Same block at the real 115200 baud: ping only."""
-    run("ctrl_block", "test_ctrl", CTRL_RTL, testcase="test_ping",
-        extra_env={"GME_BAUD": "115200"}, tag="_115200")
+def test_avmm():
+    """Avalon-MM control slave (HPS lightweight bridge) + register file + CODEC register."""
+    run("ctrl_avmm", "test_avmm", CTRL_RTL)
 
 
 def test_codec():
@@ -86,10 +78,9 @@ SYS_RTL = (IP_MODELS + FX_RTL + CTRL_RTL +
 
 
 def test_system():
-    """gme_core end to end (v2 step B5): codec init, UART control, I2S audio."""
+    """gme_core end to end: codec init, control over the Avalon slave (HPS), I2S audio."""
     run("gme_core", "test_system", SYS_RTL,
-        parameters={"BAUD": 1536000, "TIMEOUT_CLKS": 20000, "INIT_WAIT_CLKS": 2000},
-        extra_env={"GME_BAUD": "1536000", "GME_TIMEOUT": "20000"})
+        parameters={"INIT_WAIT_CLKS": 2000})
 
 
 def test_reference():

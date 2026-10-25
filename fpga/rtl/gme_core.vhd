@@ -3,10 +3,11 @@
 -- Everything of the multi-effect that runs on sys_clk (49.152 MHz):
 --   i2s_core   FPGA = I2S master, stereo 24-bit, sample_tick / half_tick
 --   FX_chain   the v1 effects (16-bit), mono: left input, output to both channels
---   ctrl_block UART host protocol + register file (replaces Nios II + firmware)
+--   ctrl_avmm  register file behind an Avalon-MM slave (HPS lightweight bridge)
 --   codec_ctrl WM8731 init sequence + host codec writes over I2C
 --   level meters for the STATUS/level registers, status LEDs
--- top_v2.vhd adds the PLL, reset synchroniser and the pin buffers.
+-- top_v2.vhd adds the PLL, the HPS (Platform Designer system hps_sys), the reset
+-- synchroniser and the pin buffers.
 -- -----------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -14,12 +15,9 @@ use ieee.numeric_std.all;
 
 entity gme_core is
   generic (
-    CLK_HZ         : positive := 49_152_000;
-    BAUD           : positive := 115_200;
-    TIMEOUT_CLKS   : positive := 491_520;          -- UART partial-frame timeout (10 ms)
     I2C_DIV        : positive := 123;              -- I2C quarter period -> 99.9 kHz
     INIT_WAIT_CLKS : positive := 491_520;          -- codec power-up pause (10 ms)
-    VERSION        : std_logic_vector(15 downto 0) := x"0200"
+    VERSION        : std_logic_vector(15 downto 0) := x"0201"
   );
   port (
     clk        : in  std_logic;
@@ -34,9 +32,14 @@ entity gme_core is
     scl_oe     : out std_logic;
     sda_oe     : out std_logic;
     sda_in     : in  std_logic;
-    -- host
-    uart_rx    : in  std_logic;
-    uart_tx    : out std_logic;
+    -- host: Avalon-MM slave on the HPS lightweight bridge (byte address)
+    avs_address       : in  std_logic_vector(7 downto 0);
+    avs_read          : in  std_logic;
+    avs_write         : in  std_logic;
+    avs_writedata     : in  std_logic_vector(31 downto 0);
+    avs_readdata      : out std_logic_vector(31 downto 0);
+    avs_readdatavalid : out std_logic;
+    avs_waitrequest   : out std_logic;
     -- LEDs: 0 PLL locked, 1 codec init done, 2 codec NAK, 3 heartbeat (1 Hz)
     leds       : out std_logic_vector(3 downto 0)
   );
@@ -104,10 +107,13 @@ begin
   tx_word <= (others => '0') when mute = '1' else fx_out & x"00";
 
   -- ---- control ----------------------------------------------------------------
-  u_ctrl : entity work.ctrl_block
-    generic map (CLK_HZ => CLK_HZ, BAUD => BAUD, TIMEOUT_CLKS => TIMEOUT_CLKS, VERSION => VERSION)
+  u_ctrl : entity work.ctrl_avmm
+    generic map (VERSION => VERSION)
     port map (
-      clk => clk, rst => rst, uart_rx => uart_rx, uart_tx => uart_tx,
+      clk => clk, rst => rst,
+      avs_address => avs_address, avs_read => avs_read, avs_write => avs_write,
+      avs_writedata => avs_writedata, avs_readdata => avs_readdata,
+      avs_readdatavalid => avs_readdatavalid, avs_waitrequest => avs_waitrequest,
       i2c_req => i2c_req, i2c_reg => i2c_reg, i2c_data => i2c_data,
       i2c_busy => i2c_busy, i2c_done => i2c_done, i2c_nak => i2c_nak,
       status_in => status, level_in => std_logic_vector(peak_in),

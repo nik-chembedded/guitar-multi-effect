@@ -5,7 +5,7 @@
 #   ./run_all.sh               all suites (~10 min: incl. v1 reference and 1 s WAV)
 #   ./run_all.sh quick         unit + system tests only (~1.5 min)
 #   ./run_all.sh full          all suites, WAV regression on the whole 3.1 s clip
-#   ./run_all.sh -k "test_i2s or test_ctrl"     any pytest -k expression
+#   ./run_all.sh -k "test_i2s or test_avmm"     any pytest -k expression
 #   ./run_all.sh --waves quick                  also write GTKWave .ghw waveforms
 #
 # From Windows:  sim\run_all.cmd [same arguments]
@@ -30,7 +30,7 @@ if [ "${1:-}" = "--waves" ]; then export GME_WAVES=1; shift; fi
 SELECT=""
 case "${1:-all}" in
   all)   SELECT="" ;;
-  quick) SELECT="test_fx_chain or test_i2s or test_ctrl or test_codec or test_system" ;;
+  quick) SELECT="test_fx_chain or test_i2s or test_avmm or test_codec or test_system" ;;
   full)  SELECT=""; export GME_WAV_SECONDS=${GME_WAV_SECONDS:-3.2} ;;
   -k)    SELECT="${2:-}" ;;
   *)     echo "usage: $0 [--waves] [all|quick|full|-k EXPR]"; exit 2 ;;

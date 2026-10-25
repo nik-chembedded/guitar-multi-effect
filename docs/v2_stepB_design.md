@@ -1,5 +1,9 @@
 # v2 step B: clocking, I²S core and UART control block
 
+> **Update:** the UART control block (B3) has been replaced by HPS control over the
+> lightweight bridge, see [v2_hps_control.md](v2_hps_control.md). The UART version is
+> kept at the tag `v2-uart`.
+
 **Status: B1–B5 done and verified in simulation; Quartus build meets timing. Board test pending (no hardware access yet).** Decisions: sys_clk 49.152 MHz with the FPGA as I²S master;
 new UART protocol only (the C# GUI stays on the `v1` branch). Hardware tests are
 postponed (no board access yet), so verification is simulation only.

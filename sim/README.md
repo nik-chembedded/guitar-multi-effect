@@ -2,7 +2,7 @@
 
 | Flow | Simulator | What |
 |------|-----------|------|
-| [`cocotb/`](cocotb/README.md) | GHDL + cocotb (WSL2 / GitHub Actions) | **main test suite**: effects, bit-exact v1 reference, I²S core, UART control, I²C/codec, full system, WAV audio |
+| [`cocotb/`](cocotb/README.md) | GHDL + cocotb (WSL2 / GitHub Actions) | **main test suite**: effects, bit-exact v1 reference, I²S core, HPS control slave, I²C/codec, full system, WAV audio |
 | [`models/`](models/README.md) | ModelSim (Intel `altera_mf`) | proof that the behavioural RAM/ROM models equal Intel's |
 | `run_wav.sh` + `tb/tb_fx_wav.vhd` | ModelSim | real guitar recordings through the effect chain on Intel's IP |
 
