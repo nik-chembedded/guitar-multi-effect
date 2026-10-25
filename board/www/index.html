@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GME web UI</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; background: #15171a; color: #d8dce1; margin: 2rem; }
+  pre { background: #1d2024; padding: 1rem; border-radius: 6px; overflow: auto; max-height: 70vh; }
+  a { color: #7fb4ff; }
+</style>
+</head>
+<body>
+<h1>Guitar multi-effect</h1>
+<p>Placeholder page (the real UI is added in phase W3). API: <a href="/api/info">/api/info</a>,
+<a href="/api/state">/api/state</a>, <a href="/api/chain">/api/chain</a>, <a href="/api/presets">/api/presets</a>.</p>
+<pre id="out">loading /api/info ...</pre>
+<script>
+fetch("/api/info").then(function (r) { return r.json(); }).then(function (j) {
+  document.getElementById("out").textContent = JSON.stringify(
+    {fpga_version: j.fpga_version_hex, mock: j.mock, capabilities: j.capabilities,
+     parameters: j.params.length, effects: j.effects.map(function (e) { return e.id; })}, null, 2);
+}).catch(function (e) { document.getElementById("out").textContent = "error: " + e; });
+</script>
+</body>
+</html>
