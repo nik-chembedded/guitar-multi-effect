@@ -3,24 +3,43 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GME web UI</title>
-<style>
-  body { font: 14px/1.5 system-ui, sans-serif; background: #15171a; color: #d8dce1; margin: 2rem; }
-  pre { background: #1d2024; padding: 1rem; border-radius: 6px; overflow: auto; max-height: 70vh; }
-  a { color: #7fb4ff; }
-</style>
+<title>Guitar multi-effect</title>
+<link rel="stylesheet" href="app.css">
 </head>
 <body>
-<h1>Guitar multi-effect</h1>
-<p>Placeholder page (the real UI is added in phase W3). API: <a href="/api/info">/api/info</a>,
-<a href="/api/state">/api/state</a>, <a href="/api/chain">/api/chain</a>, <a href="/api/presets">/api/presets</a>.</p>
-<pre id="out">loading /api/info ...</pre>
-<script>
-fetch("/api/info").then(function (r) { return r.json(); }).then(function (j) {
-  document.getElementById("out").textContent = JSON.stringify(
-    {fpga_version: j.fpga_version_hex, mock: j.mock, capabilities: j.capabilities,
-     parameters: j.params.length, effects: j.effects.map(function (e) { return e.id; })}, null, 2);
-}).catch(function (e) { document.getElementById("out").textContent = "error: " + e; });
-</script>
+<header id="topbar">
+  <div class="brand">GME <small>guitar multi-effect</small></div>
+  <div class="chips">
+    <span class="chip" id="conn"><i class="dot"></i><span>connecting</span></span>
+    <span class="chip" id="fpga">FPGA -</span>
+    <span class="chip" id="codec">codec -</span>
+    <span class="chip" id="pll">PLL -</span>
+  </div>
+  <div class="meters">
+    <div class="meter"><label>IN</label><div class="bar"><div id="m-in"></div></div><span id="t-in">-</span></div>
+    <div class="meter"><label>OUT</label><div class="bar"><div id="m-out"></div></div><span id="t-out">-</span></div>
+  </div>
+  <button id="mute" class="btn" title="Mute the output">Mute</button>
+  <nav id="tabs">
+    <button data-tab="board" class="active">Board</button>
+    <button data-tab="settings">Settings</button>
+    <button data-tab="expert">Expert</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-board" class="tab">
+    <div id="presetbar" class="bar-row"></div>
+    <div id="orderhint" class="hint"></div>
+    <div id="chain" class="chain"></div>
+  </section>
+  <section id="tab-settings" class="tab" hidden></section>
+  <section id="tab-expert" class="tab" hidden></section>
+</main>
+<div id="toasts"></div>
+
+<script src="util.js"></script>
+<script src="controls.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

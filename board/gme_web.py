@@ -399,6 +399,9 @@ def main(argv=None):
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--mock", action="store_true", help="in-memory register file instead of /dev/mem")
     ap.add_argument("--mock-version", type=lambda s: int(s, 0), default=0x0205)
+    ap.add_argument("--mock-state", default=None, metavar="FILE",
+                    help="with --mock: share the mock registers with other processes through this JSON file "
+                         "(e.g. the same file as gme_hps.py --mock --mock-state)")
     ap.add_argument("--no-check", action="store_true", help="skip the VERSION check")
     ap.add_argument("--data-dir", default=None, help="presets/ and settings.json (default: next to this script)")
     ap.add_argument("--cab-dir", default=None, help="cabNN.coef files (default: <data-dir>/cab)")
@@ -406,7 +409,8 @@ def main(argv=None):
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
     try:
-        dev = gm.open_device(mock=a.mock, mock_version=a.mock_version, check=not a.no_check)
+        dev = gm.open_device(mock=a.mock, mock_version=a.mock_version, check=not a.no_check,
+                                state_file=os.path.expanduser(a.mock_state) if a.mock_state else None)
     except gd.WrongImage as e:
         raise SystemExit(str(e))
     except (IOError, OSError) as e:

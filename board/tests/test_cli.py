@@ -2,6 +2,7 @@
 legacy_gme_hps.py) is run against the old code and against the new CLI, both on a Mock
 (VERSION 0x0204 = the image the old tool was written for); registers, codec writes,
 stdout and exit messages must be identical."""
+import os
 import sys
 
 import pytest
@@ -234,11 +235,11 @@ def test_mock_flag_and_wrapper(tmp_path):
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(os.path.dirname(here))
     for script in (os.path.join(root, "board", "gme_hps.py"), os.path.join(root, "tools", "gme_hps.py")):
-        r = subprocess.run([sys.executable, script, "--mock", "--data-dir", str(tmp_path), "status"],
+        r = subprocess.run([sys.executable, script, "--mock", "--mock-state", str(tmp_path / "st.json"), "--data-dir", str(tmp_path), "status"],
                            capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
         assert r.stdout.startswith("version 0x0205, status 0x0005")
-        r = subprocess.run([sys.executable, script, "--mock", "--data-dir", str(tmp_path), "selftest"],
+        r = subprocess.run([sys.executable, script, "--mock", "--mock-state", str(tmp_path / "st.json"), "--data-dir", str(tmp_path), "selftest"],
                            capture_output=True, text=True)
         assert "selftest OK" in r.stdout
 
@@ -248,3 +249,54 @@ def test_wrong_image_refused(tmp_path):
         gme_hps.run(["--mock", "--mock-version", "0x0100", "--data-dir", str(tmp_path), "status"])
     assert "0x02xx" in str(e.value)
     gme_hps.run(["--mock", "--mock-version", "0x0100", "--no-check", "--data-dir", str(tmp_path), "status"])
+
+
+def test_mock_state_shared_between_cli_calls(tmp_path):
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    script = os.path.join(os.path.dirname(here), "gme_hps.py")
+    base = [sys.executable, script, "--mock", "--mock-state", str(tmp_path / "st.json"), "--data-dir", str(tmp_path)]
+    subprocess.run(base + ["set", "echo_time=320ms", "echo_on=on"], check=True)
+    r = subprocess.run(base + ["get", "echo_time"], capture_output=True, text=True, check=True)
+    assert "320 ms (raw 15360)" in r.stdout
+    r = subprocess.run(base + ["read", "0"], capture_output=True, text=True, check=True)
+    assert r.stdout.strip() == "0x0004"
+
+
+def test_mock_state_file_semantics(tmp_path):
+    f = str(tmp_path / "s.json")
+    a = gd.Mock(state_file=f)
+    b = gd.Mock(state_file=f)                        # a second "process"
+    a.write(5, 1234)
+    assert b.read(5) == 1234
+    b.write(6, 77)
+    assert a.read(6) == 77 and a.read(5) == 1234     # a sees b's write, keeps its own
+    assert gd.Mock(state_file=f).read(5) == 1234     # a new process starts from the file
+    a.write(0x10, 9)
+    assert a.read(0x10) == 0x0205                    # read-only registers are not taken from the file
+    open(f, "w").write("garbage")
+    assert a.read(5) == 1234                         # a broken file is ignored
+
+
+def test_cli_and_server_share_mock_state(tmp_path, capsys):
+    import json
+    import threading
+    import urllib.request
+    import gme_web
+    from gme import model as gm
+    f = str(tmp_path / "shared.json")
+    model = gm.Model(gd.Mock(state_file=f))
+    srv = gme_web.create_server(model, "127.0.0.1", 0)
+    threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+    try:
+        url = "http://127.0.0.1:%d/api/state" % srv.server_address[1]
+        gme_hps.run(["--mock", "--mock-state", f, "--data-dir", str(tmp_path), "set", "trem_rate=6.5Hz"])
+        vals = json.loads(urllib.request.urlopen(url).read().decode())["values"]
+        assert vals["trem_rate"] == 6.5
+        req = urllib.request.Request(url.replace("state", "params"), json.dumps({"od_gain": 4}).encode(),
+                                     {"Content-Type": "application/json"})
+        urllib.request.urlopen(req).read()
+        gme_hps.run(["--mock", "--mock-state", f, "--data-dir", str(tmp_path), "get", "od_gain"])
+        assert "od_gain      = 4" in capsys.readouterr().out
+    finally:
+        srv.stop()

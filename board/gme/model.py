@@ -266,9 +266,9 @@ def load_table():
     return _table
 
 
-def open_device(mock=False, mock_version=0x0205, check=True):
+def open_device(mock=False, mock_version=0x0205, check=True, state_file=None):
     """The DevMem backend on the board, or the Mock; refuses a foreign FPGA image."""
-    dev = device.Mock(version=mock_version) if mock else device.DevMem()
+    dev = device.Mock(version=mock_version, state_file=state_file) if mock else device.DevMem()
     if check:
         v = dev.read(REG_VERSION)
         if v & 0xFF00 != 0x0200:
@@ -285,9 +285,20 @@ class Model(object):
         self.table = table or load_table()
         self.lock = threading.RLock()
         self.version = dev.read(REG_VERSION)
-        self.cab_slot = None
-        if store is not None:
-            self.cab_slot = store.settings().get("cab_slot")
+        self._cab_slot = None
+
+    @property
+    def cab_slot(self):
+        """Loaded cabinet slot: kept in settings.json, so the CLI and the server agree."""
+        if self.store is not None:
+            return self.store.settings().get("cab_slot")
+        return self._cab_slot
+
+    @cab_slot.setter
+    def cab_slot(self, v):
+        self._cab_slot = v
+        if self.store is not None:
+            self.store.update_settings(cab_slot=v)
 
     # ------------------------------------------------------------ raw access
     def read(self, reg):

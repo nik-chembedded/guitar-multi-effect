@@ -333,9 +333,9 @@ def test_raw(api):
 def test_unknown_and_static(api):
     err(api.get("/api/nothing"), 404)
     err(api.get("/api"), 404)
-    err(api.get("/api/info/extra") if False else api.call("DELETE", "/api/info"), 405)
+    err(api.call("DELETE", "/api/info"), 405)
     s, body = api.call("GET", "/")
-    assert s == 200 and b"/api/info" in body
+    assert s == 200 and b"<title>" in body
     assert api.call("GET", "/index.html")[0] == 200
     assert api.call("GET", "/nothing.js")[0] == 404
     assert api.call("GET", "/../gme_web.py")[0] == 404

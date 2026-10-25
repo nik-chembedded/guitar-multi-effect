@@ -205,6 +205,9 @@ def run(argv, dev=None):
     ap.add_argument("--no-check", action="store_true", help="skip the VERSION check")
     ap.add_argument("--mock", action="store_true", help="use an in-memory register file instead of /dev/mem")
     ap.add_argument("--mock-version", type=num, default=0x0205, help="VERSION of the mock (default 0x0205)")
+    ap.add_argument("--mock-state", default=None, metavar="FILE",
+                    help="with --mock: keep the mock registers in this JSON file, shared between calls "
+                         "(default ~/.gme_mock_state.json)")
     ap.add_argument("--data-dir", default=None, help="presets/ and settings.json (default: next to this script)")
     ap.add_argument("--cab-dir", default=None, help="cabNN.coef files (default: <data-dir>/cab)")
     ap.add_argument("cmd", choices=COMMANDS)
@@ -218,7 +221,8 @@ def run(argv, dev=None):
         return selftest()
     if dev is None:
         try:
-            dev = gm.open_device(mock=a.mock, mock_version=a.mock_version, check=not a.no_check)
+            dev = gm.open_device(mock=a.mock, mock_version=a.mock_version, check=not a.no_check,
+                                state_file=os.path.expanduser(a.mock_state or "~/.gme_mock_state.json"))
         except gd.WrongImage as e:
             raise SystemExit(str(e))
         except (IOError, OSError) as e:

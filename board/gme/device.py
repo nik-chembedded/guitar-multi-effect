@@ -5,7 +5,9 @@ the 32-bit word at 0xFF200000 + 4*n.  Python 2.7 and 3 compatible, standard libr
 """
 from __future__ import print_function, division
 
+import json
 import math
+import os
 import threading
 import time
 
@@ -83,7 +85,8 @@ class Mock(object):
 
     mock = True
 
-    def __init__(self, version=0x0205, clock=None, write_delay=0.0, nak=False, status=0x0005):
+    def __init__(self, version=0x0205, clock=None, write_delay=0.0, nak=False, status=0x0005,
+                 state_file=None):
         self.version = version
         self.clock = clock or time.time
         self.t0 = self.clock()
@@ -103,6 +106,50 @@ class Mock(object):
         self.max_concurrent = 0
         self._active = 0
         self._guard = threading.Lock()
+        self.state_file = state_file
+        self._sig = None
+        self._load_state()
+
+    # -- shared state file (--mock-state): other processes see the same registers ----------
+    def _file_sig(self):
+        try:
+            st = os.stat(self.state_file)
+            return (st.st_mtime, st.st_size)
+        except OSError:
+            return None
+
+    def _load_state(self):
+        """Reload the registers when the state file changed (written by another process)."""
+        if not self.state_file:
+            return
+        sig = self._file_sig()
+        if sig is None or sig == self._sig:
+            return
+        try:
+            with open(self.state_file) as f:
+                regs = json.load(f)["regs"]
+        except (IOError, OSError, ValueError, KeyError):
+            return
+        for i, v in enumerate(regs[:NWORDS]):
+            self.regs[i] = int(v) & 0xFFFF
+        self._sig = sig
+
+    def _save_state(self):
+        if not self.state_file:
+            return
+        tmp = "%s.%d.tmp" % (self.state_file, os.getpid())
+        with open(tmp, "w") as f:
+            json.dump({"regs": self.regs}, f)
+        rep = getattr(os, "replace", None)
+        if rep is not None:
+            rep(tmp, self.state_file)
+        else:
+            try:
+                os.rename(tmp, self.state_file)
+            except OSError:
+                os.remove(self.state_file)
+                os.rename(tmp, self.state_file)
+        self._sig = self._file_sig()
 
     # -- helpers --------------------------------------------------------
     def _enter(self):
@@ -134,6 +181,8 @@ class Mock(object):
         try:
             if self.write_delay:
                 time.sleep(self.write_delay)
+            with self._guard:
+                self._load_state()
             return self._read(reg)
         finally:
             self._leave()
@@ -168,7 +217,11 @@ class Mock(object):
         try:
             if self.write_delay:
                 time.sleep(self.write_delay)
-            self._write(reg, value & 0xFFFF)
+            with self._guard:
+                self._load_state()
+                self._write(reg, value & 0xFFFF)
+                if reg not in (REG_CAB_ADDR, REG_CAB_DATA_LO, REG_CAB_DATA_HI):   # bulk cabinet data: not saved per write
+                    self._save_state()
         finally:
             self._leave()
 
