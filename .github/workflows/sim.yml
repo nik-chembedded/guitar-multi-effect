@@ -35,9 +35,9 @@ jobs:
         working-directory: sim/cocotb
         run: pytest -v -k "test_fx_chain or test_fx_chain_24"
 
-      - name: Fixed-point library, parameter smoothing, click-free on/off
+      - name: Fixed-point library, smoothing, click-free on/off, generated LFO, tremolo
         working-directory: sim/cocotb
-        run: pytest -v -k "test_fxlib or test_smooth or test_xfade"
+        run: pytest -v -k "test_fxlib or test_smooth or test_xfade or test_lfo or test_lfo_vs_v1 or test_trem"
 
       - name: I2S core + bit-exact reference vs v1 (27 presets, 16-bit and 24-bit chain)
         working-directory: sim/cocotb

@@ -12,6 +12,8 @@ import os
 import shutil
 from pathlib import Path
 
+import pytest
+
 from cocotb_tools.runner import get_runner
 
 HERE = Path(__file__).resolve().parent
@@ -22,17 +24,21 @@ BUILD = Path(os.environ.get("GME_BUILD", HERE / "sim_build"))
 
 IP_MODELS = [MODELS / "sim_rom.vhd", MODELS / "sim_dpram.vhd", MODELS / "fx_dpram.vhd",
              *sorted((MODELS / "ip").glob("*.vhd"))]
-FX_RTL = [RTL / f for f in ("fx_pkg.vhd", "fx_xfade.vhd", "overdrive.vhd", "distortion.vhd", "chorus.vhd",
+FX_RTL = [RTL / f for f in ("fx_pkg.vhd", "fx_xfade.vhd", "lfo_sine_pkg.vhd", "nco_lfo.vhd",
+                            "overdrive.vhd", "distortion.vhd", "chorus.vhd",
                             "tremolo_v2.vhd", "echo.vhd", "comb_filter.vhd",
                             "allpass_filter.vhd", "reverbe.vhd", "FX_chain.vhd")]
 GHDL_ARGS = ["--std=08", "-frelaxed"]
+# v1 ROM-table tremolo (simulation only), for the v1 reference tests
+LEGACY = MODELS / "legacy"
+LEGACY_TREM = [*sorted((LEGACY / "ip").glob("*.vhd")), LEGACY / "tremolo_legacy.vhd"]
 
 
 def run(toplevel, test_module, sources, testcase=None, parameters=None, extra_env=None, tag=""):
     build_dir = BUILD / (toplevel + tag)
     build_dir.mkdir(parents=True, exist_ok=True)
-    for mif in (ROOT / "fpga" / "ip").glob("*.mif"):      # ROMs load .mif from the cwd
-        shutil.copy(mif, build_dir)
+    for mif in [*(ROOT / "fpga" / "ip").glob("*.mif"), *LEGACY.glob("mif/*.mif")]:
+        shutil.copy(mif, build_dir)                       # ROMs load .mif from the cwd
     runner = get_runner(os.environ.get("SIM", "ghdl"))
     runner.build(sources=sources, hdl_toplevel=toplevel, build_args=GHDL_ARGS,
                  build_dir=build_dir, always=True, parameters=parameters or {})
@@ -60,6 +66,32 @@ def test_fx_chain_24():
         parameters={"DW": 24}, extra_env={"GME_DW": "24"}, tag="_24")
 
 
+def test_lfo():
+    """Generated LFO nco_lfo (v2 step D1) against its Python model."""
+    run("nco_lfo", "test_lfo", [RTL / "lfo_sine_pkg.vhd", RTL / "nco_lfo.vhd"])
+
+
+def test_lfo_vs_v1():
+    """The generated LFO has the shapes and rates of the 8 v1 tables (no simulation)."""
+    import test_lfo_v1
+    test_lfo_v1.check_all()
+
+
+def test_moddelay():
+    """Modulated delay (chorus / flanger / vibrato, v2 step D2) bit-exact to its model."""
+    srcs = [MODELS / "sim_dpram.vhd", MODELS / "fx_dpram.vhd",
+            *[RTL / f for f in ("fx_pkg.vhd", "lfo_sine_pkg.vhd", "nco_lfo.vhd", "mod_delay.vhd")]]
+    run("mod_delay", "test_moddelay", srcs, tag="_16")
+    run("mod_delay", "test_moddelay", srcs, parameters={"DW": 24}, extra_env={"GME_DW": "24"}, tag="_24")
+
+
+def test_trem():
+    """Tremolo on the generated LFO, bit-exact to the Python model (16 and 24 bit)."""
+    run("fx_chain", "test_trem", IP_MODELS + FX_RTL, tag="_trem")
+    run("fx_chain", "test_trem", IP_MODELS + FX_RTL, parameters={"DW": 24},
+        extra_env={"GME_DW": "24"}, tag="_trem24")
+
+
 def test_fxlib():
     """Fixed-point library fx_pkg (v2 step C)."""
     run("fxlib_wrap", "test_fxlib", [RTL / "fx_pkg.vhd", HERE / "hdl" / "fxlib_wrap.vhd"])
@@ -78,7 +110,8 @@ def test_xfade():
 
 def test_ref24():
     """24-bit chain: bit-exact 24-bit golden models + the 27 v1 presets within 16-bit rounding."""
-    run("fx_chain", "test_ref24", IP_MODELS + FX_RTL, parameters={"DW": 24, "ECHO_AW": 16},
+    run("fx_chain", "test_ref24", IP_MODELS + FX_RTL + LEGACY_TREM,
+        parameters={"DW": 24, "ECHO_AW": 16, "LEGACY_TREM": True},
         extra_env={"GME_DW": "24"}, tag="_ref24")
 
 
@@ -114,11 +147,16 @@ def test_system():
 
 def test_reference():
     """Bit-exact against the recorded v1 outputs (GME_REF_MODE=record to re-record).
-    DW = 16 and the v1 echo line size (64 k words)."""
-    run("fx_chain", "test_ref", IP_MODELS + FX_RTL, parameters={"ECHO_AW": 16}, tag="_v1")
+    DW = 16, the v1 echo line size (64 k words) and the v1 ROM-table tremolo."""
+    run("fx_chain", "test_ref", IP_MODELS + FX_RTL + LEGACY_TREM,
+        parameters={"ECHO_AW": 16, "LEGACY_TREM": True}, tag="_v1")
 
 
-def test_wav():
-    """Real guitar audio through every preset on the 24-bit chain (GME_WAV_SECONDS, default 1 s)."""
+WAV_PRESETS = ["dry", "overdrive", "dist_medium", "tremolo", "tremolo_saw", "chorus", "echo", "reverb"]
+
+
+@pytest.mark.parametrize("preset", WAV_PRESETS)
+def test_wav(preset):
+    """Real guitar audio through one preset on the 24-bit chain (GME_WAV_SECONDS, default 1 s)."""
     run("fx_chain", "test_wav", IP_MODELS + FX_RTL, parameters={"DW": 24},
-        extra_env={"GME_DW": "24"}, tag="_wav24")
+        extra_env={"GME_DW": "24", "GME_WAV_PRESET": preset}, tag="_wav24_" + preset)

@@ -10,11 +10,14 @@ The same tests run locally (WSL2 Ubuntu) and in GitHub Actions on every push.
 | `fxdriver.py` | frame-level driver for `FX_chain`: clock, `sample_tick`/`half_tick` strobes, register writes from Python |
 | `golden.py` | bit-exact Python reference models (overdrive, distortion with the `.mif` curves) |
 | `test_fx_chain.py` | the 7 effect tests (run on the 16-bit and the 24-bit chain) |
+| `test_lfo.py` | generated LFO `nco_lfo` (step D1): bit-exact to `lfo_model.py`, frequency, sine accuracy |
+| `test_lfo_v1.py` | no simulation: the 8 v1 LFO tables against the generated LFO (period, shape within 2 %) |
+| `test_trem.py` | tremolo on the generated LFO, bit-exact to the model (16 and 24 bit), phase continuous across changes |
 | `test_fxlib.py` | fixed-point library `fx_pkg` (wrapper `hdl/fxlib_wrap.vhd`): every function against Python |
 | `test_smooth.py` | `param_smooth`: bit-exact to a model, exact final value, time constant |
 | `test_xfade.py` | click-free effect on/off: steady states exact, no step larger than the signals' own |
 | `test_ref24.py` | 24-bit chain: full 24-bit input bit-exact (bypass, overdrive, distortion); the 27 v1 presets within v1's 16-bit rounding |
-| `test_ref.py` | bit-exact regression against the recorded v1 outputs in `ref/` (27 presets; `GME_REF_MODE=record` re-records) |
+| `test_ref.py` | bit-exact regression against the recorded v1 outputs in `ref/` (27 presets; `GME_REF_MODE=record` re-records); uses the v1 tremolo kept in `sim/models/legacy` |
 | `test_i2s.py` | I²S master core (v2 B2) against a WM8731 slave model |
 | `test_avmm.py` | HPS control slave (`ctrl_avmm`): Avalon-MM reads/writes, all registers, invalid/read-only addresses, CONTROL, CODEC register |
 | `test_codec.py` | I²C master + codec init sequencer against an I²C slave model |
@@ -116,6 +119,21 @@ WSL, or the Windows build of GTKWave). Waveforms of long suites get large (the e
 suites dump every signal), so select a single suite or test.
 
 ## Speed
+
+`run_all.sh` runs the suites **in parallel** (pytest-xdist, one GHDL simulation per
+core, slowest suites first via `conftest.py`); the WAV regression is split into one
+simulation per preset and uses 0.25 s of audio (`full`: the whole 3.1 s clip).
+`GME_JOBS=1` runs everything one after another.
+
+Measured (step D1, 8-core WSL2): one after another the full set took ~45 min; the
+longest single suites are `test_ref24` (~9 min) and `test_reference` (~6 min).
+
+Where the time goes: the simulator itself. GHDL's mcode backend runs this design at
+roughly 8 500 clocks/s (17 clocks per audio frame). A pure-VHDL streaming
+testbench without any per-frame Python (tried, bit-identical results) was only
+~5 % faster than the cocotb driver, so Python is not the bottleneck. Further speed
+would come from an optimising GHDL build (`ghdl-llvm` / `ghdl-gcc` with `-O2`, needs
+`sudo apt install`) and from fewer clocks per frame.
 
 | Bench | ModelSim Starter 10.5b | GHDL 5 + cocotb |
 |-------|------------------------|-----------------|

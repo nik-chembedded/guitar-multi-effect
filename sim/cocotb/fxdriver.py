@@ -25,7 +25,7 @@ OD, TREM, ECHO, DIST, CHORUS, REVERB = 1, 2, 4, 8, 16, 32
 
 PARAMS = ("effects_enable", "od_drive", "od_gain", "trem_depth", "trem_wave",
           "echo_time", "echo_level", "echo_repeat", "chorus_rate", "chorus_level",
-          "chorus_depth", "dist_mix", "dist_type", "reverb_type", "reverb_mix")
+          "chorus_depth", "dist_mix", "dist_type", "reverb_type", "reverb_mix", "trem_rate")
 
 
 def to_s16(v):

@@ -9,6 +9,7 @@ The FPGA registers sit behind the HPS lightweight bridge: register n is the
     python gme_hps.py read  0x02
     python gme_hps.py write 0x00 0x0001          (register, value)
     python gme_hps.py set   od_drive=3000 od_gain=4 effects=OD
+    python gme_hps.py set   effects=TREM trem_shape=square trem_hz=6.5 trem_depth=200
     python gme_hps.py preset crunch
     python gme_hps.py codec 0x00 0x080           (codec register, 9-bit value: mute line in)
     python gme_hps.py dump
@@ -34,10 +35,12 @@ REGS = {
     "dist_mix": 0x08, "dist_type": 0x09, "chorus_level": 0x0A, "chorus_depth": 0x0B,
     "chorus_rate": 0x0C, "reverb_mix": 0x0D, "reverb_type": 0x0E,
     "version": 0x10, "status": 0x11, "level_in": 0x12, "level_out": 0x13, "control": 0x14,
-    "codec": 0x15,
+    "codec": 0x15, "trem_rate": 0x16,
 }
 EFFECT_REGS = [k for k in sorted(REGS, key=REGS.get) if REGS[k] <= 0x0E]   # Python 2: dicts unordered
 EFFECT_BITS = {"OD": 1, "TREM": 2, "ECHO": 4, "DIST": 8, "CHORUS": 16, "REVERB": 32}
+# tremolo free mode (step D1): trem_wave = 8 + shape, rate in trem_rate (0.01 Hz)
+TREM_SHAPES = {"sine": 0, "triangle": 1, "saw": 2, "square": 3}
 
 PRESETS = {
     "clean":  dict(effects_enable=0),
@@ -50,6 +53,8 @@ PRESETS = {
                     chorus_level=30000, chorus_depth=400, chorus_rate=40, echo_time=24000,
                     echo_level=26000, echo_repeat=140, reverb_type=3, reverb_mix=128),
     "trem":   dict(effects_enable=EFFECT_BITS["TREM"], trem_wave=0, trem_depth=200),
+    "pulse":  dict(effects_enable=EFFECT_BITS["TREM"], trem_wave=8 + TREM_SHAPES["square"],
+                   trem_rate=650, trem_depth=180),
 }
 
 
@@ -114,6 +119,12 @@ def parse_assignments(items):
                 regs["effects_enable"] = num(v)
             else:
                 regs["effects_enable"] = sum(EFFECT_BITS[e.strip().upper()] for e in v.split("+") if e.strip())
+        elif k == "trem_shape":
+            if v not in TREM_SHAPES:
+                raise SystemExit("trem_shape: %s" % ", ".join(sorted(TREM_SHAPES)))
+            regs["trem_wave"] = 8 + TREM_SHAPES[v]
+        elif k == "trem_hz":
+            regs["trem_rate"] = int(round(float(v) * 100))
         elif k in REGS:
             regs[k] = num(v)
         else:
@@ -130,8 +141,9 @@ def selftest():
     assert r == {"effects_enable": 12, "od_gain": 4, "echo_time": 14400}, r
     assert effects_text(12) == "ECHO+DIST"
     assert ((0x02 & 0x7F) << 9) | 0x079 == 0x0479                 # CODEC word for R2 = 0x079
+    assert parse_assignments(["trem_shape=square", "trem_hz=6.5"]) == {"trem_wave": 11, "trem_rate": 650}
     for p in PRESETS.values():
-        assert set(p) <= set(EFFECT_REGS)
+        assert set(p) <= set(EFFECT_REGS) | {"trem_rate"}
     print("selftest OK")
 
 
@@ -163,9 +175,10 @@ def main():
     elif a.cmd == "preset":
         if not a.args or a.args[0] not in PRESETS:
             raise SystemExit("presets: %s" % ", ".join(PRESETS))
-        regs = dict((k, 0) for k in EFFECT_REGS)
+        keys = EFFECT_REGS + ["trem_rate"]
+        regs = dict((k, 0) for k in keys)
         regs.update(PRESETS[a.args[0]])
-        for k in EFFECT_REGS:
+        for k in keys:
             b.write(REGS[k], regs[k])
         print("preset '%s' loaded" % a.args[0])
     elif a.cmd == "codec":

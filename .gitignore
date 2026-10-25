@@ -88,3 +88,7 @@ fpga/hps/*.log
 fpga/hps_sdram_p0_summary.csv
 fpga/hps_isw_handoff/
 fpga/.qsys_edit/
+
+# third-party cabinet IRs: not redistributable, see ir/manifest (step D3)
+ir/third_party/
+ir/build/

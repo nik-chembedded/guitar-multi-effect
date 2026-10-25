@@ -171,7 +171,8 @@ and the equivalence proof of the IP models (`sim/models/run_equiv.sh`).
   board** (registers, presets, level meters, codec writes from Linux). 4 % of the logic.
 * Step C (fixed-point library, 24-bit effects, parameter smoothing, click-free
   on/off) is done: verified in simulation and **on the board**; timing met, 5 % of the logic. See [docs/v2_stepC_design.md](docs/v2_stepC_design.md).
-* Next: step D (new DSP blocks incl. FIR cabinet simulation).
+* Step D (better DSP blocks, [docs/v2_stepD_design.md](docs/v2_stepD_design.md)) in progress: D1 generated LFO
+  done in simulation (frees 66 M10K); D2–D6 next. Board test at the end of step D.
 
 ## Third-party code
 

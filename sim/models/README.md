@@ -43,3 +43,12 @@ address-register edge. Both are now modelled.
 
 * `sim/run_sim.sh` / `sim/run_wav.sh`: set `IP_MODELS=1` to compile these instead of `altera_mf`.
 * GHDL / cocotb (v2 step A) always use them.
+
+## `legacy/`: v1 tremolo (simulation only)
+
+Step D1 replaced the tremolo's 8 ROM-table LFOs by the generated LFO (`nco_lfo`).
+To keep every recorded v1 preset comparable bit for bit, the v1 tremolo
+(`tremolo_legacy.vhd`), its 8 ROM models (`ip/`) and tables (`mif/`) are kept here
+and used only by the v1 reference tests (`FX_chain` generic `LEGACY_TREM = true`).
+They are not part of the FPGA design. `test_lfo_v1.py` compares these tables with
+the generated LFO.

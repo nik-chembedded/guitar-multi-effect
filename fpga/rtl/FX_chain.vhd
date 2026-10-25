@@ -5,6 +5,8 @@
 --   DW    : sample width, 16 (bit-exact to v1) or 24 (step C)
 --   XFADE : click-free on/off (fx_xfade, 5.3 ms crossfade per effect)
 --   ECHO_AW : echo line 2^ECHO_AW words (16 = v1 size, for the reference test)
+--   LEGACY_TREM : v1 ROM-table tremolo (sim/models/legacy, simulation only) instead
+--           of the generated LFO; used by the v1 reference tests
 -- Mono: the left input is processed; data_out_right is not driven by effects.
 -- -----------------------------------------------------------------------------
 library IEEE;
@@ -15,7 +17,8 @@ entity FX_chain is
 generic (
       DW    : positive := 16;
       XFADE : boolean  := false;
-      ECHO_AW : positive := 15
+      ECHO_AW : positive := 15;
+      LEGACY_TREM : boolean := false
 );
 port(
 
@@ -31,6 +34,7 @@ port(
 		od_gain				: in std_logic_vector(15 downto 0);
 		trem_depth			: in std_logic_vector(15 downto 0);
 		trem_wave			: in std_logic_vector(15 downto 0);
+		trem_rate			: in std_logic_vector(15 downto 0) := (others => '0');   -- 0.01 Hz (D1)
 		echo_time			: in std_logic_vector(15 downto 0);
 		echo_level			: in std_logic_vector(15 downto 0);
 		echo_repeat			: in std_logic_vector(15 downto 0);
@@ -60,6 +64,15 @@ architecture rtl of FX_chain is
   signal od_out, dist_out, chorus_out, trem_out, echo_out          : sample_t;
   signal od_en, dist_en, chorus_en, trem_en, echo_en, rev_en       : std_logic;
 
+  -- simulation-only v1 tremolo (component: not needed by synthesis when unused)
+  component tremolo_legacy is
+    generic (DW : positive := 16);
+    port (clk, en_rise, en_fall, tremolo_enable : in std_logic;
+          t_wave, t_depth, t_rate : in std_logic_vector(15 downto 0);
+          data_in  : in  std_logic_vector(DW - 1 downto 0);
+          data_out : out std_logic_vector(DW - 1 downto 0));
+  end component;
+
 begin
 
   -- strobes per effect (as in v1): overdrive / distortion on sample_tick,
@@ -87,9 +100,18 @@ begin
       clk => clk, tick => sample_tick, en_rise => half_tick, enable_in => effects_enable(4),
       enable_eff => chorus_en, din => dist_out, wet => chorus_wet, dout => chorus_out);
 
-  TREMOLO_left : entity work.tremolo_v2 generic map (DW => DW) port map(
-      clk => clk, en_rise => half_tick, en_fall => sample_tick, tremolo_enable => trem_en,
-      t_wave => trem_wave, t_depth => trem_depth, data_in => chorus_out, data_out => trem_wet);
+  trem_new : if not LEGACY_TREM generate
+    TREMOLO_left : entity work.tremolo_v2 generic map (DW => DW) port map(
+        clk => clk, en_rise => half_tick, en_fall => sample_tick, tremolo_enable => trem_en,
+        t_wave => trem_wave, t_depth => trem_depth, t_rate => trem_rate,
+        data_in => chorus_out, data_out => trem_wet);
+  end generate;
+  trem_v1 : if LEGACY_TREM generate
+    TREMOLO_left : tremolo_legacy generic map (DW => DW) port map(
+        clk => clk, en_rise => half_tick, en_fall => sample_tick, tremolo_enable => trem_en,
+        t_wave => trem_wave, t_depth => trem_depth, t_rate => trem_rate,
+        data_in => chorus_out, data_out => trem_wet);
+  end generate;
   TREMOLO_fade : entity work.fx_xfade generic map (DW => DW, XFADE => XFADE) port map(
       clk => clk, tick => sample_tick, en_rise => half_tick, enable_in => effects_enable(1),
       enable_eff => trem_en, din => chorus_out, wet => trem_wet, dout => trem_out);

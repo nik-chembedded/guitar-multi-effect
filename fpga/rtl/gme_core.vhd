@@ -21,7 +21,7 @@ entity gme_core is
     INIT_WAIT_CLKS : positive := 491_520;          -- codec power-up pause (10 ms)
     SMOOTH         : boolean  := true;             -- parameter smoothing
     XFADE          : boolean  := true;             -- click-free effect on/off
-    VERSION        : std_logic_vector(15 downto 0) := x"0202"
+    VERSION        : std_logic_vector(15 downto 0) := x"0203"
   );
   port (
     clk        : in  std_logic;
@@ -58,10 +58,10 @@ architecture rtl of gme_core is
 
   signal effects_enable, od_drive, od_gain, trem_wave, trem_depth, echo_time, echo_repeat,
          echo_level, dist_mix, dist_type, chorus_level, chorus_depth, chorus_rate,
-         reverb_mix, reverb_type : std_logic_vector(15 downto 0);
+         reverb_mix, reverb_type, trem_rate : std_logic_vector(15 downto 0);
   -- smoothed continuous parameters (to the chain)
   signal s_od_drive, s_trem_depth, s_echo_level, s_echo_repeat, s_dist_mix,
-         s_chorus_level, s_reverb_mix : std_logic_vector(15 downto 0);
+         s_chorus_level, s_reverb_mix, s_trem_rate : std_logic_vector(15 downto 0);
   signal codec_init, mute       : std_logic;
 
   signal i2c_req, i2c_busy, i2c_done, i2c_nak : std_logic;
@@ -106,7 +106,7 @@ begin
       clk => clk, sample_tick => sample_tick, half_tick => half_tick,
       od_enable => '0', tremolo_enable => '0', echo_enable => '0',
       effects_enable => effects_enable, od_drive => s_od_drive, od_gain => od_gain,
-      trem_depth => s_trem_depth, trem_wave => trem_wave,
+      trem_depth => s_trem_depth, trem_wave => trem_wave, trem_rate => s_trem_rate,
       echo_time => echo_time, echo_level => s_echo_level, echo_repeat => s_echo_repeat,
       chorus_rate => chorus_rate, chorus_level => s_chorus_level, chorus_depth => chorus_depth,
       dist_mix => s_dist_mix, dist_type => dist_type,
@@ -126,11 +126,12 @@ begin
     u_sm_dmix   : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => dist_mix,     value => s_dist_mix);
     u_sm_clevel : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => chorus_level, value => s_chorus_level);
     u_sm_rmix   : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => reverb_mix,   value => s_reverb_mix);
+    u_sm_trate  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => trem_rate,    value => s_trem_rate);
   end generate;
   smooth_off : if not SMOOTH generate
     s_od_drive <= od_drive;     s_trem_depth <= trem_depth;     s_echo_level <= echo_level;
     s_echo_repeat <= echo_repeat; s_dist_mix <= dist_mix;       s_chorus_level <= chorus_level;
-    s_reverb_mix <= reverb_mix;
+    s_reverb_mix <= reverb_mix;   s_trem_rate <= trem_rate;
   end generate;
 
   -- mono effects: processed left channel to both outputs
@@ -153,7 +154,7 @@ begin
       trem_wave => trem_wave, trem_depth => trem_depth, echo_time => echo_time,
       echo_repeat => echo_repeat, echo_level => echo_level, dist_mix => dist_mix,
       dist_type => dist_type, chorus_level => chorus_level, chorus_depth => chorus_depth,
-      chorus_rate => chorus_rate, reverb_mix => reverb_mix, reverb_type => reverb_type,
+      chorus_rate => chorus_rate, reverb_mix => reverb_mix, reverb_type => reverb_type, trem_rate => trem_rate,
       codec_init => codec_init, mute => mute);
 
   u_codec : entity work.codec_ctrl

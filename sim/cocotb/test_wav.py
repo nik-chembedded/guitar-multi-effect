@@ -5,6 +5,8 @@ Reads sim/audio/<GME_WAV_SAMPLE>.wav (default the_lick_e_minor), processes the
 first GME_WAV_SECONDS seconds (default 1.0) with every preset and writes
 sim/out/cocotb_wav/<sample>_<preset>.wav. Checks: dry is bit-exact, no output
 is X, no wrap-around, and the tremolo presets have no gain clicks.
+GME_WAV_PRESET=<name>[,<name>...] runs only those presets (the test runner runs
+every preset as its own simulation, in parallel).
 """
 import os
 import sys
@@ -68,7 +70,12 @@ async def test_wav_presets(dut):
     fx = FxChain(dut)
     await fx.start()
     lat = None
-    for name, regs in PRESETS.items():
+    only = [p for p in os.environ.get("GME_WAV_PRESET", "").split(",") if p]
+    presets = {k: v for k, v in PRESETS.items() if not only or k in only}
+    if any(k.startswith("tremolo") for k in presets) and "dry" not in presets:
+        y = [v or 0 for v in await fx.run(x[:4800], tail=64)]       # latency for the click check
+        lat = find_latency(x[:4800], y)
+    for name, regs in presets.items():
         fx.set(**{**{k: 0 for k in PRESETS["chorus"]}, **regs})
         await fx.run([0] * 64)                       # let the previous preset settle
         y = await fx.run(x, tail=4800)

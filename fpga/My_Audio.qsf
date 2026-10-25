@@ -30,6 +30,8 @@ set_global_assignment -name VHDL_FILE rtl/fx_pkg.vhd
 set_global_assignment -name VHDL_FILE rtl/fx_dpram.vhd
 set_global_assignment -name VHDL_FILE rtl/fx_xfade.vhd
 set_global_assignment -name VHDL_FILE rtl/param_smooth.vhd
+set_global_assignment -name VHDL_FILE rtl/lfo_sine_pkg.vhd
+set_global_assignment -name VHDL_FILE rtl/nco_lfo.vhd
 set_global_assignment -name VHDL_FILE rtl/overdrive.vhd
 set_global_assignment -name VHDL_FILE rtl/distortion.vhd
 set_global_assignment -name VHDL_FILE rtl/chorus.vhd
@@ -51,25 +53,9 @@ set_global_assignment -name VHDL_FILE rtl/top_v2.vhd
 set_global_assignment -name QIP_FILE ip/dist_ROM_soft.qip
 set_global_assignment -name QIP_FILE ip/dist_ROM_medium.qip
 set_global_assignment -name QIP_FILE ip/dist_ROM_hard.qip
-set_global_assignment -name QIP_FILE ip/sine_5hz.qip
-set_global_assignment -name QIP_FILE ip/sine_7hz.qip
-set_global_assignment -name QIP_FILE ip/my_sin_10hz.qip
-set_global_assignment -name QIP_FILE ip/sine_12hz.qip
-set_global_assignment -name QIP_FILE ip/sine_15hz.qip
-set_global_assignment -name QIP_FILE ip/triangle_5hz.qip
-set_global_assignment -name QIP_FILE ip/triangle_10hz.qip
-set_global_assignment -name VHDL_FILE ip/saw_10hz.vhd
 set_global_assignment -name MIF_FILE ip/distortion_hard.mif
 set_global_assignment -name MIF_FILE ip/distortion_medium.mif
 set_global_assignment -name MIF_FILE ip/distortion_soft.mif
-set_global_assignment -name MIF_FILE ip/my_sin.mif
-set_global_assignment -name MIF_FILE ip/sawtooth_10hz_8bit.mif
-set_global_assignment -name MIF_FILE ip/sine_12hz_8bit.mif
-set_global_assignment -name MIF_FILE ip/sine_15hz_8bit.mif
-set_global_assignment -name MIF_FILE ip/sine_5hz_8bit.mif
-set_global_assignment -name MIF_FILE ip/sine_7hz_8bit.mif
-set_global_assignment -name MIF_FILE ip/triangle_10hz_8bit.mif
-set_global_assignment -name MIF_FILE ip/triangle_5hz_8bit.mif
 
 # ---- Pin assignments (DE1-SoC)
 set_location_assignment PIN_AF14 -to CLOCK_50

@@ -10,6 +10,7 @@
 --   0x13        output peak level                                              R
 --   0x14        CONTROL: bit0 = re-run codec init, bit1 = mute (level)         W, R
 --               bit0 is a self-clearing pulse on codec_init
+--   0x16        TREM_RATE: tremolo LFO rate in 0.01 Hz (free mode, step D1)   R/W
 -- Any other address: err = '1' (read and write).
 -- -----------------------------------------------------------------------------
 library ieee;
@@ -18,7 +19,7 @@ use ieee.numeric_std.all;
 
 entity reg_file is
   generic (
-    VERSION : std_logic_vector(15 downto 0) := x"0202"
+    VERSION : std_logic_vector(15 downto 0) := x"0203"
   );
   port (
     clk        : in  std_logic;
@@ -49,6 +50,7 @@ entity reg_file is
     chorus_rate    : out std_logic_vector(15 downto 0);
     reverb_mix     : out std_logic_vector(15 downto 0);
     reverb_type    : out std_logic_vector(15 downto 0);
+    trem_rate      : out std_logic_vector(15 downto 0);
     -- control
     codec_init     : out std_logic;                      -- 1-cycle pulse
     mute           : out std_logic
@@ -59,6 +61,7 @@ architecture rtl of reg_file is
   type regs_t is array (0 to 14) of std_logic_vector(15 downto 0);
   signal regs    : regs_t := (others => (others => '0'));
   signal control : std_logic_vector(15 downto 0) := (others => '0');
+  signal rate_r  : std_logic_vector(15 downto 0) := (others => '0');
   signal init_p  : std_logic := '0';
 begin
 
@@ -70,6 +73,7 @@ begin
       if rst = '1' then
         regs    <= (others => (others => '0'));
         control <= (others => '0');
+        rate_r  <= (others => '0');
       elsif we = '1' then
         a := to_integer(unsigned(addr));
         if a <= 14 then
@@ -77,12 +81,14 @@ begin
         elsif a = 16#14# then
           control <= wdata and x"0002";      -- bit0 is a pulse, not stored
           init_p  <= wdata(0);
+        elsif a = 16#16# then
+          rate_r  <= wdata;
         end if;
       end if;
     end if;
   end process;
 
-  read_mux : process(addr, regs, status_in, level_in, level_out, control)
+  read_mux : process(addr, regs, status_in, level_in, level_out, control, rate_r)
     variable a : natural range 0 to 255;
   begin
     a     := to_integer(unsigned(addr));
@@ -100,6 +106,8 @@ begin
       rdata <= level_out;
     elsif a = 16#14# then
       rdata <= control;
+    elsif a = 16#16# then
+      rdata <= rate_r;
     else
       err <= '1';
     end if;
@@ -120,6 +128,7 @@ begin
   chorus_rate    <= regs(12);
   reverb_mix     <= regs(13);
   reverb_type    <= regs(14);
+  trem_rate      <= rate_r;
   codec_init     <= init_p;
   mute           <= control(1);
 

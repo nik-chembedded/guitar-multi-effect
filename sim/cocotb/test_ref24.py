@@ -7,7 +7,7 @@ test_ref24.py - the 24-bit effect chain (v2 step C, DW = 24).
    24-bit chain must match the recorded v1 outputs within the 16-bit rounding
    noise that v1 adds and the 24-bit chain does not. Each preset prints its
    max / RMS difference in 16-bit LSB.
-Runs with ECHO_AW = 16 (v1 echo line size), XFADE off (instant registers).
+Runs with the v1 ROM-table tremolo (LEGACY_TREM, simulation only), ECHO_AW = 16 (v1 echo line size), XFADE off (instant registers).
 The preset test runs first: like the v1 recording it must start from power-up
 (LFO phases and delay-line contents carry over between tests).
 """

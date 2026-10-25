@@ -1,0 +1,95 @@
+{
+  "_comment": "Cabinet IRs of the v2 step D3 cabinet simulator. Third-party files are NOT in git (see licence); get them from the source and place them at 'file'. Build: tools/ir_build.py (checks sha256).",
+  "cabinets": [
+    {
+      "slot": 0,
+      "name": "Default (generated)",
+      "file": "ir/cab00_default.wav",
+      "sha256": "9ef4d9c8984cd8a5ebd76a74901cb52ae18a00462c1480a370027d429a7141d1",
+      "source": "tools/make_cab_ir.py (this repository)",
+      "url": "",
+      "licence": "part of this repository"
+    },
+    {
+      "slot": 1,
+      "name": "1x12 American",
+      "file": "ir/third_party/analog_cab_25/1x12 American.wav",
+      "sha256": "aa73ccaed7708ff40f5ae598e43fda77ddb5a2a27154a14cf9d95739cd423d58",
+      "source": "25 Analog Cab IRs.zip (user-provided download, 2026-10-25)",
+      "url": "",
+      "licence": "unknown (no terms in the zip): local use only, not redistributed"
+    },
+    {
+      "slot": 2,
+      "name": "1x12 British",
+      "file": "ir/third_party/analog_cab_25/1x12 British_EQ.wav",
+      "sha256": "12079a294680328e57582c9fa7666ed829b8715be2c37028408cd5e8b5646e9f",
+      "source": "25 Analog Cab IRs.zip (user-provided download, 2026-10-25)",
+      "url": "",
+      "licence": "unknown (no terms in the zip): local use only, not redistributed"
+    },
+    {
+      "slot": 3,
+      "name": "2x12 Blackface",
+      "file": "ir/third_party/analog_cab_25/2x12 Blackface_EQ.wav",
+      "sha256": "92c00d6ce9afb402026b283d7a89168e81f519c4801100b79234cf494825cb59",
+      "source": "25 Analog Cab IRs.zip (user-provided download, 2026-10-25)",
+      "url": "",
+      "licence": "unknown (no terms in the zip): local use only, not redistributed"
+    },
+    {
+      "slot": 4,
+      "name": "2x12 VC 30",
+      "file": "ir/third_party/analog_cab_25/2x12 VC 30_EQ.wav",
+      "sha256": "c0fe322bf5b46728d3736baac48f1c697d8f6d473627734b43a7fdb5e84acbc9",
+      "source": "25 Analog Cab IRs.zip (user-provided download, 2026-10-25)",
+      "url": "",
+      "licence": "unknown (no terms in the zip): local use only, not redistributed"
+    },
+    {
+      "slot": 5,
+      "name": "4x10 American",
+      "file": "ir/third_party/analog_cab_25/4x10 American_EQ.wav",
+      "sha256": "ec2c4bbd9313d560bef8cbe041bb79bbdc36946e0ef6aec60988fcc4673c5be5",
+      "source": "25 Analog Cab IRs.zip (user-provided download, 2026-10-25)",
+      "url": "",
+      "licence": "unknown (no terms in the zip): local use only, not redistributed"
+    },
+    {
+      "slot": 6,
+      "name": "4x12 British",
+      "file": "ir/third_party/analog_cab_25/4x12 British_EQ.wav",
+      "sha256": "4ec427fe44af3d6f0f33a9762fe11192d41d71ae51039490bbe66ce8f528236f",
+      "source": "25 Analog Cab IRs.zip (user-provided download, 2026-10-25)",
+      "url": "",
+      "licence": "unknown (no terms in the zip): local use only, not redistributed"
+    },
+    {
+      "slot": 7,
+      "name": "4x12 Metal American",
+      "file": "ir/third_party/analog_cab_25/4x12 Metal American_EQ.wav",
+      "sha256": "e4dcd08600b437ab386ab2596d6f25bb3d8335d51083a1746390d662e7fc97f1",
+      "source": "25 Analog Cab IRs.zip (user-provided download, 2026-10-25)",
+      "url": "",
+      "licence": "unknown (no terms in the zip): local use only, not redistributed"
+    },
+    {
+      "slot": 8,
+      "name": "4x12 Metal British",
+      "file": "ir/third_party/analog_cab_25/4x12 Metal British_EQ.wav",
+      "sha256": "bc36c14b3cdf5f6aa365f6d2179215856d3787ff7fafd7eb91ab1dd772e97917",
+      "source": "25 Analog Cab IRs.zip (user-provided download, 2026-10-25)",
+      "url": "",
+      "licence": "unknown (no terms in the zip): local use only, not redistributed"
+    },
+    {
+      "slot": 9,
+      "name": "FB-212 Vet30, SM57",
+      "file": "ir/third_party/overdriven_fb212/audio/SSP2/DYN-57/OD-FBVET30-DYN-57-P10-20.wav",
+      "sha256": "8c4e9a61cf755f5f90be6f231e02d25500db8ddbfc75b7fbca3c865145c1a62c",
+      "source": "Overdriven.fr FB-212 VET30 (Hugging Face mirror sdialog/impulse-responses)",
+      "url": "https://huggingface.co/datasets/sdialog/impulse-responses",
+      "licence": "free to use for musical creations; re-hosting/sharing forbidden (pack readme): local use only"
+    }
+  ]
+}
