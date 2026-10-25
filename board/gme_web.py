@@ -404,7 +404,7 @@ def main(argv=None):
                          "(e.g. the same file as gme_hps.py --mock --mock-state)")
     ap.add_argument("--no-check", action="store_true", help="skip the VERSION check")
     ap.add_argument("--data-dir", default=None, help="presets/ and settings.json (default: next to this script)")
-    ap.add_argument("--cab-dir", default=None, help="cabNN.coef files (default: <data-dir>/cab)")
+    ap.add_argument("--cab-dir", default=None, help="cabNN.coef files (default: <data-dir>/cab; with --mock ../ir/build if it has cabinet files)")
     ap.add_argument("--www", default=None, help="static files (default: www/ next to this script)")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
@@ -416,7 +416,7 @@ def main(argv=None):
     except (IOError, OSError) as e:
         raise SystemExit("cannot open /dev/mem (run as root on the board; --mock to test): %s" % e)
     data_dir = a.data_dir or HERE
-    model = gm.Model(dev, store=Store(data_dir), cab_dir=a.cab_dir or os.path.join(data_dir, "cab"))
+    model = gm.Model(dev, store=Store(data_dir), cab_dir=a.cab_dir or gm.default_cab_dir(data_dir, a.mock))
     srv = create_server(model, a.host, a.port, a.www, a.verbose)
     print("gme web UI: http://%s:%d/  (FPGA VERSION 0x%04X%s)" % (
         a.host if a.host != "0.0.0.0" else "<board address>", srv.server_address[1], model.version,

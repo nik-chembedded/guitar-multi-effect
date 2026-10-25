@@ -277,6 +277,17 @@ def open_device(mock=False, mock_version=0x0205, check=True, state_file=None):
     return dev
 
 
+def default_cab_dir(data_dir, mock=False, board_dir=None):
+    """Directory of the cabNN.coef files: <data-dir>/cab on the board; with the mock, the PC's
+    ir/build (written by tools/cab_coefs.py --build) when it holds cabinet files."""
+    if mock:
+        board_dir = board_dir or os.path.dirname(HERE)
+        pc = os.path.normpath(os.path.join(board_dir, os.pardir, "ir", "build"))
+        if os.path.isdir(pc) and any(re.match(r"^cab\d\d\.coef$", f) for f in os.listdir(pc)):
+            return pc
+    return os.path.join(data_dir, "cab")
+
+
 class Model(object):
     def __init__(self, dev, store=None, cab_dir=None, table=None):
         self.dev = dev

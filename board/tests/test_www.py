@@ -134,3 +134,14 @@ def test_every_param_belongs_to_a_card_or_settings(api):
     for p in info["params"]:
         if p["available"]:
             assert p["group"] in cards or p["group"] == "system", p["id"]
+
+
+def test_controls_are_labelled():
+    js = open(os.path.join(WWW, "controls.js"), encoding="utf-8").read()
+    assert '"for": "c-" + p.id' in js and js.count('"aria-label": p.name') >= 3 and "aria-valuetext" in js
+    app = open(os.path.join(WWW, "app.js"), encoding="utf-8").read()
+    assert "fpga_version.toString(16)" not in app            # versions are printed as 4 hex digits
+    css = open(os.path.join(WWW, "app.css"), encoding="utf-8").read()
+    sizes = [int(x) for x in re.findall(r"font-size:\s*(\d+)px", css)]
+    assert min(sizes) >= 11
+    assert re.search(r"\.ctl-name \{[^}]*font-size: 1[3-9]px", css)

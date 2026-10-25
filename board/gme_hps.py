@@ -209,7 +209,7 @@ def run(argv, dev=None):
                     help="with --mock: keep the mock registers in this JSON file, shared between calls "
                          "(default ~/.gme_mock_state.json)")
     ap.add_argument("--data-dir", default=None, help="presets/ and settings.json (default: next to this script)")
-    ap.add_argument("--cab-dir", default=None, help="cabNN.coef files (default: <data-dir>/cab)")
+    ap.add_argument("--cab-dir", default=None, help="cabNN.coef files (default: <data-dir>/cab; with --mock ../ir/build if it has cabinet files)")
     ap.add_argument("cmd", choices=COMMANDS)
     ap.add_argument("args", nargs="*")
     a, extra = ap.parse_known_args(argv)
@@ -228,7 +228,7 @@ def run(argv, dev=None):
         except (IOError, OSError) as e:
             raise SystemExit("cannot open /dev/mem (run as root on the board; --mock to test): %s" % e)
     data_dir = a.data_dir or HERE
-    m = gm.Model(dev, store=Store(data_dir), cab_dir=a.cab_dir or os.path.join(data_dir, "cab"))
+    m = gm.Model(dev, store=Store(data_dir), cab_dir=a.cab_dir or gm.default_cab_dir(data_dir, a.mock))
     try:
         return dispatch(m, a)
     except (gm.ParamError, gm.CabinetError, gm.NotEditable, gd.DeviceError, StoreError) as e:

@@ -37,7 +37,7 @@
   function applyState(st) {
     S.state = st;
     var s = st.status;
-    document.getElementById("fpga").textContent = "FPGA 0x" + ("0000" + s.version.toString(16)).slice(-4).toUpperCase();
+    document.getElementById("fpga").textContent = "FPGA " + hex4(s.version);
     chip("codec", s.codec_nak ? "codec NAK" : (s.codec_init_done ? "codec ok" : "codec init..."), s.codec_init_done && !s.codec_nak);
     chip("pll", s.pll_locked ? "PLL locked" : "PLL not locked", s.pll_locked);
     renderChain(st.chain);
@@ -49,6 +49,7 @@
     document.getElementById("mute").classList.toggle("on", !!mute);
     renderCab(st.cab);
   }
+  function hex4(v) { return "0x" + ("0000" + v.toString(16).toUpperCase()).slice(-4); }
   function chip(id, text, ok) {
     var el = document.getElementById(id);
     el.textContent = text;
@@ -71,7 +72,7 @@
     S.chainIds = [];
     document.getElementById("orderhint").textContent = ch.editable
       ? "Drag the cards by their handle to change the order of the effects."
-      : "Fixed order in this FPGA (VERSION 0x" + S.info.fpga_version.toString(16).toUpperCase() + "): the effects run left to right, then down.";
+      : "Fixed order in this FPGA (VERSION " + S.info.fpga_version_hex + "): the effects run left to right, then down.";
     ch.effects.forEach(function (e, i) { box.appendChild(card(e, ch.editable)); });
   }
 
@@ -156,7 +157,7 @@
   function renderPresetBar() {
     var bar = document.getElementById("presetbar");
     GME.clear(bar);
-    var sel = h("select", {id: "preset-sel"});
+    var sel = h("select", {id: "preset-sel", "aria-label": "Preset"});
     [[true, "Factory"], [false, "User"]].forEach(function (g) {
       var items = S.presets.filter(function (p) { return p.factory === g[0]; });
       if (!items.length) return;
@@ -164,7 +165,7 @@
       items.forEach(function (p) { og.appendChild(h("option", {value: p.name, title: p.description || ""}, p.name)); });
       sel.appendChild(og);
     });
-    var name = h("input", {type: "text", id: "preset-name", placeholder: "preset name", maxlength: 40});
+    var name = h("input", {type: "text", id: "preset-name", placeholder: "preset name", "aria-label": "Preset name", maxlength: 40});
     function cur() { return S.presets.filter(function (p) { return p.name === sel.value; })[0]; }
     sel.addEventListener("change", function () { if (cur() && !cur().factory) name.value = cur().name; });
     function doLoad() {
@@ -183,7 +184,7 @@
         else toast(e.message, true);
       });
     }
-    bar.appendChild(h("label", {}, "Preset"));
+    bar.appendChild(h("label", {"for": "preset-sel"}, "Preset"));
     bar.appendChild(sel);
     bar.appendChild(h("button", {class: "btn", onclick: doLoad}, "Load"));
     bar.appendChild(h("span", {class: "sep"}));
@@ -207,9 +208,16 @@
     }}, "Delete"));
     sel.selectedIndex = Math.max(0, S.presets.map(function (p) { return p.name; }).indexOf(S.selectedPreset));
   }
-  function loadPresets(select) {
+  function loadPresets(select, onlyIfChanged) {
     if (select) S.selectedPreset = select;
-    return api("GET", "/api/presets").then(function (r) { S.presets = r.presets; renderPresetBar(); })
+    return api("GET", "/api/presets").then(function (r) {
+      var sig = JSON.stringify(r.presets);
+      if (onlyIfChanged && sig === S.presetSig) return;
+      var keep = document.getElementById("preset-sel") ? document.getElementById("preset-sel").value : null;
+      S.presetSig = sig; S.presets = r.presets;
+      if (keep && !select) S.selectedPreset = keep;
+      renderPresetBar();
+    })
       .catch(function (e) { toast(e.message, true); });
   }
 
@@ -223,17 +231,19 @@
     };
   }
   function codecSlider(name, help, reg, lo, hi, def, build, show) {   /* special: WM8731 volumes */
-    var out = h("output", {class: "ctl-val"}, show(def));
+    var cid = "codec-" + reg;
+    var out = h("output", {class: "ctl-val", "for": cid}, show(def));
     var send = throttled(function (v) {
       api("POST", "/api/codec", {reg: reg, value: build(v)}).catch(function (e) { toast(e.message, true); });
     });
-    var rng = h("input", {type: "range", min: lo, max: hi, step: 1, value: def, oninput: function () {
+    var rng = h("input", {type: "range", id: cid, "aria-label": name, title: help, min: lo, max: hi, step: 1, value: def, oninput: function () {
       var v = parseInt(rng.value, 10);
       out.textContent = show(v);
+      rng.setAttribute("aria-valuetext", out.textContent);
       send(v);
     }});
-    return h("div", {class: "ctl"}, h("div", {class: "ctl-head"}, h("span", {class: "ctl-name", title: help}, name),
-      h("span", {class: "help", title: help}, "?"), out), rng);
+    return h("div", {class: "ctl"}, h("div", {class: "ctl-head"}, h("label", {class: "ctl-name", "for": cid, title: help}, name),
+      h("span", {class: "help", title: help, "aria-hidden": "true"}, "?"), out), rng);
   }
   function renderSettings() {
     var box = document.getElementById("tab-settings");
@@ -266,8 +276,8 @@
   function renderExpert() {
     var box = document.getElementById("tab-expert");
     GME.clear(box);
-    var reg = h("input", {type: "text", id: "raw-reg", placeholder: "register (0x1B or name)", size: 18});
-    var val = h("input", {type: "text", id: "raw-val", placeholder: "value (0x0000)", size: 12});
+    var reg = h("input", {type: "text", id: "raw-reg", placeholder: "register (0x1B or name)", "aria-label": "Register", size: 18});
+    var val = h("input", {type: "text", id: "raw-val", placeholder: "value (0x0000)", "aria-label": "Value", size: 12});
     var res = h("span", {class: "note"}, "");
     function num(t) { return /^\s*(0x[0-9a-f]+|\d+)\s*$/i.test(t) ? parseInt(t, 0) : null; }
     function show(r) { res.textContent = "reg 0x" + r.reg.toString(16).toUpperCase() + " = " + r.hex; }
@@ -293,9 +303,9 @@
         tbl.appendChild(h("tr", {}, h("th", {}, "reg"), h("th", {}, "name"), h("th", {}, "R/W"), h("th", {}, "value"), h("th", {}, "")));
         r.registers.forEach(function (x) {
           tbl.appendChild(h("tr", {class: "clickable", onclick: function () {
-            reg.value = "0x" + x.reg.toString(16).toUpperCase(); val.value = "0x" + ("0000" + x.value.toString(16).toUpperCase()).slice(-4);
+            reg.value = "0x" + x.reg.toString(16).toUpperCase(); val.value = hex4(x.value);
           }}, h("td", {}, "0x" + ("0" + x.reg.toString(16).toUpperCase()).slice(-2)), h("td", {}, x.name), h("td", {}, x.rw),
-            h("td", {class: "mono"}, "0x" + ("0000" + x.value.toString(16).toUpperCase()).slice(-4)),
+            h("td", {class: "mono"}, hex4(x.value)),
             h("td", {class: "mono"}, String(x.value))));
         });
       }).catch(function (e) { toast(e.message, true); });
@@ -315,9 +325,10 @@
     var poll = null;
     function polling() {
       if (poll) return;
-      poll = setInterval(function () {
-        api("GET", "/api/levels").then(showLevels).catch(function () { setOnline(false, "offline"); });
-      }, 100);
+      (function tick() {                       /* 10 Hz; every 3 s while the board does not answer */
+        api("GET", "/api/levels").then(function (e) { showLevels(e); poll = setTimeout(tick, 100); })
+          .catch(function () { setOnline(false, "offline"); poll = setTimeout(tick, 3000); });
+      })();
     }
     if (!window.EventSource) return polling();
     var es = new EventSource("/api/levels/stream");
@@ -358,7 +369,7 @@
       return Promise.all([loadPresets(), refresh(true)]);
     }).then(function () {
       startLevels();
-      setInterval(function () { refresh(false); }, 3000);
+      setInterval(function () { refresh(false); loadPresets(null, true); }, 3000);
       document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(true); });
     }).catch(function (e) { setOnline(false, "offline"); toast(e.message, true); });
   }

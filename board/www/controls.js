@@ -21,8 +21,8 @@
 
   function label(p, valueEl) {
     return h("div", {class: "ctl-head"},
-      h("span", {class: "ctl-name", title: p.help}, p.name),
-      h("span", {class: "help", title: p.help}, "?"),
+      h("label", {class: "ctl-name", "for": "c-" + p.id, title: p.help}, p.name),
+      h("span", {class: "help", title: p.help, "aria-hidden": "true"}, "?"),
       valueEl || null);
   }
 
@@ -32,15 +32,16 @@
     var ctl = {id: p.id, active: false};
 
     if (p.type === "bool") {
-      var cb = h("input", {type: "checkbox", id: "c-" + p.id});
+      var cb = h("input", {type: "checkbox", id: "c-" + p.id, "aria-label": p.name});
       cb.addEventListener("change", function () { onChange(p.id, cb.checked); });
       ctl.el = h("label", {class: "ctl toggle", title: p.help}, cb, h("span", {class: "ctl-name"}, p.name));
       ctl.update = function (disp) { cb.checked = !!disp; };
+      cb.title = p.help;
       return ctl;
     }
 
     if (p.type === "enum") {
-      var sel = h("select", {id: "c-" + p.id});
+      var sel = h("select", {id: "c-" + p.id, "aria-label": p.name, title: p.help});
       (p.enum || []).forEach(function (e) {
         if (!e.alias) sel.appendChild(h("option", {value: e.label}, e.label));
       });
@@ -49,6 +50,7 @@
       sel.addEventListener("blur", function () { ctl.active = false; });
       ctl.el = h("div", {class: "ctl"}, label(p), sel);
       ctl.update = function (disp) {
+        sel.setAttribute("aria-valuetext", String(disp));
         if (!Array.prototype.some.call(sel.options, function (o) { return o.value === disp; }))
           sel.appendChild(h("option", {value: disp}, String(disp)));
         sel.value = disp;
@@ -59,10 +61,10 @@
     /* int / signed: slider in raw steps, shown in display units */
     var lo = p.gui_min !== undefined ? p.gui_min : p.min;
     var hi = p.gui_max !== undefined ? p.gui_max : p.max;
-    var out = h("output", {class: "ctl-val"}, "");
-    var rng = h("input", {type: "range", id: "c-" + p.id, min: lo, max: hi, step: 1, value: lo});
+    var out = h("output", {class: "ctl-val", "for": "c-" + p.id}, "");
+    var rng = h("input", {type: "range", id: "c-" + p.id, min: lo, max: hi, step: 1, value: lo, "aria-label": p.name, title: p.help});
     function raw() { return parseInt(rng.value, 10); }
-    function show() { out.textContent = GME.format(p, raw()); }
+    function show() { out.textContent = GME.format(p, raw()); rng.setAttribute("aria-valuetext", out.textContent); }
     rng.addEventListener("input", function () {
       show();
       var v = toDisplay(p, raw());

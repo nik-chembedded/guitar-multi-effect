@@ -13,7 +13,7 @@ import pytest
 from conftest import BOARD, REPO
 
 FILES = sorted(glob.glob(os.path.join(BOARD, "gme", "*.py"))) + [
-    os.path.join(BOARD, "gme_hps.py"), os.path.join(BOARD, "gme_web.py"),
+    os.path.join(BOARD, "gme_hps.py"), os.path.join(BOARD, "gme_web.py"), os.path.join(BOARD, "gme_smoke.py"),
     os.path.join(REPO, "tools", "gme_hps.py")]
 
 BANNED_NAMES = set("""FileNotFoundError FileExistsError PermissionError ModuleNotFoundError TimeoutError
@@ -89,7 +89,7 @@ def test_scan_detects_python3_only_code(tmp_path):
 
 
 def test_files_found():
-    assert len(FILES) == 7 and all(os.path.isfile(f) for f in FILES)
+    assert len(FILES) == 8 and all(os.path.isfile(f) for f in FILES)
 
 
 def test_python2_compiles_if_available(tmp_path):

@@ -271,3 +271,33 @@ def test_store_files(tmp_path):
     s.delete_preset("a")
     assert s.list_presets() == ["B"]
     assert sorted(os.listdir(str(tmp_path / "d" / "presets"))) == ["B.json"]
+
+
+def test_default_cab_dir(tmp_path):
+    board = tmp_path / "board"
+    board.mkdir()
+    data = str(tmp_path / "data")
+    assert gm.default_cab_dir(data, mock=True, board_dir=str(board)) == os.path.join(data, "cab")
+    build = tmp_path / "ir" / "build"
+    build.mkdir(parents=True)
+    (build / "readme.txt").write_text("x")
+    assert gm.default_cab_dir(data, mock=True, board_dir=str(board)) == os.path.join(data, "cab")
+    (build / "cab00.coef").write_text("n\n0\n")
+    assert os.path.normpath(gm.default_cab_dir(data, mock=True, board_dir=str(board))) == str(build)
+    assert gm.default_cab_dir(data, mock=False, board_dir=str(board)) == os.path.join(data, "cab")
+
+
+def test_coef_format_of_cab_coefs_py(tmp_path, mock):
+    """Exactly what tools/cab_coefs.py write_coef() writes on main: name, shift, one coefficient per line."""
+    coefs = make_coefs(7)
+    p = tmp_path / "cab03.coef"
+    with open(str(p), "w", newline="\n") as f:
+        f.write("%s\n%d\n" % ("Default (generated)", 3))
+        f.write("\n".join(str(int(c)) for c in coefs) + "\n")
+    name, shift, got = gm.Model.read_coef_file(str(p))
+    assert (name, shift, got) == ("Default (generated)", 3, coefs)
+    m = gm.Model(mock, cab_dir=str(tmp_path))
+    assert m.cab_load(3)["name"] == "Default (generated)"
+    # CRLF line endings (file copied through Windows) are fine too
+    p.write_bytes(p.read_bytes().replace(b"\n", b"\r\n"))
+    assert gm.Model.read_coef_file(str(p))[2] == coefs
