@@ -119,6 +119,9 @@ async def test_mute_and_codec_write(dut):
     codec.adc, codec.dac, codec.frames_sent = words, [], 0
     await ClockCycles(dut.clk, 20 * 1024)
     assert all(l == 0 and r == 0 for l, r in codec.dac[3:]), "mute did not silence the output"
+    # muted output: the peak meter must decay all the way to 0 (it used to stick at 255)
+    await ClockCycles(dut.clk, 2000 * 1024)                   # ~256*(1+1/2+..+1/127) + 255 = 1650 frames
+    assert await host.read(0x13) == 0, "output level did not decay to 0"
     n0 = len(i2c.transfers)
     await host.write(0x15, (0x02 << 9) | 0x079)                           # CODEC: R2 = 0x079
     for _ in range(100):                                                  # one write takes ~0.3 ms at 100 kHz
@@ -127,4 +130,4 @@ async def test_mute_and_codec_write(dut):
             break
     assert await host.read(0x15) == 0, "CODEC register: still busy or NAK"
     assert i2c.transfers[n0:] == [to_bytes(2, 0x079)]
-    dut._log.info("mute OK, host codec write R2=0x079 on the I2C bus")
+    dut._log.info("mute OK, meter decays to 0, host codec write R2=0x079 on the I2C bus")

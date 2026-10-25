@@ -37,6 +37,7 @@ entity gme_core is
     avs_read          : in  std_logic;
     avs_write         : in  std_logic;
     avs_writedata     : in  std_logic_vector(31 downto 0);
+    avs_byteenable    : in  std_logic_vector(3 downto 0);
     avs_readdata      : out std_logic_vector(31 downto 0);
     avs_readdatavalid : out std_logic;
     avs_waitrequest   : out std_logic;
@@ -78,6 +79,9 @@ architecture rtl of gme_core is
   function peak_update(p : unsigned(15 downto 0); a : unsigned(15 downto 0)) return unsigned is
     variable decayed : unsigned(15 downto 0) := p - shift_right(p, 8);   -- ~ -0.7 dB/ms at 48 kHz
   begin
+    if p < 256 and p > 0 then                     -- p/256 rounds to 0 here: decay by 1 instead
+      decayed := p - 1;
+    end if;
     if a > decayed then return a; else return decayed; end if;
   end function;
 begin
@@ -112,7 +116,8 @@ begin
     port map (
       clk => clk, rst => rst,
       avs_address => avs_address, avs_read => avs_read, avs_write => avs_write,
-      avs_writedata => avs_writedata, avs_readdata => avs_readdata,
+      avs_writedata => avs_writedata, avs_byteenable => avs_byteenable,
+      avs_readdata => avs_readdata,
       avs_readdatavalid => avs_readdatavalid, avs_waitrequest => avs_waitrequest,
       i2c_req => i2c_req, i2c_reg => i2c_reg, i2c_data => i2c_data,
       i2c_busy => i2c_busy, i2c_done => i2c_done, i2c_nak => i2c_nak,

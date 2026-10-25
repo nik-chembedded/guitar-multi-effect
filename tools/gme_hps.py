@@ -10,7 +10,7 @@ The FPGA registers sit behind the HPS lightweight bridge: register n is the
     python gme_hps.py write 0x00 0x0001          (register, value)
     python gme_hps.py set   od_drive=3000 od_gain=4 effects=OD
     python gme_hps.py preset crunch
-    python gme_hps.py codec 0x02 0x079           (codec register, 9-bit value)
+    python gme_hps.py codec 0x00 0x080           (codec register, 9-bit value: mute line in)
     python gme_hps.py dump
     python gme_hps.py meter                      (input/output levels, Ctrl+C to stop)
     python gme_hps.py selftest                   (no hardware needed)
@@ -19,9 +19,9 @@ Every command first checks the VERSION register (0x02xx), so nothing is written
 when another FPGA image is loaded. Works with Python 2.7 and 3.
 """
 import argparse
+import ctypes
 import mmap
 import os
-import struct
 import sys
 import time
 
@@ -54,7 +54,11 @@ PRESETS = {
 
 
 class Board(object):
-    """32-bit register access through /dev/mem."""
+    """32-bit register access through /dev/mem.
+
+    Accesses go through a ctypes uint32 array: one 32-bit load/store per
+    register. (struct.pack_into('<I', ...) writes byte by byte, i.e. four bus
+    writes; the FPGA handles that too since it honours byte enables.)"""
 
     def __init__(self, base=LW_BRIDGE, check=True):
         fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
@@ -63,6 +67,7 @@ class Board(object):
                                  offset=base)
         finally:
             os.close(fd)
+        self.words = (ctypes.c_uint32 * (SPAN // 4)).from_buffer(self.mem)
         if check:
             v = self.read(REGS["version"])
             if v & 0xFF00 != 0x0200:
@@ -70,10 +75,10 @@ class Board(object):
                                  "loaded? (--no-check to skip)" % v)
 
     def read(self, reg):
-        return struct.unpack_from("<I", self.mem, 4 * reg)[0] & 0xFFFF
+        return self.words[reg] & 0xFFFF
 
     def write(self, reg, value):
-        struct.pack_into("<I", self.mem, 4 * reg, value & 0xFFFF)
+        self.words[reg] = value & 0xFFFF
 
     def codec(self, reg, value9, timeout=0.1):
         """One WM8731 register write over the FPGA's I2C master."""

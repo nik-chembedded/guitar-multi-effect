@@ -21,6 +21,7 @@ kept at the tag `v2-uart`.
  gme_core.ctrl_avmm  (Avalon-MM slave: readdatavalid 1 cycle after read, no wait states)
    ├── reg_file   0x00..0x14  (effect, status, CONTROL registers, unchanged)
    └── CODEC      0x15        (one WM8731 write over I²C, busy/NAK/dropped flags)
+   byte enables honoured (CPython's struct '<I' on /dev/mem stores byte by byte)
 ```
 
 | File | What |
@@ -88,6 +89,17 @@ the uncompressed file, `soc_system_compressed.rbf` is a fallback to try.
 `sim/cocotb/test_avmm.py` (5 tests) drives the slave like the bridge does: VERSION /
 STATUS / levels; all 15 effect registers with random 32-bit words (bits 31..16 ignored);
 unknown and read-only addresses; CONTROL mute + codec re-init pulse; CODEC write with
-busy, NAK and dropped flags. `test_system.py` runs the whole `gme_core` with the same
+busy, NAK and dropped flags; byte and halfword stores with garbage on the other lanes
+(registers merge per byte, exactly one correct codec write). `test_system.py` runs the whole `gme_core` with the same
 Avalon master: codec init → STATUS/VERSION → dry audio bit-exact → overdrive set over the
-bridge bit-exact → mute → CODEC write reaches the I²C bus.
+bridge bit-exact → mute → output meter decays to 0 → CODEC write reaches the I²C bus.
+
+## Board test log
+
+* 2026-10-25, JTAG `.sof` with Linux running: `status`/`dump` correct (VERSION 0x0201,
+  STATUS 0x0005), all presets audible. Found two bugs, fixed in the next build:
+  * `codec` gave "write dropped" and the sound got quiet: Python's `struct.pack_into('<I')`
+    stores byte by byte, the slave ignored byte enables and started the I²C transfer on
+    the first byte (stale register number). Fix: byte enables in `ctrl_avmm`, CODEC
+    transfer on the write that contains byte 1; `gme_hps.py` uses 32-bit ctypes accesses.
+  * level meters stuck at 255: `p - p/256` stops decaying below 256. Fix: decay by 1 there.

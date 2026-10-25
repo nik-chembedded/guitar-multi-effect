@@ -186,6 +186,7 @@ architecture rtl of top_v2 is
   signal avs_address       : std_logic_vector(7 downto 0);
   signal avs_read, avs_write, avs_readdatavalid, avs_waitrequest : std_logic;
   signal avs_writedata, avs_readdata : std_logic_vector(31 downto 0);
+  signal avs_byteenable    : std_logic_vector(3 downto 0);
 begin
 
   u_pll : pll_sys
@@ -219,7 +220,7 @@ begin
       gme_regs_readdatavalid => avs_readdatavalid, gme_regs_burstcount => open,
       gme_regs_writedata => avs_writedata, gme_regs_address => avs_address,
       gme_regs_write => avs_write, gme_regs_read => avs_read,
-      gme_regs_byteenable => open, gme_regs_debugaccess => open,
+      gme_regs_byteenable => avs_byteenable, gme_regs_debugaccess => open,
       hps_0_h2f_reset_reset_n => open,
       -- DDR3
       memory_mem_a => HPS_DDR3_ADDR, memory_mem_ba => HPS_DDR3_BA,
@@ -298,7 +299,8 @@ begin
       bclk => AUD_BCLK, lrclk => lrclk, dacdat => AUD_DACDAT, adcdat => AUD_ADCDAT,
       scl_oe => scl_oe, sda_oe => sda_oe, sda_in => sda_s,
       avs_address => avs_address, avs_read => avs_read, avs_write => avs_write,
-      avs_writedata => avs_writedata, avs_readdata => avs_readdata,
+      avs_writedata => avs_writedata, avs_byteenable => avs_byteenable,
+      avs_readdata => avs_readdata,
       avs_readdatavalid => avs_readdatavalid, avs_waitrequest => avs_waitrequest,
       leds => LEDR);
 

@@ -8,7 +8,8 @@ as the 32-bit word at **`0xFF200000 + 4·n`** (tool: [`tools/gme_hps.py`](../too
 
 | Property      | Value |
 |---------------|-------|
-| Data width    | 16 bit registers in 32-bit words (bits 31..16 read 0, ignored on write); use 32-bit accesses |
+| Data width    | 16 bit registers in 32-bit words (bits 31..16 read 0, ignored on write) |
+| Byte enables  | honoured: byte / halfword stores change only those bytes, so they give the same result as one 32-bit store |
 | Address       | register *n* at byte offset 4·*n* from `0xFF200000` |
 | Access        | effect registers R/W, status registers R |
 | Reset value   | 0 (all effects off) |
@@ -100,7 +101,8 @@ Signal chain order (fixed in `FX_chain.vhd`):
 | read   | bit1 | the last host write was not ACKed (NAK) |
 | read   | bit2 | a write was dropped because the I²C master was busy |
 
-A write starts one I²C transfer (about 0.3 ms at 100 kHz). Poll bit0 until it is 0
+A write that contains byte 1 (bits 15..8) starts one I²C transfer (about 0.3 ms at 100 kHz),
+using byte 0 from the same or an earlier write. Store byte 0 first, or write the whole word. Poll bit0 until it is 0
 before the next write; `gme_hps.py codec` does this. An accepted write clears bit2.
 
 The codec is initialised by the FPGA itself after reset (I²S slave, 24-bit,
@@ -110,11 +112,12 @@ or routing.
 ## Access from Linux
 
 ```python
-import mmap, os, struct
+import ctypes, mmap, os
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
-regs = mmap.mmap(fd, 0x100, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=0xFF200000)
-struct.unpack_from("<I", regs, 4 * 0x10)[0]       # VERSION -> 0x0201
-struct.pack_into("<I", regs, 4 * 0x00, 0x0008)    # effects_enable = DIST
+mem = mmap.mmap(fd, 0x100, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=0xFF200000)
+regs = (ctypes.c_uint32 * 64).from_buffer(mem)    # one 32-bit access per register
+regs[0x10]                                        # VERSION -> 0x0201
+regs[0x00] = 0x0008                               # effects_enable = DIST
 ```
 
 Only access these addresses while the multi-effect FPGA image is loaded: with another

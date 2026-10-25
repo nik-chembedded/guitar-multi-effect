@@ -3,13 +3,19 @@
 -- Avalon-MM slave for the HPS lightweight bridge + reg_file. Replaces the UART
 -- control block (ctrl_uart / uart_rx / uart_tx, see tag v2-uart).
 --
--- Register n is at byte offset 4*n (Linux: 0xFF200000 + 4*n), 32-bit accesses,
--- bits 31..16 read 0 and are ignored on write. Registers 0x00..0x14 are those of
--- reg_file (docs/register_map.md); one more is handled here:
+-- Register n is at byte offset 4*n (Linux: 0xFF200000 + 4*n). Bits 31..16 read 0
+-- and are ignored on write. Registers 0x00..0x14 are those of reg_file
+-- (docs/register_map.md); one more is handled here:
 --
 --   0x15  CODEC  write: bits 15..9 = WM8731 register, bits 8..0 = data
 --                       (one I2C write; ignored and bit2 set while busy)
 --                read:  bit0 busy, bit1 last write NAKed, bit2 write dropped
+--
+-- Byte enables are honoured: a write changes only the enabled bytes of a
+-- register, so byte or halfword stores (e.g. Python's struct on /dev/mem
+-- writes byte by byte) give the same result as one 32-bit store. The CODEC
+-- bytes are collected and the I2C transfer starts on the write that contains
+-- byte 1 (bits 15..8); writes to bytes 2..3 only are ignored.
 --
 -- Reads: readdatavalid one cycle after read, no wait states. Unknown addresses
 -- read 0, writes to them are ignored.
@@ -30,6 +36,7 @@ entity ctrl_avmm is
     avs_read          : in  std_logic;
     avs_write         : in  std_logic;
     avs_writedata     : in  std_logic_vector(31 downto 0);
+    avs_byteenable    : in  std_logic_vector(3 downto 0);
     avs_readdata      : out std_logic_vector(31 downto 0);
     avs_readdatavalid : out std_logic;
     avs_waitrequest   : out std_logic;
@@ -59,6 +66,9 @@ architecture rtl of ctrl_avmm is
 
   signal word      : std_logic_vector(7 downto 0);
   signal reg_we    : std_logic;
+  signal reg_wdata : std_logic_vector(15 downto 0);
+  signal stage     : std_logic_vector(15 downto 0) := (others => '0');
+  signal codec_w   : std_logic_vector(15 downto 0);
   signal reg_rdata : std_logic_vector(15 downto 0);
   signal reg_err   : std_logic;
 
@@ -73,13 +83,20 @@ architecture rtl of ctrl_avmm is
 begin
 
   word   <= "00" & avs_address(7 downto 2);
-  reg_we <= avs_write when word /= CODEC_ADDR else '0';
+  -- byte enables: keep the bytes that are not written (read-modify-write;
+  -- reg_file's read mux is combinational on the same address)
+  reg_wdata(15 downto 8) <= avs_writedata(15 downto 8) when avs_byteenable(1) = '1' else reg_rdata(15 downto 8);
+  reg_wdata(7 downto 0)  <= avs_writedata(7 downto 0)  when avs_byteenable(0) = '1' else reg_rdata(7 downto 0);
+  reg_we <= avs_write and (avs_byteenable(1) or avs_byteenable(0)) when word /= CODEC_ADDR else '0';
+
+  codec_w(15 downto 8) <= avs_writedata(15 downto 8) when avs_byteenable(1) = '1' else stage(15 downto 8);
+  codec_w(7 downto 0)  <= avs_writedata(7 downto 0)  when avs_byteenable(0) = '1' else stage(7 downto 0);
 
   u_regs : entity work.reg_file
     generic map (VERSION => VERSION)
     port map (
       clk => clk, rst => rst,
-      addr => word, wdata => avs_writedata(15 downto 0), we => reg_we,
+      addr => word, wdata => reg_wdata, we => reg_we,
       rdata => reg_rdata, err => reg_err,
       status_in => status_in, level_in => level_in, level_out => level_out,
       effects_enable => effects_enable, od_drive => od_drive, od_gain => od_gain,
@@ -99,13 +116,16 @@ begin
         dropped  <= '0';
       else
         if avs_write = '1' and word = CODEC_ADDR then
-          if i2c_busy = '0' and req_r = '0' then
-            req_r   <= '1';
-            reg_r   <= avs_writedata(15 downto 9);
-            data_r  <= avs_writedata(8 downto 0);
-            dropped <= '0';
-          else
-            dropped <= '1';
+          stage <= codec_w;
+          if avs_byteenable(1) = '1' then              -- the value is complete
+            if i2c_busy = '0' and req_r = '0' then
+              req_r   <= '1';
+              reg_r   <= codec_w(15 downto 9);
+              data_r  <= codec_w(8 downto 0);
+              dropped <= '0';
+            else
+              dropped <= '1';
+            end if;
           end if;
         end if;
         if i2c_done = '1' then

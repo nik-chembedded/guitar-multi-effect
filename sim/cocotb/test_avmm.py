@@ -29,17 +29,28 @@ class AvmmHost:
         dut.avs_write.value = 0
         dut.avs_address.value = 0
         dut.avs_writedata.value = 0
+        dut.avs_byteenable.value = 0xF
 
-    async def write(self, reg, value):
+    async def write(self, reg, value, byteenable=0xF):
         d = self.dut
         await RisingEdge(d.clk)
         d.avs_address.value = 4 * reg
         d.avs_writedata.value = value & 0xFFFFFFFF
+        d.avs_byteenable.value = byteenable
         d.avs_write.value = 1
         await RisingEdge(d.clk)                        # write accepted on this edge
         assert int(d.avs_waitrequest.value) == 0, "waitrequest must stay low"
         d.avs_write.value = 0
         await ReadOnly()                               # registers updated by this edge
+
+    async def write_bytes(self, reg, value, size, rnd):
+        """value as byte (size 1) or halfword (size 2) stores, lowest address first,
+        like CPython's struct '<I' on /dev/mem. Lanes not enabled carry garbage."""
+        mask = (1 << (8 * size)) - 1
+        for off in range(0, 4, size):
+            lane = ((value >> (8 * off)) & mask) << (8 * off)
+            garbage = rnd.getrandbits(32) & ~(mask << (8 * off)) & 0xFFFFFFFF
+            await self.write(reg, lane | garbage, byteenable=((1 << size) - 1) << off)
 
     async def read(self, reg):
         d = self.dut
@@ -173,3 +184,42 @@ async def test_codec_write(dut):
     await ClockCycles(dut.clk, 2)
     assert await h.read(CODEC) == 0
     dut._log.info("codec writes forwarded (incl. 9-bit data); busy, NAK and dropped reported")
+
+
+@cocotb.test()
+async def test_byte_writes(dut):
+    """Byte and halfword stores (garbage on the other lanes) act like one 32-bit store."""
+    h = await setup(dut)
+    rnd = random.Random(7)
+    requests = []
+
+    async def i2c_master():
+        while True:
+            await RisingEdge(dut.i2c_req)
+            requests.append((int(dut.i2c_reg.value), int(dut.i2c_data.value)))
+            await RisingEdge(dut.clk)
+            dut.i2c_busy.value = 1
+            await ClockCycles(dut.clk, 50)
+            dut.i2c_busy.value = 0
+            dut.i2c_done.value = 1
+            await RisingEdge(dut.clk)
+            dut.i2c_done.value = 0
+
+    cocotb.start_soon(i2c_master())
+    for size in (1, 2):
+        for reg, v in ((1, 0x1234 + size), (5, 0xBEEF - size), (0, 0x0021)):
+            await h.write_bytes(reg, v, size, rnd)
+            assert await h.read(reg) == v, "reg %d after %d-byte stores" % (reg, size)
+        await h.write(2, 0xAAAA)
+        await h.write(2, 0x55, byteenable=0x1)                # low byte only
+        assert await h.read(2) == 0xAA55
+        await h.write(2, 0x1100, byteenable=0x2)              # high byte only
+        assert await h.read(2) == 0x1155
+        await h.write(2, 0xFFFF0000, byteenable=0xC)          # bytes 2..3: ignored
+        assert await h.read(2) == 0x1155
+        n = len(requests)
+        await h.write_bytes(CODEC, (0x02 << 9) | 0x060, size, rnd)
+        await ClockCycles(dut.clk, 60)
+        assert requests[n:] == [(0x02, 0x060)], "%d-byte stores: I2C requests %s" % (size, requests[n:])
+        assert await h.read(CODEC) == 0, "no dropped/NAK flag after %d-byte stores" % size
+    dut._log.info("byte / halfword stores: registers merged per byte, one correct codec write each")
