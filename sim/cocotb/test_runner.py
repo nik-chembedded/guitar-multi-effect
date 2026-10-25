@@ -20,9 +20,9 @@ RTL = ROOT / "fpga" / "rtl"
 MODELS = ROOT / "sim" / "models"
 BUILD = Path(os.environ.get("GME_BUILD", HERE / "sim_build"))
 
-IP_MODELS = [MODELS / "sim_rom.vhd", MODELS / "sim_dpram.vhd",
+IP_MODELS = [MODELS / "sim_rom.vhd", MODELS / "sim_dpram.vhd", MODELS / "fx_dpram.vhd",
              *sorted((MODELS / "ip").glob("*.vhd"))]
-FX_RTL = [RTL / f for f in ("fx_pkg.vhd", "overdrive.vhd", "distortion.vhd", "chorus.vhd",
+FX_RTL = [RTL / f for f in ("fx_pkg.vhd", "fx_xfade.vhd", "overdrive.vhd", "distortion.vhd", "chorus.vhd",
                             "tremolo_v2.vhd", "echo.vhd", "comb_filter.vhd",
                             "allpass_filter.vhd", "reverbe.vhd", "FX_chain.vhd")]
 GHDL_ARGS = ["--std=08", "-frelaxed"]
@@ -54,6 +54,34 @@ def test_fx_chain():
         testcase=os.environ.get("TESTCASE"))
 
 
+def test_fx_chain_24():
+    """The same 7 effect tests on the 24-bit chain (16-bit stimulus x 256)."""
+    run("fx_chain", "test_fx_chain", IP_MODELS + FX_RTL, testcase=os.environ.get("TESTCASE"),
+        parameters={"DW": 24}, extra_env={"GME_DW": "24"}, tag="_24")
+
+
+def test_fxlib():
+    """Fixed-point library fx_pkg (v2 step C)."""
+    run("fxlib_wrap", "test_fxlib", [RTL / "fx_pkg.vhd", HERE / "hdl" / "fxlib_wrap.vhd"])
+
+
+def test_smooth():
+    """Parameter smoothing (param_smooth)."""
+    run("param_smooth", "test_smooth", [RTL / "param_smooth.vhd"])
+
+
+def test_xfade():
+    """Click-free effect on/off on the 24-bit chain."""
+    run("fx_chain", "test_xfade", IP_MODELS + FX_RTL, parameters={"DW": 24, "XFADE": True},
+        extra_env={"GME_DW": "24"}, tag="_xfade")
+
+
+def test_ref24():
+    """24-bit chain: bit-exact 24-bit golden models + the 27 v1 presets within 16-bit rounding."""
+    run("fx_chain", "test_ref24", IP_MODELS + FX_RTL, parameters={"DW": 24, "ECHO_AW": 16},
+        extra_env={"GME_DW": "24"}, tag="_ref24")
+
+
 def test_i2s():
     """I2S master core (v2 step B2) against a WM8731 slave model."""
     run("i2s_core", "test_i2s", [RTL / "i2s_core.vhd"])
@@ -74,7 +102,8 @@ def test_codec():
 
 
 SYS_RTL = (IP_MODELS + FX_RTL + CTRL_RTL +
-           [RTL / f for f in ("i2s_core.vhd", "i2c_master.vhd", "codec_ctrl.vhd", "gme_core.vhd")])
+           [RTL / f for f in ("i2s_core.vhd", "i2c_master.vhd", "codec_ctrl.vhd", "param_smooth.vhd",
+                              "gme_core.vhd")])
 
 
 def test_system():
@@ -84,10 +113,12 @@ def test_system():
 
 
 def test_reference():
-    """Bit-exact against the recorded v1 outputs (GME_REF_MODE=record to re-record)."""
-    run("fx_chain", "test_ref", IP_MODELS + FX_RTL)
+    """Bit-exact against the recorded v1 outputs (GME_REF_MODE=record to re-record).
+    DW = 16 and the v1 echo line size (64 k words)."""
+    run("fx_chain", "test_ref", IP_MODELS + FX_RTL, parameters={"ECHO_AW": 16}, tag="_v1")
 
 
 def test_wav():
-    """Real guitar audio through every preset (GME_WAV_SECONDS, default 1 s)."""
-    run("fx_chain", "test_wav", IP_MODELS + FX_RTL)
+    """Real guitar audio through every preset on the 24-bit chain (GME_WAV_SECONDS, default 1 s)."""
+    run("fx_chain", "test_wav", IP_MODELS + FX_RTL, parameters={"DW": 24},
+        extra_env={"GME_DW": "24"}, tag="_wav24")

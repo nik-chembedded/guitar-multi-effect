@@ -1,10 +1,17 @@
-
+-- -----------------------------------------------------------------------------
+-- chorus.vhd
+-- Modulated delay line (triangle LFO on the delay length) with feedback.
+-- DW-bit samples and delay line (step C); DW = 16 is bit-exact to v1.
+-- -----------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
 use work.fx_pkg.all;
 
 entity chorus is
+generic (
+		DW : positive := 16                         -- sample width (16 or 24)
+);
 port(
 		clk  : in std_logic;   -- system clock (v2 B1)
 		en_rise  : in std_logic;   -- strobe: v1 rising edge of this effect's sample clock
@@ -13,25 +20,14 @@ port(
 		gain          : in std_logic_vector(15 downto 0);
 		chorus_rate   : in std_logic_vector(15 downto 0);
 		chorus_depth  : in std_logic_vector(15 downto 0);
-		data_in       : in std_logic_vector(15 downto 0);
-		data_out       : out std_logic_vector(15 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
+		data_in       : in std_logic_vector(DW - 1 downto 0);
+		data_out       : out std_logic_vector(DW - 1 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
 	 );
 end entity;
 
 architecture rtl of chorus is
 
-COMPONENT chorus_RAM IS
-	PORT
-	(
-		clocken		: IN STD_LOGIC  := '1';
-		clock		: IN STD_LOGIC  := '1';
-		data		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
-		rdaddress		: IN STD_LOGIC_VECTOR (9 DOWNTO 0);
-		wraddress		: IN STD_LOGIC_VECTOR (9 DOWNTO 0);
-		wren		: IN STD_LOGIC  := '0';
-		q		: OUT STD_LOGIC_VECTOR (15 DOWNTO 0)
-	);
-END COMPONENT;
+
 
 
 signal counter_187 : integer range 0 to 1023 := 0; -- LFO step divider
@@ -42,16 +38,9 @@ signal up_dwn      : std_logic := '0';
 signal read_pointer : std_logic_vector(9 downto 0);
 signal write_pointer : std_logic_vector(9 downto 0) := (others => '0');
 
-signal ram_out : std_logic_vector(15 downto 0);
-signal kmult_out : std_logic_vector(15 downto 0);
-signal km1mult_out : std_logic_vector(15 downto 0);
-
-signal  a : integer := 0;
-signal  b : integer := 0;
-signal  c : integer := 0;
-signal  result : std_logic_vector(31 downto 0);
-signal data_divided : std_logic_vector(15 downto 0); 
-signal data_in_feedback : std_logic_vector(15 downto 0);
+signal ram_out : std_logic_vector(DW - 1 downto 0);
+signal data_divided : signed(DW - 1 downto 0);             -- level * delayed / 65536
+signal data_in_feedback : std_logic_vector(DW - 1 downto 0);
 
 signal rate_threshold : integer range 0 to 1023;
 signal temp_rate    : std_logic_vector(9 downto 0);
@@ -121,7 +110,7 @@ RAM_RW_proc: 	process(clk)
 								
 				read_pointer <= std_logic_vector( unsigned(write_pointer) - counter_144);				  
 
-DELAY_RAM :     chorus_RAM port map(
+DELAY_RAM :     entity work.fx_dpram generic map (WIDTH => DW, ADDR_W => 10) port map(
 								clock	  => clk,
 								clocken	  => en_rise,
 								data 	  => data_in_feedback,
@@ -131,18 +120,15 @@ DELAY_RAM :     chorus_RAM port map(
 								q         => ram_out
 								 );
 								 
-						a <= to_integer(unsigned(gain)); -------- chorus mix / level
-					   b <= to_integer(signed(ram_out));
-						c <= a*b;
-						result <= std_logic_vector(to_signed(c, result'length));
-		            data_divided <= result(31 downto 16);
-						data_in_feedback <= sat16_slv( to_integer(signed(data_divided)) / 64 + to_integer(signed(data_in)) );
+						-- chorus mix / level
+						data_divided <= resize(mul_shr(signed(ram_out), unsigned(gain), 16), DW);
+						data_in_feedback <= std_logic_vector(add_sat(div_pow2(data_divided, 6), signed(data_in), DW));
 
 	 	 process(clk)
 	    begin
 		  if rising_edge(clk) and en_rise = '1' then
 			if(chorus_enable = '1') then
-				 data_out <= sat16_slv( to_integer(signed(data_in_feedback)) + to_integer(signed(data_divided)) );
+				 data_out <= std_logic_vector(add_sat(signed(data_in_feedback), data_divided, DW));
 			else
 				 data_out <= data_in;
 			end if;

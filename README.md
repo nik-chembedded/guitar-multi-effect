@@ -30,8 +30,10 @@ lightweight HPS-to-FPGA bridge. There is no soft CPU.
 | Reverb     | Schroeder reverb: 4 parallel comb filters + 2 series all-pass filters   | type (4 rooms), mix |
 
 Signal chain: `ADC → Overdrive → Distortion → Chorus → Tremolo → Echo → Reverb → DAC`.
-The I/O is 48 kHz stereo 24-bit; the effects are 16-bit mono until v2 step C, and the
-processed signal goes to both outputs.
+The I/O is 48 kHz stereo 24-bit and the effects process **24-bit** samples (v2 step C);
+the chain is mono and the processed signal goes to both outputs. Parameter changes
+are smoothed (no zipper noise) and switching an effect on or off crossfades over
+5 ms (no clicks).
 
 ## Architecture (v2)
 
@@ -167,8 +169,10 @@ and the equivalence proof of the IP models (`sim/models/run_equiv.sh`).
   level) are done; audio LINE IN → LINE OUT works on the board.
 * Control moved from UART to the HPS (Linux): verified in simulation and **on the
   board** (registers, presets, level meters, codec writes from Linux). 4 % of the logic.
-* Next: step C (fixed-point library, 24-bit effects), then D (new DSP blocks
-  incl. FIR cabinet simulation).
+* Step C (fixed-point library, 24-bit effects, parameter smoothing, click-free
+  on/off) is done and verified in simulation; timing met, 5 % of the logic. Board
+  test pending. See [docs/v2_stepC_design.md](docs/v2_stepC_design.md).
+* Next: step D (new DSP blocks incl. FIR cabinet simulation).
 
 ## Third-party code
 

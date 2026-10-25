@@ -39,18 +39,24 @@ architecture sim of tb_ip_equiv is
   signal r9_qi, r9_qm : std_logic_vector(7 downto 0);
   signal r10_a : std_logic_vector(13 downto 0) := (others => '0');
   signal r10_qi, r10_qm : std_logic_vector(7 downto 0);
-  signal m0_wa, m0_ra : std_logic_vector(9 downto 0) := (others => '0');
-  signal m0_d : std_logic_vector(15 downto 0) := (others => '0');
-  signal m0_qi, m0_qm : std_logic_vector(15 downto 0);
+  signal m0_wa, m0_ra : std_logic_vector(14 downto 0) := (others => '0');
+  signal m0_d : std_logic_vector(23 downto 0) := (others => '0');
+  signal m0_qi, m0_qm : std_logic_vector(23 downto 0);
   signal m1_wa, m1_ra : std_logic_vector(15 downto 0) := (others => '0');
   signal m1_d : std_logic_vector(15 downto 0) := (others => '0');
   signal m1_qi, m1_qm : std_logic_vector(15 downto 0);
   signal m2_wa, m2_ra : std_logic_vector(10 downto 0) := (others => '0');
-  signal m2_d : std_logic_vector(15 downto 0) := (others => '0');
-  signal m2_qi, m2_qm : std_logic_vector(15 downto 0);
+  signal m2_d : std_logic_vector(23 downto 0) := (others => '0');
+  signal m2_qi, m2_qm : std_logic_vector(23 downto 0);
   signal m3_wa, m3_ra : std_logic_vector(11 downto 0) := (others => '0');
-  signal m3_d : std_logic_vector(15 downto 0) := (others => '0');
-  signal m3_qi, m3_qm : std_logic_vector(15 downto 0);
+  signal m3_d : std_logic_vector(23 downto 0) := (others => '0');
+  signal m3_qi, m3_qm : std_logic_vector(23 downto 0);
+  signal m4_wa, m4_ra : std_logic_vector(9 downto 0) := (others => '0');
+  signal m4_d : std_logic_vector(23 downto 0) := (others => '0');
+  signal m4_qi, m4_qm : std_logic_vector(23 downto 0);
+  signal m5_wa, m5_ra : std_logic_vector(9 downto 0) := (others => '0');
+  signal m5_d : std_logic_vector(15 downto 0) := (others => '0');
+  signal m5_qi, m5_qm : std_logic_vector(15 downto 0);
 
 begin
   clk  <= not clk  after 5 ns when not done else '0';
@@ -78,14 +84,18 @@ begin
   r9_m : entity model.triangle_10hz port map (address => r9_a, clock => clk, q => r9_qm);
   r10_i : entity intel.triangle_5hz port map (address => r10_a, clock => clk, q => r10_qi);
   r10_m : entity model.triangle_5hz port map (address => r10_a, clock => clk, q => r10_qm);
-  m0_i : entity intel.chorus_RAM port map (clock => clk, data => m0_d, rdaddress => m0_ra, wraddress => m0_wa, wren => wren, clocken => cen, q => m0_qi);
-  m0_m : entity model.chorus_RAM port map (clock => clk, data => m0_d, rdaddress => m0_ra, wraddress => m0_wa, wren => wren, clocken => cen, q => m0_qm);
-  m1_i : entity intel.echo_ram port map (clock => clk, data => m1_d, rdaddress => m1_ra, wraddress => m1_wa, wren => wren, clocken => cen, q => m1_qi);
-  m1_m : entity model.echo_ram port map (clock => clk, data => m1_d, rdaddress => m1_ra, wraddress => m1_wa, wren => wren, clocken => cen, q => m1_qm);
-  m2_i : entity intel.fcomb_RAM2 port map (clock => clk, data => m2_d, rdaddress => m2_ra, wraddress => m2_wa, wren => wren, clocken => cen, q => m2_qi);
-  m2_m : entity model.fcomb_RAM2 port map (clock => clk, data => m2_d, rdaddress => m2_ra, wraddress => m2_wa, wren => wren, clocken => cen, q => m2_qm);
-  m3_i : entity intel.fcomb_RAM4 port map (clock => clk, data => m3_d, rdaddress => m3_ra, wraddress => m3_wa, wren => wren, clocken => cen, q => m3_qi);
-  m3_m : entity model.fcomb_RAM4 port map (clock => clk, data => m3_d, rdaddress => m3_ra, wraddress => m3_wa, wren => wren, clocken => cen, q => m3_qm);
+  m0_i : entity intel.fx_dpram generic map (WIDTH => 24, ADDR_W => 15) port map (clock => clk, data => m0_d, rdaddress => m0_ra, wraddress => m0_wa, wren => wren, clocken => cen, q => m0_qi);
+  m0_m : entity model.fx_dpram generic map (WIDTH => 24, ADDR_W => 15) port map (clock => clk, data => m0_d, rdaddress => m0_ra, wraddress => m0_wa, wren => wren, clocken => cen, q => m0_qm);
+  m1_i : entity intel.fx_dpram generic map (WIDTH => 16, ADDR_W => 16) port map (clock => clk, data => m1_d, rdaddress => m1_ra, wraddress => m1_wa, wren => wren, clocken => cen, q => m1_qi);
+  m1_m : entity model.fx_dpram generic map (WIDTH => 16, ADDR_W => 16) port map (clock => clk, data => m1_d, rdaddress => m1_ra, wraddress => m1_wa, wren => wren, clocken => cen, q => m1_qm);
+  m2_i : entity intel.fx_dpram generic map (WIDTH => 24, ADDR_W => 11) port map (clock => clk, data => m2_d, rdaddress => m2_ra, wraddress => m2_wa, wren => wren, clocken => cen, q => m2_qi);
+  m2_m : entity model.fx_dpram generic map (WIDTH => 24, ADDR_W => 11) port map (clock => clk, data => m2_d, rdaddress => m2_ra, wraddress => m2_wa, wren => wren, clocken => cen, q => m2_qm);
+  m3_i : entity intel.fx_dpram generic map (WIDTH => 24, ADDR_W => 12) port map (clock => clk, data => m3_d, rdaddress => m3_ra, wraddress => m3_wa, wren => wren, clocken => cen, q => m3_qi);
+  m3_m : entity model.fx_dpram generic map (WIDTH => 24, ADDR_W => 12) port map (clock => clk, data => m3_d, rdaddress => m3_ra, wraddress => m3_wa, wren => wren, clocken => cen, q => m3_qm);
+  m4_i : entity intel.fx_dpram generic map (WIDTH => 24, ADDR_W => 10) port map (clock => clk, data => m4_d, rdaddress => m4_ra, wraddress => m4_wa, wren => wren, clocken => cen, q => m4_qi);
+  m4_m : entity model.fx_dpram generic map (WIDTH => 24, ADDR_W => 10) port map (clock => clk, data => m4_d, rdaddress => m4_ra, wraddress => m4_wa, wren => wren, clocken => cen, q => m4_qm);
+  m5_i : entity intel.fx_dpram generic map (WIDTH => 16, ADDR_W => 10) port map (clock => clk, data => m5_d, rdaddress => m5_ra, wraddress => m5_wa, wren => wren, clocken => cen, q => m5_qi);
+  m5_m : entity model.fx_dpram generic map (WIDTH => 16, ADDR_W => 10) port map (clock => clk, data => m5_d, rdaddress => m5_ra, wraddress => m5_wa, wren => wren, clocken => cen, q => m5_qm);
 
 
   stim : process
@@ -139,22 +149,30 @@ begin
       cmp("triangle_10hz", r9_qi, r9_qm, false);
       r10_a <= std_logic_vector(to_unsigned(rnd(16384), 14));
       cmp("triangle_5hz", r10_qi, r10_qm, false);
-      m0_wa <= std_logic_vector(to_unsigned(rnd(64), 10));
-      if rnd(4) = 0 then m0_ra <= m0_wa; else m0_ra <= std_logic_vector(to_unsigned(rnd(64), 10)); end if;
-      m0_d <= std_logic_vector(to_unsigned(rnd(2 ** 16), 16));
-      cmp("chorus_RAM", m0_qi, m0_qm, true);
+      m0_wa <= std_logic_vector(to_unsigned(rnd(64), 15));
+      if rnd(4) = 0 then m0_ra <= m0_wa; else m0_ra <= std_logic_vector(to_unsigned(rnd(64), 15)); end if;
+      m0_d <= std_logic_vector(to_unsigned(rnd(2 ** 24), 24));
+      cmp("fx_dpram_24x15", m0_qi, m0_qm, false);
       m1_wa <= std_logic_vector(to_unsigned(rnd(64), 16));
       if rnd(4) = 0 then m1_ra <= m1_wa; else m1_ra <= std_logic_vector(to_unsigned(rnd(64), 16)); end if;
       m1_d <= std_logic_vector(to_unsigned(rnd(2 ** 16), 16));
-      cmp("echo_ram", m1_qi, m1_qm, false);
+      cmp("fx_dpram_16x16", m1_qi, m1_qm, false);
       m2_wa <= std_logic_vector(to_unsigned(rnd(64), 11));
       if rnd(4) = 0 then m2_ra <= m2_wa; else m2_ra <= std_logic_vector(to_unsigned(rnd(64), 11)); end if;
-      m2_d <= std_logic_vector(to_unsigned(rnd(2 ** 16), 16));
-      cmp("fcomb_RAM2", m2_qi, m2_qm, true);
+      m2_d <= std_logic_vector(to_unsigned(rnd(2 ** 24), 24));
+      cmp("fx_dpram_24x11", m2_qi, m2_qm, false);
       m3_wa <= std_logic_vector(to_unsigned(rnd(64), 12));
       if rnd(4) = 0 then m3_ra <= m3_wa; else m3_ra <= std_logic_vector(to_unsigned(rnd(64), 12)); end if;
-      m3_d <= std_logic_vector(to_unsigned(rnd(2 ** 16), 16));
-      cmp("fcomb_RAM4", m3_qi, m3_qm, true);
+      m3_d <= std_logic_vector(to_unsigned(rnd(2 ** 24), 24));
+      cmp("fx_dpram_24x12", m3_qi, m3_qm, false);
+      m4_wa <= std_logic_vector(to_unsigned(rnd(64), 10));
+      if rnd(4) = 0 then m4_ra <= m4_wa; else m4_ra <= std_logic_vector(to_unsigned(rnd(64), 10)); end if;
+      m4_d <= std_logic_vector(to_unsigned(rnd(2 ** 24), 24));
+      cmp("fx_dpram_24x10", m4_qi, m4_qm, false);
+      m5_wa <= std_logic_vector(to_unsigned(rnd(64), 10));
+      if rnd(4) = 0 then m5_ra <= m5_wa; else m5_ra <= std_logic_vector(to_unsigned(rnd(64), 10)); end if;
+      m5_d <= std_logic_vector(to_unsigned(rnd(2 ** 16), 16));
+      cmp("fx_dpram_16x10", m5_qi, m5_qm, false);
     end loop;
     wait for 200 ns;
     report "EQUIV: " & integer'image(errors) & " mismatches, " & integer'image(xskips)

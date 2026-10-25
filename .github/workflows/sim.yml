@@ -31,13 +31,17 @@ jobs:
           python sim/models/gen_ip_models.py
           git diff --exit-code sim/models/ip
 
-      - name: Effect tests (cocotb + GHDL)
+      - name: Effect tests, 16- and 24-bit chain (cocotb + GHDL)
         working-directory: sim/cocotb
-        run: pytest -v -k test_fx_chain
+        run: pytest -v -k "test_fx_chain or test_fx_chain_24"
 
-      - name: I2S core + bit-exact reference vs v1 (27 presets)
+      - name: Fixed-point library, parameter smoothing, click-free on/off
         working-directory: sim/cocotb
-        run: pytest -v -k "test_i2s or test_reference"
+        run: pytest -v -k "test_fxlib or test_smooth or test_xfade"
+
+      - name: I2S core + bit-exact reference vs v1 (27 presets, 16-bit and 24-bit chain)
+        working-directory: sim/cocotb
+        run: pytest -v -k "test_i2s or test_reference or test_ref24"
 
       - name: HPS control slave, I2C/codec and full system tests
         working-directory: sim/cocotb

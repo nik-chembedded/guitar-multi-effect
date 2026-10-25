@@ -1,8 +1,18 @@
+-- -----------------------------------------------------------------------------
+-- tremolo_v2.vhd
+-- Amplitude modulation by a smoothed ROM LFO (sine 5..15 Hz, triangle, saw):
+-- out = mix(dry, dry * lfo, depth). DW-bit samples (step C); DW = 16 is
+-- bit-exact to v1.
+-- -----------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
+use work.fx_pkg.all;
 
 entity tremolo_v2 is
+generic (
+      DW : positive := 16                         -- sample width (16 or 24)
+);
 port(
 
       clk  : in std_logic;   -- system clock (v2 B1)
@@ -13,9 +23,9 @@ port(
 		t_wave			: in std_logic_vector(15 downto 0);
 		t_depth			: in std_logic_vector(15 downto 0);
 		
-      data_in       : in std_logic_vector(15 downto 0);
+      data_in       : in std_logic_vector(DW - 1 downto 0);
       
-      data_out      : out std_logic_vector(15 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
+      data_out      : out std_logic_vector(DW - 1 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
      );
 end entity;
 
@@ -128,22 +138,14 @@ signal temp_triangle_10hz : std_logic_vector(7 downto 0);
 
 signal temp_saw_10hz : std_logic_vector(7 downto 0);
 
-signal result    : std_logic_vector(31 downto 0);
+signal modulated : signed(DW - 1 downto 0) := (others => '0');   -- data * lfo / 65536
 
 -- LFO value after smoothing, 8 fractional bits (0 .. 255*256)
 signal lfo_s     : integer range 0 to 65535 := 0;
 
-signal temp_depth   : std_logic_vector(7 downto 0);
-signal invert_depth : std_logic_vector(7 downto 0);
-signal int_depth   : integer := 0;
+signal out_dat : signed(DW - 1 downto 0);
 
-signal out_dat : std_logic_vector(23 downto 0); 
-
-signal temp  : integer := 0;
 signal sine  : integer range 0 to 255;
-signal data  : integer := 0;
-
-signal a,b,c : integer := 0;
 
 signal wave_sel : std_logic_vector(2 downto 0);
 signal en_5hz  : std_logic;
@@ -218,7 +220,6 @@ cyclic_counter_15hz : process(clk)
 							end process;							
                  
 					  sine <= to_integer(unsigned(temp_sine));
-					  data <= to_integer(signed(data_in));
 
 					  -- One-pole smoothing of the LFO (time constant 32 samples, ~0.7 ms):
 					  -- removes the click of hard-edged waveforms (sawtooth reset) and the
@@ -234,29 +235,17 @@ cyclic_counter_15hz : process(clk)
 					  process(clk)
 					  begin
 					   if rising_edge(clk) then
-							  temp   <= data * lfo_s;     -- |data| * 65280 < 2^31
+							  modulated <= resize(mul_shr(signed(data_in), to_unsigned(lfo_s, 16), 16), DW);
 						end if;
 					  end process;
 
+					  out_dat <= mix8(signed(data_in), modulated, unsigned(t_depth(7 downto 0)));
 
-					  result <= std_logic_vector(to_signed(temp, result'length));
-					  
-					  
-					  temp_depth   <= t_depth(7 downto 0);
-					  invert_depth <= std_logic_vector(255 - unsigned(temp_depth));
-					  int_depth    <= to_integer(unsigned(temp_depth));
-					  
-					  a <= int_depth * to_integer(signed(result(31 downto 16)));   -- data * lfo / 65536
-					  b <= to_integer(unsigned(invert_depth)) * data;
-					  c <= a + b;
-					  
-					  out_dat <= std_logic_vector(to_signed(c, out_dat'length)); -- was unsigned
-					  
 					   process(clk)
 						begin
 							if rising_edge(clk) and en_rise = '1' then
 								if(tremolo_enable = '1') then
-									data_out <= out_dat(23 downto 8); --- divide by 256
+									data_out <= std_logic_vector(out_dat);
 								else
 									data_out <= data_in;
 							end if;

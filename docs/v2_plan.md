@@ -64,7 +64,7 @@ I²C init, `top_v2` without Nios II (timing met, 4 % logic).
     for testing (pyserial) until the new GUI exists.
 * Top level without Platform Designer: only a PLL IP and the RTL.
 
-### C: Fixed-point library
+### C: Fixed-point library  (status: done in simulation, see [v2_stepC_design.md](v2_stepC_design.md))
 
 * Q1.23 audio samples; multiply with rounding; saturation; dry/wet mix;
   one-pole parameter smoothing (applied to every user parameter, so no zipper

@@ -1,9 +1,24 @@
+-- -----------------------------------------------------------------------------
+-- echo.vhd
+-- Delay line up to 32767 samples (~0.68 s) with feedback:
+--   out      = dry + level * delayed / 65536
+--   feedback = dry + repeat * delayed / 256   (written into the delay line)
+-- so echo n has amplitude level * repeat^(n-1) * x. DW-bit samples and delay
+-- line (step C). The line is 2^AW words: 32 k by default (v1 had 64 k, of which
+-- the 15-bit echo_time register only reached half). The size only matters for
+-- echo_time = 0 (read = write address returns the word one ring ago), so the v1
+-- reference test uses AW = 16. DW = 16 is bit-exact to v1.
+-- -----------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
 use work.fx_pkg.all;
 
 entity echo is
+generic (
+		DW : positive := 16;                        -- sample width (16 or 24)
+		AW : positive := 15                         -- delay line 2^AW words (15..16)
+);
 port(
 		clk  : in std_logic;   -- system clock (v2 B1)
 		en_rise  : in std_logic;   -- strobe: v1 rising edge of this effect's sample clock
@@ -14,54 +29,22 @@ port(
       e_level			: in std_logic_vector(15 downto 0);	
 		e_repeat			: in std_logic_vector(15 downto 0);	
 			
-		data_in       : in std_logic_vector(15 downto 0);
-		data_out       : out std_logic_vector(15 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
+		data_in       : in std_logic_vector(DW - 1 downto 0);
+		data_out       : out std_logic_vector(DW - 1 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
 );
 end entity;
 
 architecture rtl of echo is
 
+signal read_pointer  : std_logic_vector(AW - 1 downto 0);
+signal write_pointer : std_logic_vector(AW - 1 downto 0) := (others => '0');
 
-
-COMPONENT echo_ram IS
-	PORT
-	(
-		clocken		: IN STD_LOGIC  := '1';
-		clock		: IN STD_LOGIC  := '1';
-		data		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
-		rdaddress		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
-		wraddress		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
-		wren		: IN STD_LOGIC  := '0';
-		q		: OUT STD_LOGIC_VECTOR (15 DOWNTO 0)
-	);
-END COMPONENT;
-
-
-signal read_pointer : std_logic_vector(15 downto 0);
-signal write_pointer : std_logic_vector(15 downto 0) := (others => '0');
-
-signal data_temp : std_logic_vector(15 downto 0);
-signal data_divided : std_logic_vector(15 downto 0); 
-
-signal data_in_feedback : std_logic_vector(15 downto 0); 
-
-signal result : std_logic_vector(31 downto 0); 
-signal  a : integer := 0;
-signal  b : integer := 0;
-signal  c : integer := 0;
-
-signal echo_rep   : std_logic_vector(7 downto 0);
-signal d,e,f      : integer := 0;
-signal rep_result : std_logic_vector(23 downto 0); 
-signal rep_result_div : std_logic_vector(15 downto 0); 
-
-signal t_time : std_logic_vector(14 downto 0);
-signal interval : integer range 0 to 32767;
-
+signal data_temp        : std_logic_vector(DW - 1 downto 0);   -- delayed sample
+signal data_divided     : signed(DW - 1 downto 0);             -- level * delayed / 65536
+signal rep_result_div   : signed(DW - 1 downto 0);             -- repeat * delayed / 256
+signal data_in_feedback : std_logic_vector(DW - 1 downto 0);
 
 begin
-
-		interval <= to_integer(unsigned( e_time(14 downto 0) ));
 
 COUNTER_PROC: 	process(clk)
 				begin
@@ -70,9 +53,9 @@ COUNTER_PROC: 	process(clk)
 				 end if;				
 				end process;
 				
-				read_pointer <= std_logic_vector( unsigned(write_pointer) - interval ); -- was +
+				read_pointer <= std_logic_vector( unsigned(write_pointer) - resize(unsigned(e_time(14 downto 0)), AW) );
 				
-DELAY_RAM :     echo_ram port map(
+DELAY_RAM :     entity work.fx_dpram generic map (WIDTH => DW, ADDR_W => AW) port map(
 								clock	  => clk,
 								clocken	  => en_rise,
 								data 	  => data_in_feedback,
@@ -81,42 +64,21 @@ DELAY_RAM :     echo_ram port map(
 								wren	  => '1',
 								q         => data_temp
 								 );
-				
-	 --process(echo_enable)
-	 --begin
-	 --case (echo_enable) is
-	 -- when '1' => data_out <= std_logic_vector( signed(data_temp) + signed(data_in) );
-	 --when '0' => data_out <= data_in;
-	 -- end case;
-	 --end process;
-	    
-		 				a <= to_integer(unsigned(e_level));
-					   b <= to_integer(signed(data_temp));
-						c <= a*b;
-						result <= std_logic_vector(to_signed(c, result'length));
-		            data_divided <= result(31 downto 16);
-						
-						-- Feedback = repeat * delayed (independent of the output level), so
-						-- echo n has amplitude level * repeat^(n-1) * x.
-						echo_rep 	<= e_repeat(7 downto 0);
-						d        	<= to_integer(unsigned(echo_rep));
-						e        	<= to_integer(signed(data_temp));
-						f        	<= d*e;
-						rep_result  <= std_logic_vector(to_signed(f, rep_result'length));
-					   rep_result_div <= rep_result(23 downto 8);
 
-						data_in_feedback <= sat16_slv( to_integer(signed(rep_result_div)) + to_integer(signed(data_in)) );
+						data_divided   <= resize(mul_shr(signed(data_temp), unsigned(e_level), 16), DW);
+						rep_result_div <= resize(mul_shr(signed(data_temp), unsigned(e_repeat(7 downto 0)), 8), DW);
+						data_in_feedback <= std_logic_vector(add_sat(rep_result_div, signed(data_in), DW));
 
 	 	 process(clk)
 	    begin
 		  if rising_edge(clk) and en_rise = '1' then
 			if(echo_enable = '1') then
 				 -- dry + level * delayed (the feedback path is not added to the output twice)
-				 data_out <= sat16_slv( to_integer(signed(data_divided)) + to_integer(signed(data_in)) );
+				 data_out <= std_logic_vector(add_sat(data_divided, signed(data_in), DW));
 			else
 				 data_out <= data_in;
 			end if;
 		end if;
 	 end process;
-				
+
 end rtl;

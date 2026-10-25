@@ -2,7 +2,9 @@
 -- gme_core.vhd  (v2 step B5)
 -- Everything of the multi-effect that runs on sys_clk (49.152 MHz):
 --   i2s_core   FPGA = I2S master, stereo 24-bit, sample_tick / half_tick
---   FX_chain   the v1 effects (16-bit), mono: left input, output to both channels
+--   FX_chain   the effects, 24-bit (step C), click-free on/off; mono: left input,
+--              output to both channels
+--   param_smooth  one-pole smoothing of the continuous parameters (step C)
 --   ctrl_avmm  register file behind an Avalon-MM slave (HPS lightweight bridge)
 --   codec_ctrl WM8731 init sequence + host codec writes over I2C
 --   level meters for the STATUS/level registers, status LEDs
@@ -17,7 +19,9 @@ entity gme_core is
   generic (
     I2C_DIV        : positive := 123;              -- I2C quarter period -> 99.9 kHz
     INIT_WAIT_CLKS : positive := 491_520;          -- codec power-up pause (10 ms)
-    VERSION        : std_logic_vector(15 downto 0) := x"0201"
+    SMOOTH         : boolean  := true;             -- parameter smoothing
+    XFADE          : boolean  := true;             -- click-free effect on/off
+    VERSION        : std_logic_vector(15 downto 0) := x"0202"
   );
   port (
     clk        : in  std_logic;
@@ -50,11 +54,14 @@ architecture rtl of gme_core is
   signal sample_tick, half_tick : std_logic;
   signal rx_left, rx_right      : std_logic_vector(23 downto 0);
   signal tx_word                : std_logic_vector(23 downto 0);
-  signal fx_out, fx_out_r       : std_logic_vector(15 downto 0);
+  signal fx_out                 : std_logic_vector(23 downto 0);
 
   signal effects_enable, od_drive, od_gain, trem_wave, trem_depth, echo_time, echo_repeat,
          echo_level, dist_mix, dist_type, chorus_level, chorus_depth, chorus_rate,
          reverb_mix, reverb_type : std_logic_vector(15 downto 0);
+  -- smoothed continuous parameters (to the chain)
+  signal s_od_drive, s_trem_depth, s_echo_level, s_echo_repeat, s_dist_mix,
+         s_chorus_level, s_reverb_mix : std_logic_vector(15 downto 0);
   signal codec_init, mute       : std_logic;
 
   signal i2c_req, i2c_busy, i2c_done, i2c_nak : std_logic;
@@ -94,21 +101,40 @@ begin
               sample_tick => sample_tick, half_tick => half_tick);
 
   u_fx : entity work.FX_chain
+    generic map (DW => 24, XFADE => XFADE)
     port map (
       clk => clk, sample_tick => sample_tick, half_tick => half_tick,
       od_enable => '0', tremolo_enable => '0', echo_enable => '0',
-      effects_enable => effects_enable, od_drive => od_drive, od_gain => od_gain,
-      trem_depth => trem_depth, trem_wave => trem_wave,
-      echo_time => echo_time, echo_level => echo_level, echo_repeat => echo_repeat,
-      chorus_rate => chorus_rate, chorus_level => chorus_level, chorus_depth => chorus_depth,
-      dist_mix => dist_mix, dist_type => dist_type,
-      reverb_type => reverb_type, reverb_mix => reverb_mix,
-      data_in_left  => rx_left(23 downto 8),      -- effects are 16-bit until step C
-      data_in_right => rx_right(23 downto 8),
+      effects_enable => effects_enable, od_drive => s_od_drive, od_gain => od_gain,
+      trem_depth => s_trem_depth, trem_wave => trem_wave,
+      echo_time => echo_time, echo_level => s_echo_level, echo_repeat => s_echo_repeat,
+      chorus_rate => chorus_rate, chorus_level => s_chorus_level, chorus_depth => chorus_depth,
+      dist_mix => s_dist_mix, dist_type => dist_type,
+      reverb_type => reverb_type, reverb_mix => s_reverb_mix,
+      data_in_left  => rx_left,
+      data_in_right => rx_right,
       data_out_left => fx_out, data_out_right => open);
 
+  -- parameter smoothing: levels, depths, mixes, drive. Not smoothed: gain
+  -- (integer factor), selectors, enables (crossfaded in FX_chain), delay
+  -- times and the chorus LFO settings.
+  smooth_on : if SMOOTH generate
+    u_sm_drive  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => od_drive,     value => s_od_drive);
+    u_sm_tdepth : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => trem_depth,   value => s_trem_depth);
+    u_sm_elevel : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => echo_level,   value => s_echo_level);
+    u_sm_erep   : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => echo_repeat,  value => s_echo_repeat);
+    u_sm_dmix   : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => dist_mix,     value => s_dist_mix);
+    u_sm_clevel : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => chorus_level, value => s_chorus_level);
+    u_sm_rmix   : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => reverb_mix,   value => s_reverb_mix);
+  end generate;
+  smooth_off : if not SMOOTH generate
+    s_od_drive <= od_drive;     s_trem_depth <= trem_depth;     s_echo_level <= echo_level;
+    s_echo_repeat <= echo_repeat; s_dist_mix <= dist_mix;       s_chorus_level <= chorus_level;
+    s_reverb_mix <= reverb_mix;
+  end generate;
+
   -- mono effects: processed left channel to both outputs
-  tx_word <= (others => '0') when mute = '1' else fx_out & x"00";
+  tx_word <= (others => '0') when mute = '1' else fx_out;
 
   -- ---- control ----------------------------------------------------------------
   u_ctrl : entity work.ctrl_avmm
@@ -153,7 +179,7 @@ begin
         hb       <= '0';
       elsif sample_tick = '1' then
         peak_in  <= peak_update(peak_in, abs16(rx_left(23 downto 8)));
-        peak_out <= peak_update(peak_out, abs16(fx_out));
+        peak_out <= peak_update(peak_out, abs16(fx_out(23 downto 8)));
         if hb_cnt = 23999 then
           hb_cnt <= 0;
           hb     <= not hb;                        -- 1 Hz blink

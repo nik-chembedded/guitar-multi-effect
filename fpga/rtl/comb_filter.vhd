@@ -1,5 +1,10 @@
-
-
+-- -----------------------------------------------------------------------------
+-- comb_filter.vhd
+-- Feedback comb filter for the reverb: delayline_in = x + gain * out / 65536,
+-- out = the delay line output (int_TAPS samples). DW-bit samples and delay line
+-- (step C); DW = 16 is bit-exact to v1. TAPS / GAIN generics are unused (the
+-- values come from the reverb type).
+-- -----------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
@@ -7,7 +12,8 @@ use work.fx_pkg.all;
 
 entity comb_filter is
 generic (TAPS : integer:=677;
-			GAIN : integer:= 10000
+			GAIN : integer:= 10000;
+			DW   : positive := 16                     -- sample width (16 or 24)
 			);
 port(
       clk  : in std_logic;   -- system clock (v2 B1)
@@ -15,54 +21,22 @@ port(
       en_fall  : in std_logic;   -- strobe: v1 falling edge
 		int_TAPS      : in integer range 0 to 2047;
 		int_GAIN      : in integer range 0 to 65535;
-      data_in       : in std_logic_vector(15 downto 0);    
-      data_out      : out std_logic_vector(15 downto 0)
+      data_in       : in std_logic_vector(DW - 1 downto 0);
+      data_out      : out std_logic_vector(DW - 1 downto 0)
      );
 end entity;
 
 
 architecture rtl of comb_filter is
 
-component K_multiply
-port(
-		data_in  : in std_logic_vector(15 downto 0);
-		gain     : in std_logic_vector(15 downto 0);
-		data_out : out std_logic_vector(15 downto 0)
-	 );
-end component;
-
-COMPONENT fcomb_RAM2 IS
-	PORT
-	(
-		clocken		: IN STD_LOGIC  := '1';
-		clock		: IN STD_LOGIC  := '1';
-		data		: IN STD_LOGIC_VECTOR (15 DOWNTO 0);
-		rdaddress		: IN STD_LOGIC_VECTOR (10 DOWNTO 0);
-		wraddress		: IN STD_LOGIC_VECTOR (10 DOWNTO 0);
-		wren		: IN STD_LOGIC  := '0';
-		q		: OUT STD_LOGIC_VECTOR (15 DOWNTO 0)
-	);
-END COMPONENT;
-
-
 signal read_pointer  : std_logic_vector(10 DOWNTO 0);
 signal write_pointer : std_logic_vector(10 DOWNTO 0) := (others => '0');
 
-signal temp_adder    : std_logic_vector(15 DOWNTO 0);
-signal delayline_in  : std_logic_vector(15 DOWNTO 0);
-signal gain_feedback : std_logic_vector(15 DOWNTO 0);
-signal delayline_out : std_logic_vector(15 DOWNTO 0);
-
-signal c_gain : std_logic_vector(15 DOWNTO 0);
-
-signal result : std_logic_vector(31 downto 0); 
-signal  a : integer := 0;
-signal  b : integer := 0;
-signal  c : integer := 0; 
+signal delayline_in  : std_logic_vector(DW - 1 DOWNTO 0);
+signal gain_feedback : signed(DW - 1 DOWNTO 0);
+signal delayline_out : std_logic_vector(DW - 1 DOWNTO 0);
 
 begin
-
-					c_gain <= std_logic_vector(to_signed(GAIN, c_gain'length));
 
 COUNTER_PROC: 	process(clk)
 				   begin
@@ -72,9 +46,9 @@ COUNTER_PROC: 	process(clk)
 				   end process;				
 				       read_pointer <= std_logic_vector( unsigned(write_pointer) - int_TAPS );
 						 
-					delayline_in <= sat16_slv( to_integer(signed(data_in)) + to_integer(signed(gain_feedback)) );
+					delayline_in <= std_logic_vector(add_sat(signed(data_in), gain_feedback, DW));
 
-DELAY_LINE : fcomb_RAM2 port map(
+DELAY_LINE : entity work.fx_dpram generic map (WIDTH => DW, ADDR_W => 11) port map(
 								clock	  => clk,
 								clocken	  => en_rise,
 								data 	  => delayline_in,
@@ -84,18 +58,8 @@ DELAY_LINE : fcomb_RAM2 port map(
 								q         => delayline_out
 								 );
 								 
-						a <= int_GAIN;
-					   b <= to_integer(signed(delayline_out));
-						c <= a*b;
-						result <= std_logic_vector(to_signed(c, result'length));
-		            gain_feedback <= result(31 downto 16);
+					gain_feedback <= resize(mul_shr(signed(delayline_out), to_unsigned(int_GAIN, 16), 16), DW);
 			
-						data_out <= delayline_out;
-								 
+					data_out <= delayline_out;
 
-								 
-								 
 end rtl;
-
-
-

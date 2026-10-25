@@ -27,6 +27,9 @@ set_global_assignment -name SDC_FILE top_v2.sdc
 set_global_assignment -name VERILOG_FILE rtl/pll_sys.v
 set_global_assignment -name QIP_FILE hps_sys/synthesis/hps_sys.qip
 set_global_assignment -name VHDL_FILE rtl/fx_pkg.vhd
+set_global_assignment -name VHDL_FILE rtl/fx_dpram.vhd
+set_global_assignment -name VHDL_FILE rtl/fx_xfade.vhd
+set_global_assignment -name VHDL_FILE rtl/param_smooth.vhd
 set_global_assignment -name VHDL_FILE rtl/overdrive.vhd
 set_global_assignment -name VHDL_FILE rtl/distortion.vhd
 set_global_assignment -name VHDL_FILE rtl/chorus.vhd
@@ -45,10 +48,6 @@ set_global_assignment -name VHDL_FILE rtl/gme_core.vhd
 set_global_assignment -name VHDL_FILE rtl/top_v2.vhd
 
 # ---- Intel megafunction wrappers (RAM / ROM) and .mif tables
-set_global_assignment -name QIP_FILE ip/echo_ram.qip
-set_global_assignment -name QIP_FILE ip/chorus_RAM.qip
-set_global_assignment -name QIP_FILE ip/fcomb_RAM2.qip
-set_global_assignment -name QIP_FILE ip/fcomb_RAM4.qip
 set_global_assignment -name QIP_FILE ip/dist_ROM_soft.qip
 set_global_assignment -name QIP_FILE ip/dist_ROM_medium.qip
 set_global_assignment -name QIP_FILE ip/dist_ROM_hard.qip

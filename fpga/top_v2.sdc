@@ -14,6 +14,7 @@ derive_clock_uncertainty
 set fx   [get_registers {*|u_fx|*}]
 set rx   [get_registers {*|u_i2s|rx_l_out*}]   ;# right channel unused (mono effects)
 set regs [get_registers {*|u_ctrl|u_regs|regs*}]
+set sm   [get_registers {*|u_sm_*|y*}]           ;# smoothed parameters (step C), update on sample_tick
 
 set_multicycle_path -setup -end 16 -from $fx   -to $fx
 set_multicycle_path -hold  -end 15 -from $fx   -to $fx
@@ -21,6 +22,8 @@ set_multicycle_path -setup -end 16 -from $rx   -to $fx
 set_multicycle_path -hold  -end 15 -from $rx   -to $fx
 set_multicycle_path -setup -end 16 -from $regs -to $fx
 set_multicycle_path -hold  -end 15 -from $regs -to $fx
+set_multicycle_path -setup -end 16 -from $sm   -to $fx
+set_multicycle_path -hold  -end 15 -from $sm   -to $fx
 # chain output -> I2S transmit latch (cnt 0) and level meters (sample_tick)
 set_multicycle_path -setup -end 16 -from $fx   -to [get_registers {*|u_i2s|tx_* *|peak_*}]
 set_multicycle_path -hold  -end 15 -from $fx   -to [get_registers {*|u_i2s|tx_* *|peak_*}]

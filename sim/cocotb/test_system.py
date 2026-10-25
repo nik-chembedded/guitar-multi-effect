@@ -22,6 +22,7 @@ from test_avmm import VERSION, AvmmHost
 from test_i2s import CodecSlave
 
 N_FRAMES = 60
+SETTLE = 1800            # frames: parameter smoothing + effect fade-in (step C)
 
 
 def s24(v):
@@ -60,11 +61,11 @@ def audio_words(n, seed):
 
 
 def expect_mono(dac, words, fn):
-    """dac (L, R) must be fn(left input 16-bit) << 8 on both channels, at some latency."""
-    x = [s24(l) >> 8 for l, _ in words]                       # 16-bit effect input
+    """dac (L, R) must be fn(left input, 24-bit) on both channels, at some latency."""
+    x = [s24(l) for l, _ in words]                            # 24-bit effect input (step C)
     y = fn(x)
     for lat in range(1, 16):
-        ok = all(s24(dac[n + lat][0]) == y[n] * 256 and s24(dac[n + lat][1]) == y[n] * 256
+        ok = all(s24(dac[n + lat][0]) == y[n] and s24(dac[n + lat][1]) == y[n]
                  for n in range(10, len(words) - 10) if n + lat < len(dac))
         if ok:
             return lat
@@ -84,7 +85,7 @@ async def test_boot_and_bypass(dut):
     codec.adc, codec.dac, codec.frames_sent = words, [], 0
     await ClockCycles(dut.clk, (N_FRAMES + 4) * 1024)
     lat = expect_mono(codec.dac, words, golden.bypass)
-    dut._log.info("boot OK (%d codec writes), bypass end-to-end bit-exact at 16 bits, latency %d frames",
+    dut._log.info("boot OK (%d codec writes), bypass end-to-end bit-exact at 24 bits, latency %d frames",
                   len(INIT), lat)
 
 
@@ -96,16 +97,18 @@ async def test_overdrive_via_hps(dut):
     await wait_init(dut, host)
     for addr, val in ((1, 3000), (2, 4), (0, 0x0001)):         # drive, gain, enable OD
         await host.write(addr, val)
+    # the drive is smoothed (exact after ~1500 samples) and OD fades in over 256
+    await ClockCycles(dut.clk, SETTLE * 1024)
     codec.adc, codec.dac, codec.frames_sent = words, [], 0
     await ClockCycles(dut.clk, (N_FRAMES + 4) * 1024)
-    lat = expect_mono(codec.dac, words, lambda x: golden.overdrive(x, 3000, 4))
+    lat = expect_mono(codec.dac, words, lambda x: golden.overdrive(x, 3000, 4, dw=24))
     # peak meters decay slowly (1/256 per sample), so the output meter may still
     # hold part of the earlier dry full-scale peak: check it caught the 12000 peaks
     lvl_out = await host.read(0x13)
     lvl_in = await host.read(0x12)
     assert lvl_out >= 11000, "output level register %d" % lvl_out
     assert lvl_in >= 28000, "input level register %d (input is near full scale)" % lvl_in
-    dut._log.info("overdrive set over the bridge, output bit-exact, latency %d; levels in %d / out %d",
+    dut._log.info("overdrive set over the bridge, output bit-exact (24-bit), latency %d; levels in %d / out %d",
                   lat, lvl_in, lvl_out)
 
 

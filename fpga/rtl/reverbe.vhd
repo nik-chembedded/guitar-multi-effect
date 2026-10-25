@@ -1,81 +1,47 @@
 
+-- -----------------------------------------------------------------------------
+-- reverbe.vhd
+-- Schroeder reverb: input / 4 into 4 parallel comb filters, summed, then 2
+-- all-pass filters in series; dry/wet mix. Room presets select the taps and
+-- gains. DW-bit samples (step C); DW = 16 is bit-exact to v1.
+-- -----------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
 use work.fx_pkg.all;
 
 entity reverbe is
+generic (
+      DW : positive := 16                         -- sample width (16 or 24)
+);
 port(
       clk    : in std_logic;   -- system clock (v2 B1)
       en_rise    : in std_logic;   -- strobe: v1 rising edge of this effect's sample clock
       en_fall    : in std_logic;   -- strobe: v1 falling edge
-      data_in         : in std_logic_vector(15 downto 0);
+      data_in         : in std_logic_vector(DW - 1 downto 0);
 		reverb_mix      : in std_logic_vector(15 downto 0);
 	 	reverb_type     : in std_logic_vector(15 downto 0);
 		reverbe_enable  : in std_logic;	
-      data_out        : out std_logic_vector(15 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
+      data_out        : out std_logic_vector(DW - 1 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
      );
 end entity;
 
 architecture rtl of reverbe is
 
-component comb_filter is
-generic (TAPS : integer:=677;
-			GAIN : integer:= 45873
-			);
-port(
-      clk  : in std_logic;   -- system clock (v2 B1)
-      en_rise  : in std_logic;   -- strobe: v1 rising edge of this effect's sample clock
-      en_fall  : in std_logic;   -- strobe: v1 falling edge
-		int_TAPS      : in integer range 0 to 2047;
-		int_GAIN      : in integer range 0 to 65535;
-      data_in       : in std_logic_vector(15 downto 0);    
-      data_out      : out std_logic_vector(15 downto 0)
-     );
-end component;
 
-component allpass_filter is
-generic (TAPS : integer:=677;
-			P_GAIN : integer:= 30000;
-			N_GAIN : integer:= -30000
-			);
-port(
-      clk  : in std_logic;   -- system clock (v2 B1)
-      en_rise  : in std_logic;   -- strobe: v1 rising edge of this effect's sample clock
-      en_fall  : in std_logic;   -- strobe: v1 falling edge
-		int_TAPS      : in integer range 0 to 4095;
-		int_GAIN_pos  : in integer range -65535 to 65535;
-		int_GAIN_neg  : in integer range -65535 to 65535;
-      data_in       : in std_logic_vector(15 downto 0);    
-      data_out      : out std_logic_vector(15 downto 0)
-     );
-end component;
 
-	signal temp_mix   : std_logic_vector(7 downto 0);
-   signal invert_mix : std_logic_vector(7 downto 0);
-   signal int_mix    : integer := 0;
+signal cf1_out : std_logic_vector(DW - 1 downto 0);
+signal cf2_out : std_logic_vector(DW - 1 downto 0);
+signal cf3_out : std_logic_vector(DW - 1 downto 0);
+signal cf4_out : std_logic_vector(DW - 1 downto 0);
 
-	signal a : integer := 0;
-	signal b : integer := 0;
-	signal c : integer := 0;
-	
-	signal out_dat : std_logic_vector(23 downto 0); 
-	
+signal cf_combined   : std_logic_vector(DW - 1 downto 0);
+signal comb_in       : std_logic_vector(DW - 1 downto 0);   -- reverb input attenuated by 4 (12 dB headroom)
 
-signal cf1_out : std_logic_vector(15 downto 0);
-signal cf2_out : std_logic_vector(15 downto 0);
-signal cf3_out : std_logic_vector(15 downto 0);
-signal cf4_out : std_logic_vector(15 downto 0);
+signal apf1_out : std_logic_vector(DW - 1 downto 0);
+signal apf2_out : std_logic_vector(DW - 1 downto 0);
 
-signal cf_combined   : std_logic_vector(15 downto 0); 
-signal comb_in       : std_logic_vector(15 downto 0);   -- reverb input attenuated by 4 (12 dB headroom)
-signal cf_normalized : std_logic_vector(15 downto 0);
-
-signal apf1_out : std_logic_vector(15 downto 0);
-
-signal apf2_out : std_logic_vector(15 downto 0);
-
-signal t_out : std_logic_vector(15 downto 0); 
+signal out_dat  : signed(DW - 1 downto 0);
 
 signal temp_type    : std_logic_vector(3 downto 0);
 
@@ -192,7 +158,7 @@ begin
 -- adders below also saturate instead of wrapping).
 comb_in <= std_logic_vector( shift_right(signed(data_in), 2) );
 
-CF1 : comb_filter generic map(TAPS => 1429 , GAIN => 52000)
+CF1 : entity work.comb_filter generic map(DW => DW, TAPS => 1429 , GAIN => 52000)
 						port map(
 							clk => clk,
 							en_rise => en_rise,
@@ -203,7 +169,7 @@ CF1 : comb_filter generic map(TAPS => 1429 , GAIN => 52000)
 							data_out     => cf1_out
 									);
 
-CF2 : comb_filter generic map(TAPS => 1783 , GAIN => 51500)
+CF2 : entity work.comb_filter generic map(DW => DW, TAPS => 1783 , GAIN => 51500)
 						port map(
 							clk => clk,
 							en_rise => en_rise,
@@ -214,7 +180,7 @@ CF2 : comb_filter generic map(TAPS => 1783 , GAIN => 51500)
 							data_out     => cf2_out
 									);
 									
-CF3 : comb_filter generic map(TAPS => 1937 , GAIN => 50000)
+CF3 : entity work.comb_filter generic map(DW => DW, TAPS => 1937 , GAIN => 50000)
 						port map(
 							clk => clk,
 							en_rise => en_rise,
@@ -225,7 +191,7 @@ CF3 : comb_filter generic map(TAPS => 1937 , GAIN => 50000)
 							data_out     => cf3_out
 									);
 									
-CF4 : comb_filter generic map(TAPS => 2017 , GAIN => 50500)
+CF4 : entity work.comb_filter generic map(DW => DW, TAPS => 2017 , GAIN => 50500)
 						port map(
 							clk => clk,
 							en_rise => en_rise,
@@ -236,12 +202,12 @@ CF4 : comb_filter generic map(TAPS => 2017 , GAIN => 50500)
 							data_out     => cf4_out
 									);	
 									
-							cf_combined <= sat16_slv( to_integer(signed(cf1_out)) + to_integer(signed(cf2_out))
-			                         + to_integer(signed(cf3_out)) + to_integer(signed(cf4_out)) );	
-						    
+							cf_combined <= std_logic_vector(sat(
+							     resize(signed(cf1_out), DW + 2) + resize(signed(cf2_out), DW + 2)
+							   + resize(signed(cf3_out), DW + 2) + resize(signed(cf4_out), DW + 2), DW));
 							--cf_normalized <= std_logic_vector( signed(cf_combined) / 4 ); 
 									
-APF1 : allpass_filter generic map(TAPS => 2309 , P_GAIN => 45000 , N_GAIN => -45000)
+APF1 : entity work.allpass_filter generic map(DW => DW, TAPS => 2309 , P_GAIN => 45000 , N_GAIN => -45000)
 						port map(
 							clk => clk,
 							en_rise => en_rise,
@@ -253,7 +219,7 @@ APF1 : allpass_filter generic map(TAPS => 2309 , P_GAIN => 45000 , N_GAIN => -45
 							data_out     => apf1_out
 									);		
 									
-APF2 : allpass_filter generic map(TAPS => 1583 , P_GAIN => 40000 , N_GAIN => -40000)
+APF2 : entity work.allpass_filter generic map(DW => DW, TAPS => 1583 , P_GAIN => 40000 , N_GAIN => -40000)
 						port map(
 							clk => clk,
 							en_rise => en_rise,
@@ -268,21 +234,13 @@ APF2 : allpass_filter generic map(TAPS => 1583 , P_GAIN => 40000 , N_GAIN => -40
 							--t_out <= std_logic_vector( signed(apf2_out) / 4 );
 							
 							
-			temp_mix   <= reverb_mix(7 downto 0);
-			invert_mix <= std_logic_vector(255 - unsigned(temp_mix));
-			int_mix    <= to_integer(unsigned(temp_mix));
-			
-			a <= int_mix * to_integer(signed(apf2_out));
-			b <= to_integer(unsigned(invert_mix)) * to_integer(signed(data_in));
-			c <= a + b;
-			
-			out_dat <= std_logic_vector(to_signed(c, out_dat'length));		
+			out_dat <= mix8(signed(data_in), signed(apf2_out), unsigned(reverb_mix(7 downto 0)));
 
 	 	 process(clk)
 	    begin
 		  if rising_edge(clk) and en_rise = '1' then
 			if(reverbe_enable = '1') then
-				 data_out <= out_dat(23 downto 8);
+				 data_out <= std_logic_vector(out_dat);
 			else
 				 data_out <= data_in;
 			end if;

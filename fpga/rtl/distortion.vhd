@@ -1,11 +1,18 @@
-
-
-
+-- -----------------------------------------------------------------------------
+-- distortion.vhd
+-- Waveshaping with ROM transfer curves (|f(|x|)| for |x| = 0..16383), sign
+-- restored, dry/wet mix. DW-bit samples (step C): the table is addressed with
+-- |x| / 2^(DW-16) and its value scaled by 2^(DW-16). DW = 16 is bit-exact to v1.
+-- -----------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
+use work.fx_pkg.all;
 
 entity distortion is
+generic (
+      DW : positive := 16                         -- sample width (16 or 24)
+);
 port(
 
       clk  : in std_logic;   -- system clock (v2 B1)
@@ -17,9 +24,9 @@ port(
 		mix      : in std_logic_vector(15 downto 0);
 		d_type   : in std_logic_vector(15 downto 0); 
 		
-      data_in       : in std_logic_vector(15 downto 0);
+      data_in       : in std_logic_vector(DW - 1 downto 0);
       
-      data_out      : out std_logic_vector(15 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
+      data_out      : out std_logic_vector(DW - 1 downto 0) := (others => '0')   -- power-up 0 (sim: no X before the first strobe)
      );
 end entity;
 
@@ -67,24 +74,17 @@ COMPONENT dist_ROM_hard IS
 END COMPONENT;
 
 
+	constant S : natural := DW - 16;
+
 	signal data_temp : std_logic_vector(15 downto 0);
-	signal temp_int  : integer range -32768 to 32767;
+	signal mag       : unsigned(DW downto 0);                    -- |x| / 2^S (no overflow at -2^(DW-1))
 	signal data_to_addr  : integer range 0 to 16383 := 0;   -- |x| saturated to the table size
 	signal d_addr  : std_logic_vector(13 downto 0);
 	signal neg_d   : boolean := false;                      -- sign of the sample in the ROM
-	signal dry_d   : integer range -32768 to 32767 := 0;    -- dry sample aligned with the ROM output
-	signal wet     : integer range -32768 to 32767;
-	
-	signal temp_depth   : std_logic_vector(7 downto 0);
-   signal invert_depth : std_logic_vector(7 downto 0);
-   signal int_depth    : integer := 0;
+	signal dry_d   : signed(DW - 1 downto 0) := (others => '0');   -- dry sample aligned with the ROM output
+	signal wet     : signed(DW - 1 downto 0);
+	signal out_dat : signed(DW - 1 downto 0);
 
-	signal a : integer := 0;
-	signal b : integer := 0;
-	signal c : integer := 0;
-	
-	signal out_dat : std_logic_vector(23 downto 0); 
-	
 	signal soft_en : std_logic;
 	signal med_en  : std_logic;
 	signal hard_en : std_logic;
@@ -92,17 +92,13 @@ END COMPONENT;
 	signal med_out_temp  : std_logic_vector(15 downto 0);
 	signal hard_out_temp : std_logic_vector(15 downto 0);
 	signal temp_type    : std_logic_vector(1 downto 0);
-	
-	signal temp_data_sign : std_logic_vector(15 downto 0); 
-	signal temp_int_sign  : integer := 0;
-	signal int_sign      :  integer := 0;
-	
+
 begin
 
 
 
 			
-			temp_int <= to_integer(signed(data_in));
+			mag <= shift_right(unsigned(abs(resize(signed(data_in), DW + 1))), S);
 			
 			-- The transfer curves only cover |x| = 0..16383 (14-bit address).
 			-- Saturate the address instead of letting |x| >= 16384 wrap around,
@@ -110,13 +106,13 @@ begin
 			process(clk)
 			begin
 				if rising_edge(clk) and en_rise = '1' then
-					if abs(temp_int) > 16383 then
+					if mag > 16383 then
 						data_to_addr <= 16383;
 					else
-						data_to_addr <= abs(temp_int);
+						data_to_addr <= to_integer(mag);
 					end if;
-					neg_d <= temp_int < 0;
-					dry_d <= temp_int;
+					neg_d <= signed(data_in) < 0;
+					dry_d <= signed(data_in);
 			 end if;
 			end process;
 			
@@ -189,26 +185,17 @@ ROM_hard : dist_ROM_hard port map(
 --										end process;
 --										temp_data_sign <= std_logic_vector(to_signed(int_sign, temp_data_sign'length));
 								
-			temp_depth   <= mix(7 downto 0);
-			invert_depth <= std_logic_vector(255 - unsigned(temp_depth));
-			int_depth    <= to_integer(unsigned(temp_depth));
-			
 			-- restore the sign of the waveshaped sample (the ROM holds |f(|x|)|)
-			wet <= -to_integer(signed(data_temp)) when neg_d else to_integer(signed(data_temp));
+			wet <= -shift_left(resize(signed(data_temp), DW), S) when neg_d
+			       else shift_left(resize(signed(data_temp), DW), S);
 
-			a <= int_depth * wet;
-			b <= to_integer(unsigned(invert_depth)) * dry_d;
-			c <= a + b;
-			
-			out_dat <= std_logic_vector(to_signed(c, out_dat'length));
-			
-								
+			out_dat <= mix8(dry_d, wet, unsigned(mix(7 downto 0)));
 
 	process(clk)
 	 begin
 		if rising_edge(clk) and en_rise = '1' then
 			if(dist_enable = '1') then
-				 data_out <= out_dat(23 downto 8);
+				 data_out <= std_logic_vector(out_dat);
 			else
 				 data_out <= data_in;
 			end if;

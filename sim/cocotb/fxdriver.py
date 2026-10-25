@@ -7,7 +7,13 @@ hardware 512 cycles apart at 49.152 MHz; in simulation shorter, which is
 equivalent because the datapath only advances on the strobes). This is the
 same timing as sim/tb/tb_fx_wav.vhd. The input sample is presented before
 sample_tick; the output is read one clock after half_tick.
+
+Step C: the chain is DW bits wide (generic DW, 16 or 24; GME_DW tells the
+driver). Samples are given and returned in 16-bit scale (shifted by DW-16)
+unless raw=True, which passes DW-bit values unchanged.
 """
+import os
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
@@ -26,10 +32,16 @@ def to_s16(v):
     return v - 65536 if v >= 32768 else v
 
 
+def to_signed(v, bits):
+    return v - (1 << bits) if v >= 1 << (bits - 1) else v
+
+
 class FxChain:
     def __init__(self, dut):
         self.dut = dut
         self.frames = 0
+        self.dw = int(os.environ.get("GME_DW", "16"))
+        self.shift = self.dw - 16
 
     async def start(self, **params):
         d = self.dut
@@ -52,10 +64,11 @@ class FxChain:
                 raise ValueError("unknown parameter " + name)
             getattr(self.dut, name).value = int(value) & 0xFFFF
 
-    async def frame(self, sample):
+    async def frame(self, sample, raw=False):
         """Process one input sample, return the output sample of this frame."""
         d = self.dut
-        d.data_in_left.value = int(sample) & 0xFFFF
+        v = int(sample) if raw else int(sample) << self.shift
+        d.data_in_left.value = v & ((1 << self.dw) - 1)
         await ClockCycles(d.clk, CLK_PER_HALF)
         d.sample_tick.value = 1
         await RisingEdge(d.clk)
@@ -69,15 +82,16 @@ class FxChain:
         out = d.data_out_left.value
         if not out.is_resolvable:
             return None                      # X/U while the pipeline fills
-        return to_s16(int(out))
+        y = to_signed(int(out), self.dw)
+        return y if raw else y >> self.shift
 
-    async def run(self, samples, tail=0, on_frame=None):
+    async def run(self, samples, tail=0, on_frame=None, raw=False):
         """Stream samples (+ tail zeros) through the chain, return outputs."""
         out = []
         for n, s in enumerate(list(samples) + [0] * tail):
             if on_frame:
                 on_frame(n)
-            out.append(await self.frame(s))
+            out.append(await self.frame(s, raw))
         return out
 
 

@@ -14,7 +14,10 @@ as the 32-bit word at **`0xFF200000 + 4·n`** (tool: [`tools/gme_hps.py`](../too
 | Access        | effect registers R/W, status registers R |
 | Reset value   | 0 (all effects off) |
 
-Every register is 16 bits wide. Bits not listed below are reserved: write `0`.
+Every register is 16 bits wide. The parameters keep their 16-bit scale with the 24-bit
+effects (e.g. Overdrive Drive is still a 16-bit amplitude). Levels, depths, mixes,
+repeat and drive are smoothed in the FPGA (time constant 2.7 ms), and enable bits fade
+the effect in or out over 5.3 ms. Bits not listed below are reserved: write `0`.
 The bit ranges are the bits the RTL actually reads.
 
 Unknown addresses read 0 and ignore writes; writes to the read-only registers are ignored.
@@ -36,7 +39,7 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 12  | Chorus Rate     | W   | `[9:0]`   | Chorus Delay Rate Value       | LFO clock divider (higher = slower). |
 | 13  | Reverb Mix      | W   | `[7:0]`   | Reverb Mixed Signal Value     | Dry/wet mix, 0 = dry … 255 = wet. |
 | 14  | Reverb Type     | W   | `[3:0]`   | Reverb Type Selection         | Room preset, see [(4)](#4-reverb-type-selection). |
-| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0201` = v2, HPS control |
+| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0202` = v2 step C (24-bit effects); `0x0201` = HPS control, 16-bit |
 | 0x11 | STATUS         | R   | `[2:0]`   | | bit0 codec init done, bit1 codec NAK (init), bit2 PLL locked |
 | 0x12 | LEVEL_IN       | R   | `[15:0]`  | | input peak level (left, 16-bit magnitude, decays ~1/256 per sample) |
 | 0x13 | LEVEL_OUT      | R   | `[15:0]`  | | output peak level |
@@ -116,7 +119,7 @@ import ctypes, mmap, os
 fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
 mem = mmap.mmap(fd, 0x100, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=0xFF200000)
 regs = (ctypes.c_uint32 * 64).from_buffer(mem)    # one 32-bit access per register
-regs[0x10]                                        # VERSION -> 0x0201
+regs[0x10]                                        # VERSION -> 0x0202
 regs[0x00] = 0x0008                               # effects_enable = DIST
 ```
 

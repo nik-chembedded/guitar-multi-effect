@@ -9,7 +9,11 @@ The same tests run locally (WSL2 Ubuntu) and in GitHub Actions on every push.
 |------|---------|
 | `fxdriver.py` | frame-level driver for `FX_chain`: clock, `sample_tick`/`half_tick` strobes, register writes from Python |
 | `golden.py` | bit-exact Python reference models (overdrive, distortion with the `.mif` curves) |
-| `test_fx_chain.py` | the 7 effect tests |
+| `test_fx_chain.py` | the 7 effect tests (run on the 16-bit and the 24-bit chain) |
+| `test_fxlib.py` | fixed-point library `fx_pkg` (wrapper `hdl/fxlib_wrap.vhd`): every function against Python |
+| `test_smooth.py` | `param_smooth`: bit-exact to a model, exact final value, time constant |
+| `test_xfade.py` | click-free effect on/off: steady states exact, no step larger than the signals' own |
+| `test_ref24.py` | 24-bit chain: full 24-bit input bit-exact (bypass, overdrive, distortion); the 27 v1 presets within v1's 16-bit rounding |
 | `test_ref.py` | bit-exact regression against the recorded v1 outputs in `ref/` (27 presets; `GME_REF_MODE=record` re-records) |
 | `test_i2s.py` | I²S master core (v2 B2) against a WM8731 slave model |
 | `test_avmm.py` | HPS control slave (`ctrl_avmm`): Avalon-MM reads/writes, all registers, invalid/read-only addresses, CONTROL, CODEC register |
