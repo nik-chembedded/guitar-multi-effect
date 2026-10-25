@@ -165,8 +165,8 @@ and the equivalence proof of the IP models (`sim/models/run_equiv.sh`).
 
 * v2 step A (verification) and step B (single clock, I²S master, codec I²C, new top
   level) are done; audio LINE IN → LINE OUT works on the board.
-* Control moved from UART to the HPS (Linux): verified in simulation, timing met in
-  Quartus (4 % of the logic). Board test of the HPS control pending.
+* Control moved from UART to the HPS (Linux): verified in simulation and **on the
+  board** (registers, presets, level meters, codec writes from Linux). 4 % of the logic.
 * Next: step C (fixed-point library, 24-bit effects), then D (new DSP blocks
   incl. FIR cabinet simulation).
 

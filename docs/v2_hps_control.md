@@ -1,7 +1,7 @@
 # v2: HPS control (Linux on the ARM)
 
-**Status:** RTL and Platform Designer system done, cocotb tests pass, Quartus build
-meets timing. Board test pending.
+**Status:** done and **tested on the board** (JTAG `.sof` with the Terasic SD-card Linux running).
+Booting our `soc_system.rbf` from the SD card is not tried yet.
 
 The UART control block of step B is replaced by the ARM HPS: Linux on the
 DE1-SoC writes the effect registers through the **lightweight HPS-to-FPGA bridge**.
@@ -103,3 +103,5 @@ bridge bit-exact → mute → output meter decays to 0 → CODEC write reaches t
     the first byte (stale register number). Fix: byte enables in `ctrl_avmm`, CODEC
     transfer on the write that contains byte 1; `gme_hps.py` uses 32-bit ctypes accesses.
   * level meters stuck at 255: `p - p/256` stops decaying below 256. Fix: decay by 1 there.
+* 2026-10-25, fixed build: `status`, presets, `meter` (decays to 0) and CODEC writes
+  (mute / un-mute the line input) all work.
