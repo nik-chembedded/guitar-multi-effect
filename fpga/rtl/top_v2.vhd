@@ -293,7 +293,9 @@ begin
       hps_0_hps_io_hps_io_gpio_inst_GPIO54 => HPS_KEY,
       hps_0_hps_io_hps_io_gpio_inst_GPIO61 => HPS_GSENSOR_INT);
 
+  -- the cabinet's power-up coefficients: Quartus looks for the .mif relative to the project
   u_core : entity work.gme_core
+    generic map (CAB_INIT => "ip/cab_default.mif")
     port map (
       clk => sys_clk, rst => rst, pll_locked => locked,
       bclk => AUD_BCLK, lrclk => lrclk, dacdat => AUD_DACDAT, adcdat => AUD_ADCDAT,

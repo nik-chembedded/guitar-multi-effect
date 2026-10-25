@@ -21,7 +21,9 @@ entity gme_core is
     INIT_WAIT_CLKS : positive := 491_520;          -- codec power-up pause (10 ms)
     SMOOTH         : boolean  := true;             -- parameter smoothing
     XFADE          : boolean  := true;             -- click-free effect on/off
-    VERSION        : std_logic_vector(15 downto 0) := x"0204"
+    CAB_TAPS       : positive := 2048;             -- cabinet FIR length (D3)
+    CAB_INIT       : string   := "cab_default.mif"; -- its power-up coefficients
+    VERSION        : std_logic_vector(15 downto 0) := x"0205"
   );
   port (
     clk        : in  std_logic;
@@ -75,6 +77,16 @@ architecture rtl of gme_core is
   end function;
   signal codec_init, mute       : std_logic;
 
+  -- cabinet (D3): CAB_ADDR pointer + coefficient write port; CAB_DATA_HI completes a write
+  signal ext_we                 : std_logic;
+  signal ext_wa                 : std_logic_vector(7 downto 0);
+  signal ext_wd                 : std_logic_vector(15 downto 0);
+  signal cab_ptr                : unsigned(11 downto 0) := (others => '0');
+  signal cab_cw_en              : std_logic := '0';
+  signal cab_cw_bank            : std_logic := '0';
+  signal cab_cw_addr            : std_logic_vector(10 downto 0) := (others => '0');
+  signal cab_cw_data            : std_logic_vector(17 downto 0) := (others => '0');
+
   signal i2c_req, i2c_busy, i2c_done, i2c_nak : std_logic;
   signal i2c_reg                : std_logic_vector(6 downto 0);
   signal i2c_data               : std_logic_vector(8 downto 0);
@@ -112,8 +124,10 @@ begin
               sample_tick => sample_tick, half_tick => half_tick);
 
   u_fx : entity work.FX_chain
-    generic map (DW => 24, XFADE => XFADE)
+    generic map (DW => 24, XFADE => XFADE, CAB_TAPS => CAB_TAPS, CAB_INIT => CAB_INIT)
     port map (
+      cab_ctrl => ext_reg(ext, 16#1B#), cab_cw_en => cab_cw_en, cab_cw_bank => cab_cw_bank,
+      cab_cw_addr => cab_cw_addr, cab_cw_data => cab_cw_data,
       clk => clk, sample_tick => sample_tick, half_tick => half_tick,
       od_enable => '0', tremolo_enable => '0', echo_enable => '0',
       effects_enable => effects_enable, od_drive => s_od_drive, od_gain => od_gain,
@@ -127,6 +141,30 @@ begin
       data_in_left  => rx_left,
       data_in_right => rx_right,
       data_out_left => fx_out, data_out_right => open);
+
+  -- cabinet coefficient port. CAB_ADDR (0x1C) sets the write pointer (bit 11 bank,
+  -- 10:0 tap); CAB_DATA_HI (0x1E) writes {HI(1:0), CAB_DATA_LO (0x1D)} at the pointer
+  -- and increments the tap address (the bank bit stays). The FX chain ignores writes
+  -- to the bank in use / requested (cab_stage).
+  process(clk)
+  begin
+    if rising_edge(clk) then
+      cab_cw_en <= '0';
+      if rst = '1' then
+        cab_ptr <= (others => '0');
+      elsif ext_we = '1' then
+        if ext_wa = x"1C" then
+          cab_ptr <= unsigned(ext_wd(11 downto 0));
+        elsif ext_wa = x"1E" then
+          cab_cw_en   <= '1';
+          cab_cw_bank <= cab_ptr(11);
+          cab_cw_addr <= std_logic_vector(cab_ptr(10 downto 0));
+          cab_cw_data <= ext_wd(1 downto 0) & ext_reg(ext, 16#1D#);
+          cab_ptr(10 downto 0) <= cab_ptr(10 downto 0) + 1;
+        end if;
+      end if;
+    end if;
+  end process;
 
   trem_rate <= ext_reg(ext, 16#16#);
   mod_base  <= ext_reg(ext, 16#18#);
@@ -184,7 +222,8 @@ begin
       echo_repeat => echo_repeat, echo_level => echo_level, dist_mix => dist_mix,
       dist_type => dist_type, chorus_level => chorus_level, chorus_depth => chorus_depth,
       chorus_rate => chorus_rate, reverb_mix => reverb_mix, reverb_type => reverb_type, ext => ext,
-      codec_init => codec_init, mute => mute);
+      codec_init => codec_init, mute => mute,
+      ext_we => ext_we, ext_wa => ext_wa, ext_wd => ext_wd);
 
   u_codec : entity work.codec_ctrl
     generic map (I2C_DIV => I2C_DIV, WAIT_CLKS => INIT_WAIT_CLKS)

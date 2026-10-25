@@ -9,7 +9,7 @@ on:
 jobs:
   cocotb-ghdl:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -38,6 +38,10 @@ jobs:
       - name: Fixed-point library, smoothing, click-free on/off, generated LFO, tremolo
         working-directory: sim/cocotb
         run: pytest -v -k "test_fxlib or test_smooth or test_xfade or test_lfo or test_lfo_vs_v1 or test_trem or test_moddelay"
+
+      - name: Cabinet FIR (small configurations, 16/24 bit; full 2048 taps ~7 min) + cabinet stage with fades
+        working-directory: sim/cocotb
+        run: pytest -v -k "test_cabfir or test_cab_xfade"
 
       - name: I2S core + v2 reference (31 presets, 24-bit chain, bit-exact)
         working-directory: sim/cocotb

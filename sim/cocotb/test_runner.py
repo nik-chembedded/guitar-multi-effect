@@ -23,11 +23,14 @@ MODELS = ROOT / "sim" / "models"
 BUILD = Path(os.environ.get("GME_BUILD", HERE / "sim_build"))
 
 IP_MODELS = [MODELS / "sim_rom.vhd", MODELS / "sim_dpram.vhd", MODELS / "fx_dpram.vhd",
-             *sorted((MODELS / "ip").glob("*.vhd"))]
+             MODELS / "cab_coef_ram.vhd", *sorted((MODELS / "ip").glob("*.vhd"))]
 FX_RTL = [RTL / f for f in ("fx_pkg.vhd", "fx_xfade.vhd", "lfo_sine_pkg.vhd", "nco_lfo.vhd",
                             "overdrive.vhd", "distortion.vhd", "mod_delay.vhd",
                             "tremolo_v2.vhd", "echo.vhd", "comb_filter.vhd",
-                            "allpass_filter.vhd", "reverbe.vhd", "FX_chain.vhd")]
+                            "allpass_filter.vhd", "reverbe.vhd", "cab_fir.vhd", "cab_stage.vhd",
+                            "FX_chain.vhd")]
+# chain-level simulations use 16-clock frames: a 16-tap cabinet (2048 taps need 519 clocks per sample)
+CAB16 = {"CAB_TAPS": 16, "CAB_INIT": "cab_test16.mif"}
 GHDL_ARGS = ["--std=08", "-frelaxed"]
 
 
@@ -36,6 +39,9 @@ def run(toplevel, test_module, sources, testcase=None, parameters=None, extra_en
     build_dir.mkdir(parents=True, exist_ok=True)
     for mif in (ROOT / "fpga" / "ip").glob("*.mif"):      # ROMs load .mif from the cwd
         shutil.copy(mif, build_dir)
+    shutil.copy(MODELS / "cab_test16.mif", build_dir)     # 16-tap cabinet of the chain tests
+    if toplevel == "fx_chain":
+        parameters = {**CAB16, **(parameters or {})}
     runner = get_runner(os.environ.get("SIM", "ghdl"))
     runner.build(sources=sources, hdl_toplevel=toplevel, build_args=GHDL_ARGS,
                  build_dir=build_dir, always=True, parameters=parameters or {})
@@ -61,6 +67,14 @@ def test_fx_chain_24():
     """The same 7 effect tests on the 24-bit chain (16-bit stimulus x 256)."""
     run("fx_chain", "test_fx_chain", IP_MODELS + FX_RTL, testcase=os.environ.get("TESTCASE"),
         parameters={"DW": 24}, extra_env={"GME_DW": "24"}, tag="_24")
+
+
+def test_cab_xfade():
+    """Cabinet stage with the click-free chain (XFADE): the bank switch fades, no step above the signal's."""
+    for dw in (16, 24):
+        run("fx_chain", "test_fx_chain", IP_MODELS + FX_RTL, testcase="test_cab",
+            parameters={"DW": dw, "XFADE": True}, extra_env={"GME_DW": str(dw), "GME_XFADE": "1"},
+            tag="_cabx%d" % dw)
 
 
 def test_lfo():
@@ -110,6 +124,26 @@ def test_i2s():
     run("i2s_core", "test_i2s", [RTL / "i2s_core.vhd"])
 
 
+CAB_SRCS = [MODELS / "sim_dpram.vhd", MODELS / "fx_dpram.vhd", MODELS / "cab_coef_ram.vhd", RTL / "fx_pkg.vhd", RTL / "cab_fir.vhd"]
+
+
+def test_cabfir():
+    """Cabinet FIR (v2 step D3) bit-exact to its model: small configurations at 16 and 24 bit
+    (random data, saturation, bank switch, impulse, latency)."""
+    for dw, taps, lanes in ((16, 16, 4), (24, 64, 4), (16, 64, 4)):
+        run("cab_fir", "test_cabfir", CAB_SRCS,
+            parameters={"DW": dw, "TAPS": taps, "LANES": lanes},
+            extra_env={"GME_DW": str(dw), "GME_TAPS": str(taps), "GME_LANES": str(lanes)},
+            tag="_%d_%d_%d" % (dw, taps, lanes))
+
+
+def test_cabfir_full():
+    """The full 2048-tap cabinet FIR with the default .mif at 1024 clocks per sample (~7 min)."""
+    run("cab_fir", "test_cabfir", CAB_SRCS, testcase="test_full",
+        parameters={"DW": 24, "TAPS": 2048, "LANES": 4},
+        extra_env={"GME_DW": "24", "GME_TAPS": "2048", "GME_LANES": "4"}, tag="_full")
+
+
 CTRL_RTL = [RTL / f for f in ("reg_file.vhd", "ctrl_avmm.vhd")]
 
 
@@ -131,7 +165,7 @@ SYS_RTL = (IP_MODELS + FX_RTL + CTRL_RTL +
 
 def test_system():
     """gme_core end to end: codec init, control over the Avalon slave (HPS), I2S audio."""
-    run("gme_core", "test_system", SYS_RTL,
+    run("gme_core", "test_system", SYS_RTL, testcase=os.environ.get("TESTCASE"),
         parameters={"INIT_WAIT_CLKS": 2000})
 
 

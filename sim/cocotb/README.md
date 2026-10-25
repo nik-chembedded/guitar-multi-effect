@@ -9,7 +9,8 @@ The same tests run locally (WSL2 Ubuntu) and in GitHub Actions on every push.
 |------|---------|
 | `fxdriver.py` | frame-level driver for `FX_chain`: clock, `sample_tick`/`half_tick` strobes, register writes from Python |
 | `golden.py` | bit-exact Python reference models (overdrive, distortion with the `.mif` curves) |
-| `test_fx_chain.py` | the 8 effect tests (run on the 16-bit and the 24-bit chain), incl. the modulated-delay sweep and the fractional echo |
+| `test_fx_chain.py` | the 9 effect tests (run on the 16-bit and the 24-bit chain), incl. the modulated-delay sweep and the fractional echo |
+| `test_cabfir.py` | cabinet FIR block `cab_fir` (step D3) bit-exact to `cabfir_model.py`: random data, saturation, bank switch, impulse = coefficients, minimum frame length; `test_full` = the real 2048 taps with `cab_default.mif` at 1024 clocks per sample (~7 min). Runner entries `test_cabfir` (16/24 bit, 16/64 taps) and `test_cabfir_full` |
 | `test_moddelay.py` | modulated delay (`mod_delay`, step D2) bit-exact to `moddelay_model.py`, 16/24 bit, plus an exact static-delay check |
 | `test_lfo.py` | generated LFO `nco_lfo` (step D1): bit-exact to `lfo_model.py`, frequency, sine accuracy |
 | `test_lfo_v1.py` | no simulation: the 8 v1 LFO tables against the generated LFO (period, shape within 2 %) |
@@ -21,7 +22,7 @@ The same tests run locally (WSL2 Ubuntu) and in GitHub Actions on every push.
 | `test_i2s.py` | I²S master core (v2 B2) against a WM8731 slave model |
 | `test_avmm.py` | HPS control slave (`ctrl_avmm`): Avalon-MM reads/writes, all registers, invalid/read-only addresses, CONTROL, CODEC register |
 | `test_codec.py` | I²C master + codec init sequencer against an I²C slave model |
-| `test_system.py` | `gme_core` end to end: codec init, control over the HPS bridge (Avalon-MM), I²S audio |
+| `test_system.py` | `gme_core` end to end: codec init, control over the HPS bridge (Avalon-MM), I²S audio; `test_cabinet`: the 2048-tap default cabinet via enable bit 6 / CAB_CTRL, impulse over I²S = coefficients >> (17+shift), writes to the active bank ignored, bank 1 loaded through CAB_ADDR / CAB_DATA_LO / CAB_DATA_HI and switched |
 | `test_wav.py` | real guitar audio through 8 presets; writes WAVs, checks dry bit-exact / no X / no wrap / no tremolo clicks |
 | `test_runner.py` | pytest entry: builds with GHDL (`--std=08 -frelaxed`) and runs the cocotb modules |
 
@@ -36,6 +37,7 @@ The same tests run locally (WSL2 Ubuntu) and in GitHub Actions on every push.
 | `test_chorus` | delay sweeps > 100 samples; stays ≤ 52 + latency after lowering the depth mid-sweep |
 | `test_echo` | echo 1 = 8000, echo 2 = 4000 at the measured delay (1200..1208) |
 | `test_reverb` | no wrap-around, decaying tail after a tone burst |
+| `test_cab` | cabinet stage with `CAB_TAPS = 16` (`sim/models/cab_test16.mif`, copied by the runner; chain frames are 16 clocks): impulse response = coefficients >> (17+shift) one frame after the bypass latency (independent reference), cab off = bit-exact bypass with the same latency, bank 1 loaded through the write port, bank switch mid-stream (steady states exact; with `XFADE`, run by `test_cab_xfade`, no step above the signal's own), writes to the active bank ignored, idle bank rewritten and switched back |
 
 All tests run in **one simulation** (about 30 s). Because the delay RAMs keep their contents
 between tests, a test that measures a delay flushes the line first (see `test_echo`).

@@ -16,13 +16,22 @@ The FPGA registers sit behind the HPS lightweight bridge: register n is the
     python gme_hps.py codec 0x00 0x080           (codec register, 9-bit value: mute line in)
     python gme_hps.py dump
     python gme_hps.py meter                      (input/output levels, Ctrl+C to stop)
+    python gme_hps.py cab list                   (cabinets in the cab directory)
+    python gme_hps.py cab 3                      (load cabinet 3 into the idle bank and switch to it)
+    python gme_hps.py cab off                    (cabinet effect off / on; also: effects=...+CAB)
     python gme_hps.py selftest                   (no hardware needed)
+
+Cabinet files (step D3): built on the PC with  python3 tools/cab_coefs.py --build  (ir/build/cabNN.coef,
+text: name, shift, 2048 signed integers), copied to the board (scp ir/build/*.coef root@board:cab/) and
+found in the directory "cab" next to this script (--cab-dir DIR or GME_CAB_DIR to change).
 
 Every command first checks the VERSION register (0x02xx), so nothing is written
 when another FPGA image is loaded. Works with Python 2.7 and 3.
 """
 import argparse
 import ctypes
+import glob
+import re
 import mmap
 import os
 import sys
@@ -41,9 +50,16 @@ REGS = {
     # step D2: modulated delay (chorus / flanger / vibrato). chorus_level = mix 0..255,
     # chorus_depth = depth in samples, chorus_rate = LFO rate in 0.01 Hz
     "mod_base": 0x18, "mod_fb": 0x19, "mod_shape": 0x1A,
+    # step D3: cabinet. cab_ctrl: bit 0 active bank, 3:1 shift of bank 0, 6:4 shift of bank 1;
+    # cab_addr: bit 11 bank, 10:0 tap (write pointer); cab_data_lo/hi: coefficient bits 15:0 / 17:16
+    # (writing hi performs the write and increments the pointer)
+    "cab_ctrl": 0x1B, "cab_addr": 0x1C, "cab_data_lo": 0x1D, "cab_data_hi": 0x1E,
 }
+CAB_TAPS = 2048
+CAB_BIT = 64
+CAB_SETTLE = 0.02            # s: a bank switch (fade out 128 samples, fade in 128) takes 5.4 ms
 EFFECT_REGS = [k for k in sorted(REGS, key=REGS.get) if REGS[k] <= 0x0E]   # Python 2: dicts unordered
-EFFECT_BITS = {"OD": 1, "TREM": 2, "ECHO": 4, "DIST": 8, "CHORUS": 16, "REVERB": 32}
+EFFECT_BITS = {"OD": 1, "TREM": 2, "ECHO": 4, "DIST": 8, "CHORUS": 16, "REVERB": 32, "CAB": CAB_BIT}
 # tremolo free mode (step D1): trem_wave = 8 + shape, rate in trem_rate (0.01 Hz)
 TREM_SHAPES = {"sine": 0, "triangle": 1, "saw": 2, "square": 3}
 
@@ -96,6 +112,19 @@ class Board(object):
     def write(self, reg, value):
         self.words[reg] = value & 0xFFFF
 
+    def cab_load(self, coefs, shift):
+        """Load 2048 coefficients into the idle cabinet bank, set its shift, switch to it.
+        (The FPGA ignores writes to the active bank; the idle bank is the one CAB_CTRL does not select.)"""
+        time.sleep(CAB_SETTLE)                                   # a previous switch must be finished
+        ctrl = self.read(REGS["cab_ctrl"])
+        bank = (ctrl & 1) ^ 1
+        self.write(REGS["cab_addr"], bank << 11)
+        for c in coefs:                                          # pointer auto-increments on cab_data_hi
+            self.write(REGS["cab_data_lo"], c & 0xFFFF)
+            self.write(REGS["cab_data_hi"], (c >> 16) & 3)
+        self.write(REGS["cab_ctrl"], cab_ctrl_value(ctrl, bank, shift))
+        time.sleep(CAB_SETTLE)
+
     def codec(self, reg, value9, timeout=0.1):
         """One WM8731 register write over the FPGA's I2C master."""
         self.wait_codec(timeout)
@@ -119,6 +148,37 @@ class Board(object):
 
 def num(s):
     return int(s, 0)
+
+
+def parse_coef(text):
+    """cabNN.coef (tools/cab_coefs.py --build): name, shift, 2048 signed 18-bit integers -> (name, shift, list)."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if len(lines) != 2 + CAB_TAPS:
+        raise ValueError("expected name, shift and %d coefficients, found %d lines" % (CAB_TAPS, len(lines)))
+    name, shift = lines[0], int(lines[1])
+    coefs = [int(l) for l in lines[2:]]
+    if not 0 <= shift <= 7:
+        raise ValueError("shift %d not in 0..7" % shift)
+    if min(coefs) < -(1 << 17) or max(coefs) >= 1 << 17:
+        raise ValueError("coefficient outside the signed 18-bit range")
+    return name, shift, coefs
+
+
+def cab_ctrl_value(old, bank, shift):
+    """CAB_CTRL after loading `bank` with `shift` and selecting it (the other bank's shift is kept)."""
+    if bank:
+        return (old & 0x0E) | ((shift & 7) << 4) | 1
+    return (old & 0x70) | ((shift & 7) << 1)
+
+
+def cab_files(directory):
+    """{slot: path} of the cabNN.coef files in `directory`."""
+    out = {}
+    for path in glob.glob(os.path.join(directory, "cab*.coef")):
+        m = re.match(r"cab(\d+)\.coef$", os.path.basename(path))
+        if m:
+            out[int(m.group(1))] = path
+    return out
 
 
 def parse_assignments(items):
@@ -147,10 +207,53 @@ def effects_text(v):
     return "+".join(n for n, b in sorted(EFFECT_BITS.items(), key=lambda x: x[1]) if v & b) or "none"
 
 
+def cab_command(b, args, directory):
+    if b.read(REGS["version"]) < 0x0205:
+        raise SystemExit("the cabinet needs VERSION 0x0205 or later")
+    if not args:
+        raise SystemExit("cab list | cab N | cab on | cab off")
+    cmd = args[0]
+    files = cab_files(directory)
+    if cmd == "list":
+        if not files:
+            print("no cabNN.coef files in %s (build: python3 tools/cab_coefs.py --build, then scp)" % directory)
+        for slot in sorted(files):
+            with open(files[slot]) as f:
+                name, shift = f.readline().strip(), f.readline().strip()
+            print("%2d  %-28s shift %s  (%s)" % (slot, name, shift, files[slot]))
+        ctrl, en = b.read(REGS["cab_ctrl"]), b.read(REGS["effects_enable"])
+        print("cabinet %s, bank %d active, shifts %d / %d" % ("ON" if en & CAB_BIT else "off", ctrl & 1,
+                                                          (ctrl >> 1) & 7, (ctrl >> 4) & 7))
+    elif cmd in ("on", "off"):
+        en = b.read(REGS["effects_enable"]) & ~CAB_BIT
+        b.write(REGS["effects_enable"], en | (CAB_BIT if cmd == "on" else 0))
+    else:
+        slot = num(cmd)
+        if slot not in files:
+            raise SystemExit("no cab%02d.coef in %s (cab list)" % (slot, directory))
+        with open(files[slot]) as f:
+            name, shift, coefs = parse_coef(f.read())
+        b.cab_load(coefs, shift)
+        print("cabinet %d '%s' loaded (shift %d)%s" % (slot, name, shift,
+              "" if b.read(REGS["effects_enable"]) & CAB_BIT else "; the cabinet is off: cab on"))
+
+
 def selftest():
     r = parse_assignments(["effects=DIST+ECHO", "od_gain=4", "echo_time=0x3840"])
     assert r == {"effects_enable": 12, "od_gain": 4, "echo_time": 14400}, r
     assert effects_text(12) == "ECHO+DIST"
+    assert parse_assignments(["effects=DIST+CAB"]) == {"effects_enable": 72}
+    text = "Test cab\n3\n" + "\n".join(str(((i * 7919) % 262144) - 131072) for i in range(CAB_TAPS)) + "\n"
+    name, shift, c = parse_coef(text)
+    assert (name, shift, len(c)) == ("Test cab", 3, CAB_TAPS) and c[1] == 7919 - 131072
+    for bad in (text.replace("\n3\n", "\n9\n"), text + "1\n", text.replace("-131072", "131072")):
+        try:
+            parse_coef(bad)
+            raise AssertionError("parse_coef accepted a bad file")
+        except ValueError:
+            pass
+    assert cab_ctrl_value(0, 1, 5) == 0x51 and cab_ctrl_value(0x51, 0, 3) == 0x56
+    assert cab_ctrl_value(0x46, 1, 7) == 0x77 and cab_ctrl_value(0x77, 0, 0) == 0x70
     assert ((0x02 & 0x7F) << 9) | 0x079 == 0x0479                 # CODEC word for R2 = 0x079
     assert parse_assignments(["trem_shape=square", "trem_hz=6.5"]) == {"trem_wave": 11, "trem_rate": 650}
     for p in PRESETS.values():
@@ -161,8 +264,11 @@ def selftest():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--no-check", action="store_true", help="skip the VERSION check")
+    ap.add_argument("--cab-dir", default=os.environ.get(
+        "GME_CAB_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "cab")),
+        help="directory with the cabNN.coef files (default: ./cab next to this script)")
     ap.add_argument("cmd", choices=["status", "read", "write", "set", "preset", "codec", "dump",
-                                    "meter", "selftest"])
+                                    "meter", "cab", "selftest"])
     ap.add_argument("args", nargs="*")
     a = ap.parse_args()
     if a.cmd == "selftest":
@@ -183,12 +289,15 @@ def main():
     elif a.cmd == "set":
         for k, v in parse_assignments(a.args).items():
             b.write(REGS[k], v)
+    elif a.cmd == "cab":
+        cab_command(b, a.args, a.cab_dir)
     elif a.cmd == "preset":
         if not a.args or a.args[0] not in PRESETS:
             raise SystemExit("presets: %s" % ", ".join(PRESETS))
         keys = EFFECT_REGS + ["trem_rate", "mod_base", "mod_fb", "mod_shape"]
         regs = dict((k, 0) for k in keys)
         regs.update(PRESETS[a.args[0]])
+        regs["effects_enable"] |= b.read(REGS["effects_enable"]) & CAB_BIT      # the cabinet stays as it is
         for k in keys:
             b.write(REGS[k], regs[k])
         print("preset '%s' loaded" % a.args[0])

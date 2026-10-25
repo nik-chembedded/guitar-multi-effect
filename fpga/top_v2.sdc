@@ -12,9 +12,9 @@ derive_clock_uncertainty
 # inside and out of the chain get 16 cycles (325 ns). The strobes themselves are
 # NOT covered (they come from u_i2s and must stay single-cycle).
 # Blocks with a per-clock sequencer or pipeline (RAM read -> capture -> compute
-# in consecutive clocks: mod_delay and the D2 echo) are excluded and keep full
+# in consecutive clocks: mod_delay, the D2 echo and the D3 cabinet FIR / its crossfade CAB_left) are excluded and keep full
 # single-cycle constraints - a multicycle relaxation would hide real 1-clock paths.
-set seqblk [get_registers {*|u_fx|CHORUS_left|* *|u_fx|ECHO_left|*}]
+set seqblk [get_registers {*|u_fx|CHORUS_left|* *|u_fx|ECHO_left|* *|u_fx|CAB_left|*}]
 set fx   [remove_from_collection [get_registers {*|u_fx|*}] $seqblk]
 set rx   [get_registers {*|u_i2s|rx_l_out*}]   ;# right channel unused (mono effects)
 set regs [get_registers {*|u_ctrl|u_regs|regs*}]

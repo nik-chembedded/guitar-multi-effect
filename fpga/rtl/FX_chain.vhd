@@ -1,22 +1,30 @@
 -- -----------------------------------------------------------------------------
 -- FX_chain.vhd
--- Effect chain: Overdrive -> Distortion -> Chorus/flanger/vibrato (mod_delay, D2)
---               -> Tremolo -> Echo -> Reverb.
+-- Effect chain: Overdrive -> Distortion -> Cabinet (FIR, D3) -> Chorus/flanger/vibrato
+--               (mod_delay, D2) -> Tremolo -> Echo -> Reverb.
 -- Every effect advances on the strobes (sample_tick / half_tick, v2 B1).
 --   DW    : sample width, 16 (bit-exact to v1) or 24 (step C)
 --   XFADE : click-free on/off (fx_xfade, 5.3 ms crossfade per effect)
 --   ECHO_AW : echo line 2^ECHO_AW words (15 = 32 k; 16 = the v1 size)
+--   CAB_TAPS, CAB_INIT : cabinet FIR length (2048; 16 for simulations with 16-clock
+--             frames) and the .mif of its power-up coefficients (bank 0)
+-- Cabinet (enable bit 6): cab_ctrl = CAB_CTRL register (bit 0 bank, 3:1 shift of bank 0,
+-- 6:4 shift of bank 1), coefficient write port cab_cw_*; with the cabinet off the stage
+-- output is the distortion output itself (no latency), see cab_stage.vhd.
 -- Mono: the left input is processed; data_out_right is not driven by effects.
 -- -----------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
+use work.cab_fir_pkg.all;
 
 entity FX_chain is
 generic (
       DW    : positive := 16;
       XFADE : boolean  := false;
-      ECHO_AW : positive := 15
+      ECHO_AW : positive := 15;
+      CAB_TAPS : positive := 2048;
+      CAB_INIT : string  := "cab_default.mif"
 );
 port(
 
@@ -51,6 +59,13 @@ port(
 		reverb_type       : in std_logic_vector(15 downto 0);
 		reverb_mix        : in std_logic_vector(15 downto 0);
 
+		-- D3 cabinet: CAB_CTRL register and coefficient write port (18-bit, bank, tap address)
+		cab_ctrl          : in std_logic_vector(15 downto 0) := (others => '0');
+		cab_cw_en         : in std_logic := '0';
+		cab_cw_bank       : in std_logic := '0';
+		cab_cw_addr       : in std_logic_vector(10 downto 0) := (others => '0');
+		cab_cw_data       : in std_logic_vector(17 downto 0) := (others => '0');
+
 		data_in_left  : in std_logic_vector(DW - 1 downto 0);
 		data_in_right : in std_logic_vector(DW - 1 downto 0);
 
@@ -65,7 +80,7 @@ architecture rtl of FX_chain is
 
   -- per stage: effect output (wet) and stage output after the crossfade
   signal od_wet, dist_wet, chorus_wet, trem_wet, echo_wet, rev_wet : sample_t;
-  signal od_out, dist_out, chorus_out, trem_out, echo_out          : sample_t;
+  signal od_out, dist_out, cab_out, chorus_out, trem_out, echo_out : sample_t;
   signal od_en, dist_en, chorus_en, trem_en, echo_en, rev_en       : std_logic;
 
 begin
@@ -87,14 +102,24 @@ begin
       clk => clk, tick => sample_tick, en_rise => sample_tick, enable_in => effects_enable(3),
       enable_eff => dist_en, din => od_out, wet => dist_wet, dout => dist_out);
 
+  -- cabinet: crossfade with the distortion output, combinational at g = 0 (no latency)
+  CAB_left : entity work.cab_stage
+    generic map (DW => DW, TAPS => CAB_TAPS, LANES => 4, XFADE => XFADE, INIT_FILE => CAB_INIT)
+    port map (
+      clk => clk, sample_tick => sample_tick, enable => effects_enable(6),
+      bank_req => cab_ctrl(0), shift0 => cab_ctrl(3 downto 1), shift1 => cab_ctrl(6 downto 4),
+      cw_en => cab_cw_en, cw_bank => cab_cw_bank,
+      cw_addr => cab_cw_addr(clog2(CAB_TAPS) - 1 downto 0), cw_data => cab_cw_data,
+      din => dist_out, dout => cab_out);
+
   CHORUS_left : entity work.mod_delay generic map (DW => DW) port map(
       clk => clk, en_rise => half_tick, enable => chorus_en,
       mix => chorus_level, depth => chorus_depth, rate => chorus_rate,
       base => mod_base, fb => mod_fb, shape => mod_shape,
-      data_in => dist_out, data_out => chorus_wet);
+      data_in => cab_out, data_out => chorus_wet);
   CHORUS_fade : entity work.fx_xfade generic map (DW => DW, XFADE => XFADE) port map(
       clk => clk, tick => sample_tick, en_rise => half_tick, enable_in => effects_enable(4),
-      enable_eff => chorus_en, din => dist_out, wet => chorus_wet, dout => chorus_out);
+      enable_eff => chorus_en, din => cab_out, wet => chorus_wet, dout => chorus_out);
 
   TREMOLO_left : entity work.tremolo_v2 generic map (DW => DW) port map(
       clk => clk, en_rise => half_tick, en_fall => sample_tick, tremolo_enable => trem_en,

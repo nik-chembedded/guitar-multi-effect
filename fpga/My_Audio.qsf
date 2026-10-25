@@ -40,6 +40,9 @@ set_global_assignment -name VHDL_FILE rtl/echo.vhd
 set_global_assignment -name VHDL_FILE rtl/comb_filter.vhd
 set_global_assignment -name VHDL_FILE rtl/allpass_filter.vhd
 set_global_assignment -name VHDL_FILE rtl/reverbe.vhd
+set_global_assignment -name VHDL_FILE rtl/cab_coef_ram.vhd
+set_global_assignment -name VHDL_FILE rtl/cab_fir.vhd
+set_global_assignment -name VHDL_FILE rtl/cab_stage.vhd
 set_global_assignment -name VHDL_FILE rtl/FX_chain.vhd
 set_global_assignment -name VHDL_FILE rtl/i2s_core.vhd
 set_global_assignment -name VHDL_FILE rtl/reg_file.vhd
@@ -56,6 +59,7 @@ set_global_assignment -name QIP_FILE ip/dist_ROM_hard.qip
 set_global_assignment -name MIF_FILE ip/distortion_hard.mif
 set_global_assignment -name MIF_FILE ip/distortion_medium.mif
 set_global_assignment -name MIF_FILE ip/distortion_soft.mif
+set_global_assignment -name MIF_FILE ip/cab_default.mif
 
 # ---- Pin assignments (DE1-SoC)
 set_location_assignment PIN_AF14 -to CLOCK_50

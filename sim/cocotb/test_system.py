@@ -134,3 +134,85 @@ async def test_mute_and_codec_write(dut):
     assert await host.read(0x15) == 0, "CODEC register: still busy or NAK"
     assert i2c.transfers[n0:] == [to_bytes(2, 0x079)]
     dut._log.info("mute OK, meter decays to 0, host codec write R2=0x079 on the I2C bus")
+
+
+@cocotb.test()
+async def test_cabinet(dut):
+    """Cabinet (step D3) through the whole design: enable bit 6 + CAB_CTRL over the bridge, the default
+    2048-tap cabinet (cab_default.mif, shift from its header) answers an I2S impulse with its
+    coefficients >> (17+shift); writes to the active bank are ignored; a few coefficients loaded into bank 1
+    through CAB_ADDR / CAB_DATA_LO / CAB_DATA_HI play after the bank switch."""
+    import re
+    import sys
+    root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    sys.path.insert(0, os.path.join(root, "tools"))
+    import cab_coefs
+    mif = os.path.join(root, "fpga", "ip", "cab_default.mif")
+    h0 = cab_coefs.read_mif(mif)[:2048]
+    sh0 = int(re.search(r"output shift = (\d)", open(mif).read()).group(1))
+    sh1 = 4
+    amp, n_imp, n_chk = 1 << 20, 5, 400
+
+    def sat24(v):
+        return max(-(1 << 23), min((1 << 23) - 1, v))
+
+    words = [(0, 0)] * 24
+    i2c, codec, host = await boot(dut, words)
+    await wait_init(dut, host)
+
+    async def impulse(nframes):
+        stream = [(0, 0)] * nframes
+        stream[n_imp] = (amp, 0)
+        codec.adc, codec.dac, codec.frames_sent = stream, [], 0
+        await ClockCycles(dut.clk, (nframes + 4) * 1024)
+        return [s24(l) for l, _ in codec.dac]
+
+    # cabinet 0 on: enable bit 6, shift 0 = sh0, bank 0; the fade-in takes 256 frames
+    await host.write(0x1B, (sh1 << 4) | (sh0 << 1) | 0)
+    await host.write(0, 0x0040)
+    assert await host.read(0x1B) == (sh1 << 4) | (sh0 << 1)
+    await ClockCycles(dut.clk, 300 * 1024)
+    # writes into the active bank are ignored: CAB_ADDR = bank 0 tap 0, 4 coefficients
+    await host.write(0x1C, 0x000)
+    for v in (0x1FFFF, 0x20000, 0x00001, 0x3FFFF):
+        await host.write(0x1D, v & 0xFFFF)
+        await host.write(0x1E, v >> 16)
+    y = await impulse(n_chk + 24)
+    want = [sat24((amp * c) >> (17 + sh0)) for c in h0[:n_chk]]
+    # the response starts (dry latency + 1 cabinet sample) after the impulse: find the offset
+    # (checked against the dry latency at the end), then compare all taps
+    offs = [o for o in range(1, 16) if y[n_imp + o:n_imp + o + n_chk] == want]
+    assert len(offs) == 1, "default cabinet: no exact match of %d taps at any latency; y[%d:] = %s want %s" % (
+        n_chk, n_imp, y[n_imp:n_imp + 12], want[:6])
+    off = offs[0]
+    assert any(want) and max(abs(v) for v in want) > 1000
+    dut._log.info("cabinet 0 (default .mif, shift %d): impulse response over %d taps equals the coefficients "
+                  ">> %d, starting %d frames after the impulse; writes to the active bank ignored", sh0, n_chk,
+                  17 + sh0, off)
+
+    # bank 1: a few coefficients (CAB_ADDR bit 11 = bank), then switch
+    taps = {0: [100000, -131072, 77777, 5], 40: [131071], 300: [-90000, 12345]}
+    h1 = [0] * 2048
+    for a, cs in taps.items():
+        await host.write(0x1C, 0x800 | a)
+        for k, c in enumerate(cs):                                     # pointer auto-increments
+            await host.write(0x1D, c & 0xFFFF)
+            await host.write(0x1E, (c >> 16) & 3)
+            h1[a + k] = c
+    await host.write(0x1B, (sh1 << 4) | (sh0 << 1) | 1)
+    await ClockCycles(dut.clk, 300 * 1024)                             # fade out 128, switch, fade in 128
+    y = await impulse(n_chk + 24)
+    want = [sat24((amp * c) >> (17 + sh1)) for c in h1[:n_chk]]
+    got = y[n_imp + off: n_imp + off + n_chk]
+    assert got == want, "bank 1: first mismatch at tap %d" % next(i for i in range(n_chk) if got[i] != want[i])
+    assert sum(1 for v in want if v) == 7
+    dut._log.info("bank 1 loaded over CAB_ADDR/DATA_LO/DATA_HI (7 coefficients, shift %d), switched: "
+                  "impulse response exact over %d taps", sh1, n_chk)
+
+    # cabinet off again: the stage is a plain connection, the dry latency is one frame less than 'off'
+    await host.write(0, 0x0000)
+    await ClockCycles(dut.clk, 300 * 1024)
+    y = await impulse(24)
+    lat = next(i for i, v in enumerate(y) if v) - n_imp
+    assert y[n_imp + lat] == amp and lat + 1 == off, "dry latency %d, cabinet response offset %d" % (lat, off)
+    dut._log.info("cabinet off: dry latency %d frames (cabinet adds exactly 1 when on)", lat)

@@ -16,7 +16,7 @@ from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge
 EFFECT_REGS = ["effects_enable", "od_drive", "od_gain", "trem_wave", "trem_depth", "echo_time",
                "echo_repeat", "echo_level", "dist_mix", "dist_type", "chorus_level",
                "chorus_depth", "chorus_rate", "reverb_mix", "reverb_type"]
-VERSION = 0x0204
+VERSION = 0x0205
 CODEC = 0x15
 
 
@@ -230,3 +230,50 @@ async def test_byte_writes(dut):
         assert requests[n:] == [(0x02, 0x060)], "%d-byte stores: I2C requests %s" % (size, requests[n:])
         assert await h.read(CODEC) == 0, "no dropped/NAK flag after %d-byte stores" % size
     dut._log.info("byte / halfword stores: registers merged per byte, one correct codec write each")
+
+
+@cocotb.test()
+async def test_ext_write_event(dut):
+    """Cabinet registers 0x1B..0x1E read back (low 16 bits); ext_we gives one event per write of an
+    extension register that contains byte 1 (address and merged data), none for byte-0-only
+    stores, CODEC, effect registers and invalid addresses."""
+    h = await setup(dut)
+    events = []
+
+    async def monitor():
+        while True:
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            if int(dut.ext_we.value):
+                events.append((int(dut.ext_wa.value), int(dut.ext_wd.value)))
+
+    cocotb.start_soon(monitor())
+    rnd = random.Random(11)
+    vals = {r: rnd.getrandbits(16) for r in (0x1B, 0x1C, 0x1D, 0x1E)}
+    for r, v in vals.items():
+        n = len(events)
+        await h.write(r, 0xABCD0000 | v)
+        await ClockCycles(dut.clk, 3)
+        assert await h.read(r) == v, "register 0x%02X read back" % r
+        assert events[n:] == [(r, v)], "0x%02X: write events %s" % (r, events[n:])
+    # byte stores (lowest byte first): the event comes with the store that contains byte 1
+    for size in (1, 2):
+        for r in (0x1C, 0x1E):
+            n = len(events)
+            v = rnd.getrandbits(16)
+            await h.write_bytes(r, v, size, rnd)
+            await ClockCycles(dut.clk, 3)
+            assert await h.read(r) == v
+            assert events[n:] == [(r, v)], "%d-byte stores of 0x%02X: events %s" % (size, r, events[n:])
+    await h.write(0x1D, 0, byteenable=0x3)
+    await ClockCycles(dut.clk, 3)
+    n = len(events)
+    await h.write(0x1D, 0x1234, byteenable=0x1)                # byte 0 only: stored, no event
+    await h.write(0x1D, 0x5500, byteenable=0x4)                # byte 2 only: ignored, no event
+    await h.write(0x05, 0x1111)                                # effect register
+    await h.write(0x15, 0x0010)                                # CODEC
+    await h.write(0x30, 0x1111)                                # invalid
+    await h.write(0x14, 0x0002)                                # CONTROL
+    await ClockCycles(dut.clk, 5)
+    assert events[n:] == [] and await h.read(0x1D) == 0x0034, "unexpected write events %s" % events[n:]
+    dut._log.info("CAB registers 0x1B..0x1E read back; ext write events only for byte-1 writes of 0x16..0x2F")

@@ -21,12 +21,12 @@ from cocotb.triggers import ClockCycles, RisingEdge
 CLK_PER_HALF = 8
 
 # effects_enable bits (docs/register_map.md)
-OD, TREM, ECHO, DIST, CHORUS, REVERB = 1, 2, 4, 8, 16, 32
+OD, TREM, ECHO, DIST, CHORUS, REVERB, CAB = 1, 2, 4, 8, 16, 32, 64
 
 PARAMS = ("effects_enable", "od_drive", "od_gain", "trem_depth", "trem_wave",
           "echo_time", "echo_level", "echo_repeat", "chorus_rate", "chorus_level",
           "chorus_depth", "dist_mix", "dist_type", "reverb_type", "reverb_mix", "trem_rate",
-          "mod_base", "mod_fb", "mod_shape", "echo_frac")
+          "mod_base", "mod_fb", "mod_shape", "echo_frac", "cab_ctrl")
 
 
 def to_s16(v):
@@ -53,6 +53,8 @@ class FxChain:
             getattr(d, name).value = 0
         d.data_in_left.value = 0
         d.data_in_right.value = 0
+        for name, v in (("cab_cw_en", 0), ("cab_cw_bank", 0), ("cab_cw_addr", 0), ("cab_cw_data", 0)):
+            getattr(d, name).value = v
         d.sample_tick.value = 0
         d.half_tick.value = 0
         self.set(**params)
@@ -64,6 +66,16 @@ class FxChain:
             if name not in PARAMS:
                 raise ValueError("unknown parameter " + name)
             getattr(self.dut, name).value = int(value) & (0xFF if name == "echo_frac" else 0xFFFF)
+
+    async def cab_write(self, bank, coefs, first=0):
+        """Write cabinet coefficients (signed 18-bit) through the chain's write port, one per clock."""
+        d = self.dut
+        for i, c in enumerate(coefs):
+            d.cab_cw_en.value, d.cab_cw_bank.value = 1, bank
+            d.cab_cw_addr.value, d.cab_cw_data.value = first + i, int(c) & 0x3FFFF
+            await RisingEdge(d.clk)
+        d.cab_cw_en.value = 0
+        await RisingEdge(d.clk)
 
     async def frame(self, sample, raw=False):
         """Process one input sample, return the output sample of this frame."""

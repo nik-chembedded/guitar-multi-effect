@@ -1,6 +1,6 @@
 # v2 step D: better DSP blocks
 
-**Status:** D1 and D2 implemented and verified in simulation; D3–D5 blocks in development; board test at the end of step D.
+**Status:** D1, D2 and D3 (cabinet FIR, integrated in the chain, timing met) implemented and verified in simulation; D4–D5 blocks in development; board test at the end of step D.
 
 ## Overview
 
@@ -258,13 +258,67 @@ dist_out ──┬────────────────────�
   coefficient scale: the build tool stores every IR scaled to full 18-bit range
   (block floating point, see "Done ahead of the RTL").
 * **Two coefficient banks:** the HPS writes the inactive bank (registers
-  CAB_ADDR with auto-increment, CAB_DATA_LO / CAB_DATA_HI, CAB_SHIFT), then
-  CAB_CTRL switches banks. The switch is click-free without computing two FIRs:
+  CAB_ADDR with auto-increment, CAB_DATA_LO / CAB_DATA_HI; the per-bank shifts are in
+  CAB_CTRL), then CAB_CTRL switches banks. The switch is click-free without computing two FIRs:
   the wet level fades out over 128 samples, the bank switches, and it fades back in
   over 128 samples (dry stays on, so it is a 5 ms dip of the cabinet sound only).
 * **Power-up:** bank A initialised with cabinet 0 (generated `.mif`), so the cabinet
   works without Linux. Effect enable bit 6 (CAB), level-matched wet.
 * **Simulation:** generic `CAB_TAPS` (2048 in the FPGA). The FX_chain tests use
-  32 taps so the FIR fits the 16-clock frames of the fast frame driver; `test_cab`
-  runs the full 2048 taps with 1024-clock frames, bit-exact to a numpy model
-  (convolution, rounding, saturation, bank switch).
+  16 taps so the FIR fits the 16-clock frames of the fast frame driver; `test_cabfir`
+  runs the FIR block alone, the full 2048 taps with 1024-clock frames, bit-exact to a numpy
+  model (convolution, rounding, saturation, bank switch), and `test_system` runs the
+  whole design with the 2048-tap default cabinet.
+
+### D3 implementation and results (integrated 2026-10-25)
+
+Files: `cab_fir.vhd` (the FIR, see its header), `cab_coef_ram.vhd` (Intel altsyncram, simulation twin in
+`sim/models/`), `cab_stage.vhd` (FIR + fades + write protection, instance `CAB_left` in `FX_chain`),
+`fpga/ip/cab_default.mif` (cabinet 0, 2 × 2048 words), `tools/cab_coefs.py`.
+
+* **Position / bypass:** `FX_chain`: Overdrive → Distortion → **Cabinet** → Chorus → Tremolo → Echo → Reverb,
+  enable bit 6. The stage output is `dout = din + floor((wet − din)·g / 256)` with `g` = 0 … 256,
+  **combinational from `din`** (not `fx_xfade`, whose dry path is registered): with the cabinet off
+  (`g = 0`) the output is exactly `dist_out`, so latency and all `test_refv2` references stay unchanged
+  (`test_refv2` passes without re-recording); `g = 256` gives exactly the FIR output.
+* **Strobe:** `start` = `sample_tick` delayed by one clock (the distortion output has been updated by the
+  `sample_tick` edge); the FIR runs on every sample, also when the cabinet is off (warm history). Its output is
+  one sample late and valid from `start` to the next `start`, long before `half_tick`, when the chorus samples it.
+* **Fades:** `g` moves once per `sample_tick`: ±1 for enable / disable (256 samples). **Bank change**
+  (`CAB_CTRL` bit 0 ≠ the bank in use): `g` runs down in steps of 2 (128 samples), at `g = 0` the bank in use
+  (and with it the shift) switches, `g` runs back up in steps of 2 (128 samples) if the cabinet is enabled.
+  `XFADE = false`: `g` and the bank jump.
+* **Write protection:** `cab_stage` forwards a coefficient write only when `cw_bank` is neither the bank in use nor
+  the requested bank; writes to the active bank (including both banks while a switch is running) are dropped.
+* **Register side effects:** `ctrl_avmm` gives a 1-cycle strobe (`ext_we`) with the register number and the complete
+  value for every write of 0x16 … 0x2F that contains byte 1 (like CODEC), one clock after the write, when the
+  register already holds the new value. `gme_core` keeps the 12-bit pointer: CAB_ADDR (0x1C) loads it;
+  CAB_DATA_HI (0x1E) writes `{HI[1:0], CAB_DATA_LO}` at it (registered `cab_cw_*` port of `FX_chain`) and increments
+  the tap address (bank bit unchanged). The registers 0x1B … 0x1E are ordinary R/W registers (read back what was written).
+* **Constraints:** `top_v2.sdc` adds `*|u_fx|CAB_left|*` to the per-clock blocks (`seqblk`) that are excluded from the
+  16-cycle multicycle relaxation: the FIR pipeline and the crossfade keep single-cycle constraints (the crossfade is
+  a combinational path from the distortion output to the chorus input, checked with the full 20 ns).
+  `top_v2.vhd` passes `CAB_INIT => "ip/cab_default.mif"` (Quartus looks for the `.mif` relative to the project, the
+  simulation finds `cab_default.mif` in its working directory).
+* **Board tool:** `gme_hps.py cab list | cab N | cab on | cab off`; `tools/cab_coefs.py --build` writes
+  `ir/build/cabNN.coef` for every manifest slot whose IR file is present (name, shift, 2048 integers; git-ignored).
+  Loading writes the idle bank (4096 register writes), then CAB_CTRL.
+* **Version:** 0x0205.
+
+Verification (all through the real RTL, GHDL + cocotb):
+
+| Test | Result |
+|------|--------|
+| `test_cabfir` (FIR block) | DW 16/TAPS 16, DW 24/TAPS 64, DW 16/TAPS 64: random full-scale data with saturation, shifts 0 … 7 and 4 bank switches bit-exact to `cabfir_model.py` (632 / 776 / 776 samples), impulse = coefficients, minimum frame length TAPS/LANES + 7 clocks; `test_full`: 2048 taps, the default `.mif`, 1024-clock frames, bit-exact. (`test_impulse` now flushes the history left by `test_random`: with the old two zero frames it failed whenever it ran after `test_random`.) |
+| `test_fx_chain::test_cab` (16- and 24-bit chain, `CAB_TAPS = 16`) | cab off: bit-exact bypass, latency 4 frames, the same after the cabinet was used; impulse = coefficients >> (17 + shift) 1 frame behind the bypass latency; bank 1 loaded through the write port; bank switch; writes to the active bank ignored, idle bank rewritten and played |
+| `test_cab_xfade` (`XFADE`, 16 and 24 bit) | the same with fades: steady states exact, the largest step during the bank switch equals the signal's own largest step (ratio 1.00) |
+| `test_refv2` | unchanged, 31 presets bit-exact (cabinet off) |
+| `test_avmm::test_ext_write_event` | CAB registers read back; one event per byte-1 write of an extension register, none for byte-0-only stores, CODEC, effect registers, invalid addresses |
+| `test_system::test_cabinet` | whole design, 1024-clock frames, 2048 taps: enable via registers, I²S impulse → 400 taps equal the default `.mif` >> (17 + 3), 7 coefficients written to bank 1 through CAB_ADDR / DATA_LO / DATA_HI, switch, 400 taps exact; cabinet adds exactly 1 frame |
+
+Full regression (`sim/run_all.sh`): **27 passed** in 34 min, including `test_cabfir_full`, `test_refv2` unchanged and `test_system`.
+
+Quartus Prime Lite 18.1 (`quartus_sh --flow compile My_Audio`): 0 errors, critical warnings only 169085 / 174073
+(HPS pins). **2,759 ALMs (9 %), 3,075 registers, 258 M10K (65 %, 2.14 Mbit), 41 DSP blocks (47 %).**
+`sys_clk` (PLL `divclk`): setup slack +1.975 ns worst (slow 0 °C; 85 °C +2.288), hold +0.089 ns worst
+(slow 0 °C; 85 °C +0.150); all other clocks met.

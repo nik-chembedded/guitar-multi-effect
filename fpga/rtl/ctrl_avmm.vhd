@@ -17,6 +17,12 @@
 -- bytes are collected and the I2C transfer starts on the write that contains
 -- byte 1 (bits 15..8); writes to bytes 2..3 only are ignored.
 --
+-- Extension registers 0x16..0x2F (stored in reg_file) also produce a write event for
+-- registers with side effects (step D3, CAB_ADDR / CAB_DATA_HI): ext_we is a 1-cycle
+-- strobe one clock after a write that contains byte 1 (like CODEC), ext_wa / ext_wd the
+-- register number and the complete value written (bytes not enabled keep their old
+-- content). The register itself already holds the new value when ext_we is high.
+--
 -- Reads: readdatavalid one cycle after read, no wait states. Unknown addresses
 -- read 0, writes to them are ignored.
 -- -----------------------------------------------------------------------------
@@ -26,7 +32,7 @@ use ieee.numeric_std.all;
 
 entity ctrl_avmm is
   generic (
-    VERSION : std_logic_vector(15 downto 0) := x"0204"
+    VERSION : std_logic_vector(15 downto 0) := x"0205"
   );
   port (
     clk        : in  std_logic;
@@ -58,7 +64,11 @@ entity ctrl_avmm is
                : out std_logic_vector(15 downto 0);
     ext        : out std_logic_vector(26 * 16 - 1 downto 0);   -- registers 0x16 .. 0x2F
     codec_init : out std_logic;
-    mute       : out std_logic
+    mute       : out std_logic;
+    -- write event of the extension registers (see above)
+    ext_we     : out std_logic;
+    ext_wa     : out std_logic_vector(7 downto 0);
+    ext_wd     : out std_logic_vector(15 downto 0)
   );
 end entity;
 
@@ -81,6 +91,9 @@ architecture rtl of ctrl_avmm is
   signal codec_st  : std_logic_vector(15 downto 0);
   signal rdata_r   : std_logic_vector(31 downto 0) := (others => '0');
   signal rvalid_r  : std_logic := '0';
+  signal xwe_r     : std_logic := '0';
+  signal xwa_r     : std_logic_vector(7 downto 0) := (others => '0');
+  signal xwd_r     : std_logic_vector(15 downto 0) := (others => '0');
 begin
 
   word   <= "00" & avs_address(7 downto 2);
@@ -140,6 +153,23 @@ begin
   i2c_reg  <= reg_r;
   i2c_data <= data_r;
   codec_st <= (0 => i2c_busy or req_r, 1 => last_nak, 2 => dropped, others => '0');
+
+  -- write event of the extension registers (0x16 .. 0x2F), on writes with byte 1
+  process(clk)
+  begin
+    if rising_edge(clk) then
+      xwe_r <= '0';
+      if rst = '0' and avs_write = '1' and avs_byteenable(1) = '1'
+         and unsigned(word) >= 16#16# and unsigned(word) <= 16#2F# then
+        xwe_r <= '1';
+        xwa_r <= word;
+        xwd_r <= reg_wdata;
+      end if;
+    end if;
+  end process;
+  ext_we <= xwe_r;
+  ext_wa <= xwa_r;
+  ext_wd <= xwd_r;
 
   -- read data: registered, valid one cycle after the read
   process(clk)

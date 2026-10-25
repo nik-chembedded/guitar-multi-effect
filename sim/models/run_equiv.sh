@@ -15,10 +15,10 @@ PY=${PYTHON:-python3}
 "$PY" gen_ip_models.py >/dev/null && "$PY" gen_equiv_tb.py >/dev/null || exit 1
 
 rm -rf work_equiv && mkdir -p work_equiv && cd work_equiv
-cp "$FPGA"/ip/*.mif .
+cp "$FPGA"/ip/*.mif "$HERE"/cab_eq_*.mif .
 for lib in intel model work; do "${BIN}vlib" $lib >/dev/null; done
-"${BIN}vcom" -quiet -2008 -work intel "$FPGA"/ip/*.vhd "$FPGA"/rtl/fx_dpram.vhd || exit 1
-"${BIN}vcom" -quiet -2008 -work model "$HERE"/sim_rom.vhd "$HERE"/sim_dpram.vhd "$HERE"/fx_dpram.vhd "$HERE"/ip/*.vhd || exit 1
+"${BIN}vcom" -quiet -2008 -work intel "$FPGA"/ip/*.vhd "$FPGA"/rtl/fx_dpram.vhd "$FPGA"/rtl/cab_coef_ram.vhd || exit 1
+"${BIN}vcom" -quiet -2008 -work model "$HERE"/sim_rom.vhd "$HERE"/sim_dpram.vhd "$HERE"/fx_dpram.vhd "$HERE"/cab_coef_ram.vhd "$HERE"/ip/*.vhd || exit 1
 "${BIN}vcom" -quiet -2008 -work work "$HERE"/tb_ip_equiv.vhd || exit 1
 
 rc=0

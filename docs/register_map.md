@@ -24,7 +24,7 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 
 | Reg | Name            | R/W | Bits used | Field                         | Description |
 |----:|-----------------|:---:|-----------|-------------------------------|-------------|
-| 0   | Effects Enable  | W   | `[5:0]`   | `REVERB CHORUS DIST ECHO TREM OD` | One enable bit per effect, see [(1)](#1-effects-enable). |
+| 0   | Effects Enable  | W   | `[6:0]`   | `CAB REVERB CHORUS DIST ECHO TREM OD` | One enable bit per effect, see [(1)](#1-effects-enable). |
 | 1   | Overdrive Drive | W   | `[15:0]`  | Drive Value                   | Clipping threshold (unsigned sample amplitude). GUI range 0 … 3500. |
 | 2   | Overdrive Gain  | W   | `[15:0]`  | Gain Volume                   | Integer post-clip gain multiplier. GUI range 1 … 5. |
 | 3   | Tremolo Wave    | W   | `[3:0]`   | Waveform Selection            | LFO waveform/rate, see [(2)](#2-tremolo-waveform-selection). |
@@ -39,7 +39,7 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 12  | Mod Rate        | W   | `[15:0]`  | Modulation LFO rate            | 0.01 Hz (step D2; v1: clock divider). Smoothed. |
 | 13  | Reverb Mix      | W   | `[7:0]`   | Reverb Mixed Signal Value     | Dry/wet mix, 0 = dry … 255 = wet. |
 | 14  | Reverb Type     | W   | `[3:0]`   | Reverb Type Selection         | Room preset, see [(4)](#4-reverb-type-selection). |
-| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0204` = step D2 (modulated delay, fractional echo); `0x0203` = D1 (generated LFO); `0x0202` = step C (24-bit); `0x0201` = HPS control, 16-bit |
+| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0205` = step D3 (cabinet FIR, CAB registers); `0x0204` = step D2 (modulated delay, fractional echo); `0x0203` = D1 (generated LFO); `0x0202` = step C (24-bit); `0x0201` = HPS control, 16-bit |
 | 0x11 | STATUS         | R   | `[2:0]`   | | bit0 codec init done, bit1 codec NAK (init), bit2 PLL locked |
 | 0x12 | LEVEL_IN       | R   | `[15:0]`  | | input peak level (left, 16-bit magnitude, decays ~1/256 per sample) |
 | 0x13 | LEVEL_OUT      | R   | `[15:0]`  | | output peak level |
@@ -49,6 +49,10 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 0x18 | MOD_BASE       | R/W | `[10:0]`  | | modulated delay: centre delay in samples (1 … 2046; 48 = 1 ms), smoothed |
 | 0x19 | MOD_FB         | R/W | `[15:0]`  | | modulated delay feedback, signed Q15 (−32767 … 32767 = −1 … +1), smoothed |
 | 0x1A | MOD_SHAPE      | R/W | `[0]`     | | modulated delay LFO: 0 sine, 1 triangle |
+| 0x1B | CAB_CTRL       | R/W | `[6:0]`   | | cabinet: bit0 = active coefficient bank, `[3:1]` = shift of bank 0, `[6:4]` = shift of bank 1, see [(7)](#7-cabinet-fir-step-d3) |
+| 0x1C | CAB_ADDR       | R/W | `[11:0]`  | | cabinet coefficient write pointer: bit11 = bank, `[10:0]` = tap; writing sets the pointer (reads back the last value written, not the auto-incremented pointer) |
+| 0x1D | CAB_DATA_LO    | R/W | `[15:0]`  | | coefficient bits 15..0 (kept until CAB_DATA_HI is written) |
+| 0x1E | CAB_DATA_HI    | R/W | `[1:0]`   | | coefficient bits 17..16; **writing it stores {HI, LO} at the pointer and increments the tap address** |
 | 0x16 … 0x2F | (extension) | R/W | | | registers of step D; unused ones read back what was written |
 
 ## Field encodings
@@ -63,9 +67,10 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 3   | Distortion | Bypass  | Enable |
 | 4   | Chorus     | Bypass  | Enable |
 | 5   | Reverb     | Bypass  | Enable |
+| 6   | Cabinet (FIR, step D3) | Bypass | Enable |
 
 Signal chain order (fixed in `FX_chain.vhd`):
-`Overdrive → Distortion → Chorus → Tremolo → Echo → Reverb`
+`Overdrive → Distortion → Cabinet → Chorus → Tremolo → Echo → Reverb`
 
 ### (2) Tremolo Waveform Selection
 
@@ -156,3 +161,36 @@ One block (effect enable bit 4) with a fractional delay
 | Vibrato | 240 (5 ms) | 100 | 600 (6 Hz) | 0 | 255 |
 
 (`gme_hps.py preset chorus | flanger | vibrato`)
+
+### (7) Cabinet FIR (step D3)
+
+A 2048-tap FIR (42.7 ms at 48 kHz, `cab_fir.vhd`) between distortion and chorus, enable bit 6.
+Two coefficient banks of 2048 × 18-bit signed values (Q1.17 scaled up by 2^shift, block floating
+point, built by `tools/cab_coefs.py`); output `y = sat(Σ h[k]·x[n−k] >> (17 + shift))`. Bank 0
+holds the default cabinet (cabinet 0, shift 3) at power-up, bank 1 is zero. The cabinet costs one
+sample (20.8 µs) of latency when it is on and **nothing when it is off** (the stage output is then
+the distortion output itself).
+
+| Register | Meaning |
+|----------|---------|
+| CAB_CTRL (0x1B) | bit0 = bank to play; `[3:1]` = shift of bank 0; `[6:4]` = shift of bank 1 (0 … 7) |
+| CAB_ADDR (0x1C) | bit11 = bank, `[10:0]` = tap address of the next coefficient write |
+| CAB_DATA_LO (0x1D) | coefficient bits 15..0 |
+| CAB_DATA_HI (0x1E) | coefficient bits 17..16; the write of `{HI, LO}` happens when this register is written, the tap address then increments (it wraps inside the bank) |
+
+Loading a cabinet (`gme_hps.py cab N` does this): write CAB_ADDR = `bank << 11` for the idle bank, then
+for every tap write CAB_DATA_LO and CAB_DATA_HI, then CAB_CTRL with the new bank bit and its shift.
+
+* **Writes to the active bank are ignored** (a playing cabinet is never disturbed). "Active" is the bank
+  in use *and* the requested one: while a switch is running (about 5 ms) neither bank accepts writes, so wait
+  about 10 ms after a switch before loading the next cabinet. The pointer still increments for ignored writes.
+* **Switching** (CAB_CTRL bit0 changes): the cabinet level fades out over 128 samples, the bank (and its
+  shift) switches, it fades back in over 128 samples. Enabling / disabling the effect fades over 256 samples
+  like every effect. The shift of the playing bank may be changed any time (it steps the gain at the next
+  sample); set the idle bank's shift before switching to it.
+* The register side effects (pointer, write) happen on a write that contains byte 1 (like CODEC): use
+  32-bit or halfword stores, or store byte 0 before byte 1. CAB_DATA_HI only has bits `[1:0]` but must be
+  written with a 16-bit or 32-bit store (or byte 0 followed by byte 1) to trigger the write.
+* Coefficient files for the board: `python3 tools/cab_coefs.py --build` writes `ir/build/cabNN.coef`
+  (git-ignored; third-party IR files are never committed), copy them to the board, then
+  `gme_hps.py cab list | cab N | cab on | cab off`.

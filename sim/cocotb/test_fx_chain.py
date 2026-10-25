@@ -15,7 +15,7 @@ from pathlib import Path
 import cocotb
 
 import golden
-from fxdriver import CHORUS, DIST, ECHO, OD, REVERB, TREM, FxChain, find_latency
+from fxdriver import CAB, CHORUS, DIST, ECHO, OD, REVERB, TREM, FxChain, find_latency
 
 N = 2000
 IP = Path(__file__).resolve().parents[2] / "fpga" / "ip"
@@ -201,3 +201,103 @@ async def test_reverb(dut):
     assert early > 0, "no reverb tail"
     assert late < early, "tail does not decay"
     assert_no_wrap("reverb", y)
+
+
+# ---------------------------------------------------------------------------
+# Cabinet (step D3): CAB_TAPS = 16 here (sim/models/cab_test16.mif, shift 2); the full
+# 2048-tap cabinet is tested in test_cabfir and through gme_core in test_system.
+def cab_conv(x, h, shift, dw):
+    """Independent reference: y[n] = sat(floor(sum_k h[k] x[n-k] / 2^(17+shift)))."""
+    lo, hi = -(1 << (dw - 1)), (1 << (dw - 1)) - 1
+    return [max(lo, min(hi, sum(h[k] * x[n - k] for k in range(len(h)) if n >= k) >> (17 + shift)))
+            for n in range(len(x))]
+
+
+def max_step(v):
+    return max(abs(v[i] - v[i - 1]) for i in range(1, len(v)))
+
+
+@cocotb.test()
+async def test_cab(dut):
+    """Cabinet stage: impulse response = coefficients >> (17+shift) one sample after the bypass
+    latency; cab off = bit-exact bypass with the same latency; bank switch mid-stream
+    (bank 1 loaded through the write port) smooth when the chain fades (XFADE), writes to the
+    active bank ignored, writes to the inactive bank take effect."""
+    import os
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+    import cab_coefs
+    from cocotb.triggers import ClockCycles
+
+    fx = FxChain(dut)
+    dw = fx.dw
+    xfade = os.environ.get("GME_XFADE", "0") == "1"
+    lo, hi = -(1 << (dw - 1)), (1 << (dw - 1)) - 1
+    sh0, sh1 = 2, 3
+    h0 = cab_coefs.read_mif(str(Path(__file__).resolve().parents[2] / "sim" / "models" / "cab_test16.mif"))[:16]
+    rnd = random.Random(31)
+    h1 = [rnd.randint(-(1 << 16), (1 << 16) - 1) >> (k // 3) for k in range(16)]
+    h2 = [rnd.randint(-(1 << 17), (1 << 17) - 1) >> (k // 2) for k in range(16)]
+    ctrl = lambda bank, s0=sh0, s1=sh1: (s1 << 4) | (s0 << 1) | bank           # noqa: E731
+    junk = [rnd.randint(-(1 << 17), (1 << 17) - 1) for _ in range(16)]
+
+    # 1. cab off: bypass, and its latency
+    await fx.start(effects_enable=0, cab_ctrl=ctrl(0))
+    await fx.cab_write(1, h1)                          # bank 1 is free: loaded while the chain runs
+    x = [rnd.randint(lo, hi) for _ in range(600)]
+    y = await fx.run(x, tail=16, raw=True)
+    lat = find_latency(x, y)
+    assert_bit_exact("cab off", x, y, lat)
+    dut._log.info("cab off: bit-exact bypass, latency %d frames", lat)
+
+    # 2. cab on, impulse
+    fx.set(effects_enable=CAB)
+    amp = 1 << (dw - 3)
+    n0 = 300
+    y = await fx.run([0] * n0 + [amp] + [0] * 40, raw=True)
+    want = [max(lo, min(hi, (amp * c) >> (17 + sh0))) for c in h0]
+    got = y[n0 + lat + 1: n0 + lat + 1 + 16]
+    assert got == want, "impulse response %s, expected %s" % (got, want)
+    assert all(v == 0 for v in y[lat + 2:n0 + lat + 1]) and all(v == 0 for v in y[n0 + lat + 17:]), \
+        "output outside the impulse response must be 0"
+    dut._log.info("cab impulse: %d taps equal the coefficients >> %d at latency %d + 1 frames", 16, 17 + sh0, lat)
+
+    # 3. cab off again: identical to the bypass, same latency
+    fx.set(effects_enable=0)
+    await fx.run([rnd.randint(lo, hi) for _ in range(300)], raw=True)       # fade-out
+    x = [rnd.randint(lo, hi) for _ in range(600)]
+    y = await fx.run(x, tail=16, raw=True)
+    lat2 = find_latency(x, y)
+    assert lat2 == lat, "cab off added latency: %d -> %d frames" % (lat, lat2)
+    assert_bit_exact("cab off after use", x, y, lat)
+
+    # 4. bank switch 0 -> 1 mid-stream
+    fx.set(effects_enable=CAB, cab_ctrl=ctrl(0))
+    sig = [round(0.5 * hi * math.sin(2 * math.pi * 1000 * i / 48000)) for i in range(1200)]
+    y = await fx.run(sig[:400], raw=True)              # fade-in, cabinet 0 steady
+    fx.set(cab_ctrl=ctrl(1))
+    y += await fx.run(sig[400:900], raw=True)
+    i1 = 900                                           # bank 1 steady from here
+    for i in range(0, 16, 4):                          # writes into the active bank 1: ignored
+        await fx.cab_write(1, junk[i:i + 4], first=i)
+    y += await fx.run(sig[900:1200], raw=True)
+    w0, w1 = cab_conv(sig, h0, sh0, dw), cab_conv(sig, h1, sh1, dw)
+    for lo_i, hi_i, w, name in ((300, 400 - lat - 2, w0, "bank 0"), (i1, 1200 - lat - 1, w1, "bank 1 (junk writes ignored)")):
+        bad = [i for i in range(lo_i, hi_i) if y[i + lat + 1] != w[i]]
+        assert not bad, "%s steady state: %d mismatches, first at %d: got %d expected %d" % (
+            name, len(bad), bad[0], y[bad[0] + lat + 1], w[bad[0]])
+    ms = max_step(y[lat + 1 + 100: lat + 1 + 1200])
+    ref = max(max_step(sig), max_step(w0[100:]), max_step(w1[100:]))
+    dut._log.info("bank switch: max step %d, signal / steady-state max step %d (ratio %.2f)%s",
+                  ms, ref, ms / ref, "" if xfade else " [no fade: XFADE = false]")
+    if xfade:
+        assert ms <= 1.25 * ref, "step %d at the bank switch exceeds the signal's own (%d)" % (ms, ref)
+
+    # 5. bank 0 is now idle: rewrite it, switch back, the new content plays
+    await fx.cab_write(0, h2)
+    fx.set(cab_ctrl=ctrl(0, sh0, sh1))
+    y = await fx.run(sig[:700], raw=True)
+    w2 = cab_conv(sig, h2, sh0, dw)
+    bad = [i for i in range(500, 700 - lat - 1) if y[i + lat + 1] != w2[i]]
+    assert not bad, "bank 0 rewritten: %d mismatches, first at %d" % (len(bad), bad[0])
+    dut._log.info("cab: write to the idle bank + switch back OK")

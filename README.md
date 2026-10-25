@@ -24,12 +24,16 @@ lightweight HPS-to-FPGA bridge. There is no soft CPU.
 |------------|-------------------------------------------------------------------------|------------|
 | Overdrive  | Hard clipping at a threshold, then gain (saturating)                    | drive, gain |
 | Distortion | Waveshaping with ROM transfer curves (soft / medium / heavy)            | type, mix |
+| Cabinet    | 2048-tap FIR (42.7 ms) with two coefficient banks: 10 selectable cabinet impulse responses (step D3) | cabinet 0 … 9 |
 | Chorus     | Modulated delay line (triangle LFO) with feedback                       | rate, depth, level |
 | Tremolo    | Amplitude modulation by a smoothed ROM LFO (sine 5–15 Hz, triangle, saw) | waveform, depth |
 | Echo       | Delay line up to ~0.68 s with feedback                                  | time, level, repeat |
 | Reverb     | Schroeder reverb: 4 parallel comb filters + 2 series all-pass filters   | type (4 rooms), mix |
 
-Signal chain: `ADC → Overdrive → Distortion → Chorus → Tremolo → Echo → Reverb → DAC`.
+Signal chain: `ADC → Overdrive → Distortion → Cabinet → Chorus → Tremolo → Echo → Reverb → DAC`.
+The cabinet (enable bit 6) is off by default and costs no latency when off; when on it adds one sample.
+Cabinets are loaded from Linux with `gme_hps.py cab N` (coefficient files built on the PC by
+`tools/cab_coefs.py --build`, third-party IR files are never committed).
 The I/O is 48 kHz stereo 24-bit and the effects process **24-bit** samples (v2 step C);
 the chain is mono and the processed signal goes to both outputs. Parameter changes
 are smoothed (no zipper noise) and switching an effect on or off crossfades over
@@ -172,7 +176,9 @@ and the equivalence proof of the IP models (`sim/models/run_equiv.sh`).
 * Step C (fixed-point library, 24-bit effects, parameter smoothing, click-free
   on/off) is done: verified in simulation and **on the board**; timing met, 5 % of the logic. See [docs/v2_stepC_design.md](docs/v2_stepC_design.md).
 * Step D (better DSP blocks, [docs/v2_stepD_design.md](docs/v2_stepD_design.md)) in progress: D1 generated LFO
-  done in simulation (frees 66 M10K); D2–D6 next. Board test at the end of step D.
+  done in simulation (frees 66 M10K); D2 modulated delay done; **D3 cabinet FIR integrated** (`cab_fir`/`cab_stage`
+  in the chain, CAB registers 0x1B–0x1E, VERSION 0x0205, `gme_hps.py cab`): verified in simulation, timing met in
+  Quartus (see [docs/v2_stepD_design.md](docs/v2_stepD_design.md)); next D4–D6. Board test at the end of step D.
 
 ## Third-party code
 
