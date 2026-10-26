@@ -1,6 +1,8 @@
 """
 test_fx_chain.py - cocotb tests for the FX_chain entity (frame level).
 
+Dynamics and EQ (step D5): the two model-based chain tests come first (see the comment before them).
+
 Bit-exact against golden.py where the effect has no free-running LFO
 (bypass, overdrive, distortion); behavioural checks for the time-varying
 effects (tremolo, chorus, echo, reverb). Every test also fails on
@@ -13,10 +15,13 @@ import random
 from pathlib import Path
 
 import cocotb
+from cocotb.triggers import RisingEdge
 
 import golden
+from dynamics_model import Dynamics
+from eq3_model import EQ3
 from reverbfv_model import ReverbFV
-from fxdriver import CAB, CHORUS, DIST, ECHO, OD, REVERB, TREM, FxChain, find_latency
+from fxdriver import CAB, CHORUS, DIST, DYN, ECHO, EQ, OD, REVERB, TREM, FxChain, find_latency
 
 N = 2000
 IP = Path(__file__).resolve().parents[2] / "fpga" / "ip"
@@ -42,6 +47,232 @@ def assert_no_wrap(name, y, start=32, limit=30000):
     v = [s or 0 for s in y]
     jumps = [i for i in range(start + 1, len(v)) if abs(v[i] - v[i - 1]) > limit]
     assert not jumps, "%s: %d wrap-around glitches, first at frame %d" % (name, len(jumps), jumps[0])
+
+
+# ---------------------------------------------------------------------------
+# Dynamics and EQ (step D5). Both blocks keep state (envelope / filter history) that nothing resets, so
+# the two model-based tests come FIRST in this module: the chain starts from the power-up state the
+# models start from (the EQ test flushes the filters with zeros and flat coefficients first).
+def q8(db):
+    """dB -> Q8 log2 units (dynamics.vhd)."""
+    return round(db * 256 / (20 * math.log10(2)))
+
+
+DYN_ZERO = dict(dyn_ctrl=0, gate_thresh=0, comp_thresh=0, comp_ratio=0, comp_attack=0,
+                comp_release=0, comp_makeup=0)
+
+
+def tones(m, rnd, n, f=440.0, db=0.0, noise_db=-80.0, n0=0):
+    """Sine of level `db` (re full scale m) plus a little noise."""
+    a, nz = m * 10 ** (db / 20), m * 10 ** (noise_db / 20)
+    return [round(a * math.sin(2 * math.pi * f * (n0 + i) / 48000) + rnd.uniform(-nz, nz)) for i in range(n)]
+
+
+@cocotb.test()
+async def test_dynamics_chain(dut):
+    """Dynamics stage (enable bit 7, first stage of the chain): bit off = exact bypass with the latency of
+    the chain without it, also after use and while gate / compressor are configured and running; bit on =
+    dynamics_model fed with the chain input, bit-exact, one frame later; DYN_GR output = the model's meter
+    when on, 0 when off. (Runs first: the model starts with the chain's power-up state.)"""
+    fx = FxChain(dut)
+    await fx.start()
+    dw, m = fx.dw, (1 << (fx.dw - 1)) - 1
+    rnd = random.Random(21)
+    model = Dynamics(dw)
+    X, W, EN, Y, GR, MG = [], [], [], [], [], []
+    state = dict(DYN_ZERO)
+
+    async def frames(xs, enable, **params):
+        state.update(params)
+        fx.set(effects_enable=DYN if enable else 0, **state)
+        for x in xs:
+            Y.append(await fx.frame(x, raw=True))
+            w = model.step(x, 1, gate_en=state["dyn_ctrl"] & 1, comp_en=(state["dyn_ctrl"] >> 1) & 1,
+                           **{k: v for k, v in state.items() if k != "dyn_ctrl"})
+            X.append(x)
+            W.append(w)
+            EN.append(enable)
+            GR.append(int(dut.dyn_gr.value))
+            MG.append(model.meter)
+
+    loud = lambda n, n0=0: tones(m, rnd, n, 440.0, -6.0, n0=n0)          # noqa: E731
+    quiet = lambda n, n0=0: tones(m, rnd, n, 440.0, -50.0, -70.0, n0=n0)  # noqa: E731
+    aggressive = dict(dyn_ctrl=3, gate_thresh=q8(-40), comp_thresh=q8(-24), comp_ratio=2,
+                      comp_attack=2, comp_release=7, comp_makeup=q8(3))
+
+    # A: bit off, gate + compressor configured and running on noise: exact bypass; its latency
+    await frames([rnd.randint(-m - 1, m) for _ in range(700)], 0, **aggressive)
+    lat = find_latency(X[:700], Y[:700])
+    # B: on, flat (gate and compressor off): the stage only delays by one frame
+    await frames([rnd.randint(-m - 1, m) for _ in range(500)], 1, **DYN_ZERO)
+    # C: compressor only: loud / quiet tone bursts, then ratios 1:1, 8:1, inf:1, instant attack
+    base = dict(dyn_ctrl=2, comp_thresh=q8(-24), comp_ratio=2, comp_attack=3, comp_release=8, comp_makeup=0)
+    await frames(loud(500) + quiet(500) + loud(500, 500) + quiet(300), 1, **base)
+    for ratio in (0, 3, 4):
+        await frames(loud(300) + quiet(200), 1, comp_ratio=ratio, comp_attack=ratio, comp_makeup=q8(6) if ratio == 3 else 0)
+    # D: gate only: signal, silence with a little noise (closes), signal (opens)
+    await frames(loud(400) + quiet(1200) + loud(400, 400) + quiet(100),
+                 1, dyn_ctrl=1, gate_thresh=q8(-40), comp_ratio=0, comp_makeup=0)
+    # E: both, changing the parameters mid-stream; thresholds / makeup extreme, full-scale noise
+    await frames(loud(400) + quiet(300), 1, **aggressive)
+    await frames(loud(300) + [rnd.randint(-m - 1, m) for _ in range(300)], 1, comp_thresh=q8(-60),
+                 comp_ratio=4, comp_makeup=q8(-12), gate_thresh=q8(-80))
+    await frames(loud(300), 1, comp_makeup=q8(20), comp_attack=0, comp_release=15)
+    # F: off again (state keeps running): bypass, same latency
+    await frames([rnd.randint(-m - 1, m) for _ in range(700)], 0)
+    lat2 = find_latency(X[-700:], Y[-700:])
+    # G: on again right away
+    await frames(loud(400) + quiet(400) + loud(400), 1, **aggressive)
+    assert lat2 == lat, "stage off added latency: %d -> %d frames" % (lat, lat2)
+
+    # per output index k: dyn_out at the overdrive's sample_tick k - lat is W[k-lat-1] if the stage was on
+    # in frame k-lat-1 (g = 256), else the chain input of frame k - lat itself
+    bad = []
+    for k in range(lat + 4, len(X)):
+        j = k - lat
+        exp = W[j - 1] if EN[j - 1] else X[j]
+        if Y[k] != exp:
+            bad.append((k, Y[k], exp))
+    assert not bad, "dynamics chain: %d mismatches, first at frame %d: got %s expected %s" % (len(bad), *bad[0])
+    gr_bad = [i for i in range(len(X)) if GR[i] != (MG[i] if EN[i] else 0)]
+    assert not gr_bad, "DYN_GR output differs from the model's meter at %d frames, first %d: %d vs %d" % (
+        len(gr_bad), gr_bad[0], GR[gr_bad[0]], MG[gr_bad[0]] if EN[gr_bad[0]] else 0)
+    assert max(GR) > q8(6), "the meter never showed 6 dB of reduction (%d)" % max(GR)
+    on_diff = sum(1 for i in range(len(X)) if EN[i] and W[i] != X[i])
+    assert on_diff > 2000, "test setup: the stage changed only %d samples" % on_diff
+    dut._log.info("dynamics chain: %d frames bit-exact (off = bypass at latency %d, on = model + 1 frame), "
+                  "%d samples changed, DYN_GR max %d = %.1f dB, matches the model's meter in every frame",
+                  len(X), lat, on_diff, max(GR), max(GR) / q8(1))
+
+
+@cocotb.test()
+async def test_eq_chain(dut):
+    """EQ stage (enable bit 8, between the cabinet and the modulated delay): bit off = exact bypass with
+    the latency of the chain without it (also after use, with coefficients written and running); bit on =
+    eq3_model fed with the stage input (signal cab_out at half_tick), bit-exact, one frame later; coefficient
+    sets from tools/eq_coefs written through the write port, taken over at apply only (a half-written set
+    is not used)."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+    import eq_coefs as ec
+
+    fx = FxChain(dut)
+    await fx.start()
+    fx.probe, fx.probe_sig = [], "cab_out"
+    dw, m = fx.dw, (1 << (fx.dw - 1)) - 1
+    rnd = random.Random(22)
+    model = EQ3(dw)
+    X, W, EN, Y = [], [], [], []
+
+    def eqset(b, md, t):
+        ints, sh, _ = ec.coefficient_set_full(b, md, t)
+        return ints, ec.scale_word(sh)
+
+    async def load(b, md, t, apply=True, upto=None):
+        ints, sc = eqset(b, md, t)
+        words = ints + [sc]
+        n = len(words) if upto is None else upto
+        # (the chain's write port: coefficients 0..n-1, scale = address 15)
+        d = dut
+        for a in range(n):
+            d.eq_cw_en.value, d.eq_cw_addr.value, d.eq_cw_data.value = 1, a, words[a] & 0x3FFFF
+            model.write(a, words[a])
+            await RisingEdge(d.clk)
+        d.eq_cw_en.value = 0
+        if apply:
+            d.eq_apply.value = 1
+            model.apply()
+            await RisingEdge(d.clk)
+            d.eq_apply.value = 0
+        await RisingEdge(d.clk)
+
+    async def frames(xs, enable):
+        fx.set(effects_enable=EQ if enable else 0)
+        fx.probe.clear()
+        for x in xs:
+            Y.append(await fx.frame(x, raw=True))
+        for p in fx.probe:
+            X.append(p)
+            W.append(model.step(p, 1))
+            EN.append(enable)
+
+    full = lambda n: [rnd.randint(-m - 1, m) for _ in range(n)]       # noqa: E731
+    band = lambda n, a=0.5: [round(a * m * (0.6 * math.sin(2 * math.pi * 300 * i / 48000) + 0.4 * rnd.uniform(-1, 1)))
+                             for i in range(n)]                          # noqa: E731
+    await frames([0] * 8, 0)                                               # flush (flat coefficients)
+    del X[:], W[:], EN[:], Y[:]
+    # A: off, a non-flat set loaded and running: exact bypass; its latency
+    await load(9, -6, 10)
+    await frames(full(700), 0)
+    lat = find_latency(X[:700], Y[:700])
+    # B: on with the same set; then new sets: bass boost, mid cut, treble boost (scale word), all +12
+    await frames(band(500), 1)
+    for g in ((12, 0, 0), (0, -12, 0), (0, 0, 12), (12, 12, 12), (-5, 4, 7.5)):
+        await load(*g)
+        await frames(band(250) + full(250), 1)
+    # C: a half-written set is not used until apply
+    await load(-9, 5, 9, apply=False, upto=8)
+    await frames(band(200), 1)
+    await load(-9, 5, 9)
+    await frames(band(300), 1)
+    # D: off with a flat set loaded, same latency; on again with the filter warm
+    await load(0, 0, 0)
+    await frames(full(600), 0)
+    lat2 = find_latency(X[-600:], Y[-600:])
+    await load(6, -3, 4)
+    await frames(band(500), 1)
+    assert lat2 == lat, "stage off added latency: %d -> %d frames" % (lat, lat2)
+
+    # at the modulated delay's half_tick of frame j: the stage output is W[j-1] when on in frame j, else X[j]
+    bad = []
+    for k in range(lat + 4, len(X)):
+        j = k - lat
+        exp = W[j - 1] if EN[j] else X[j]
+        if Y[k] != exp:
+            bad.append((k, Y[k], exp))
+    assert not bad, "EQ chain: %d mismatches, first at frame %d: got %s expected %s" % (len(bad), *bad[0])
+    changed = sum(1 for i in range(len(X)) if EN[i] and W[i] != X[i])
+    assert changed > 2000, "test setup: the EQ changed only %d samples" % changed
+    dut._log.info("EQ chain: %d frames bit-exact (off = bypass at latency %d, on = model + 1 frame), "
+                  "%d samples changed; coefficient sets and the half-written set (not used) as in the model",
+                  len(X), lat, changed)
+
+
+@cocotb.test()
+async def test_dyn_eq_fade(dut):
+    """Click-free on/off of the dynamics and EQ stages (needs the chain's XFADE; GME_XFADE=1): enabling and
+    disabling a strongly compressing / boosting stage mid-signal produces no output step above the
+    signal's own, and the end states are exact."""
+    import os
+    import sys
+    if os.environ.get("GME_XFADE", "0") != "1":
+        dut._log.info("fade test only with XFADE (GME_XFADE=1)")
+        return
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+    import eq_coefs as ec
+
+    fx = FxChain(dut)
+    await fx.start()
+    dw, m = fx.dw, (1 << (fx.dw - 1)) - 1
+    ints, sh, _ = ec.coefficient_set_full(12, 12, 12)
+    await fx.eq_write(ints, ec.scale_word(sh))
+    fx.set(dyn_ctrl=2, comp_thresh=q8(-40), comp_ratio=4, comp_attack=3, comp_release=8)
+    sig = [round(0.5 * m * math.sin(2 * math.pi * 1000 * i / 48000)) for i in range(3000)]
+    for bit, name in ((DYN, "dynamics"), (EQ, "EQ")):
+        fx.set(effects_enable=0)
+        y = await fx.run(sig[:600], raw=True)                      # off
+        fx.set(effects_enable=bit)
+        y += await fx.run(sig[600:1400], raw=True)                 # fades in (256 samples), steady
+        fx.set(effects_enable=0)
+        y += await fx.run(sig[1400:2200], raw=True)                # fades out, off
+        lat = find_latency(sig[:600], y[:600], start=64, length=400)
+        ms = lambda v: max(abs(v[i] - v[i - 1]) for i in range(1, len(v)))   # noqa: E731
+        ref = max(ms(y[100:600]), ms(y[1100:1400]))                # steady states: off, on
+        steps = max(abs(y[i] - y[i - 1]) for i in range(20, len(y)))      # (the first frames still carry the previous run)
+        dut._log.info("%s fade: max step %d, steady-state max step %d (ratio %.2f)", name, steps, ref, steps / ref)
+        assert steps <= 1.25 * ref, "%s: output step %d above the steady state's own (%d)" % (name, steps, ref)
+        assert y[1900 + lat:2200] == sig[1900:2200 - lat], "%s: not an exact bypass after the fade-out" % name
+        assert y[1300:1400] != sig[1300 - lat:1400 - lat], "%s: the stage changed nothing (test setup)" % name
 
 
 # ---------------------------------------------------------------------------

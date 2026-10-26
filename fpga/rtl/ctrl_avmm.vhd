@@ -32,7 +32,7 @@ use ieee.numeric_std.all;
 
 entity ctrl_avmm is
   generic (
-    VERSION : std_logic_vector(15 downto 0) := x"0206"
+    VERSION : std_logic_vector(15 downto 0) := x"0207"
   );
   port (
     clk        : in  std_logic;
@@ -57,6 +57,7 @@ entity ctrl_avmm is
     status_in  : in  std_logic_vector(15 downto 0);
     level_in   : in  std_logic_vector(15 downto 0);
     level_out  : in  std_logic_vector(15 downto 0);
+    dyn_gr     : in  std_logic_vector(15 downto 0) := (others => '0');   -- register 0x2C, read-only (D5)
     -- effect registers
     effects_enable, od_drive, od_gain, trem_wave, trem_depth,
     echo_time, echo_repeat, echo_level, dist_mix, dist_type,
@@ -113,6 +114,7 @@ begin
       addr => word, wdata => reg_wdata, we => reg_we,
       rdata => reg_rdata, err => reg_err,
       status_in => status_in, level_in => level_in, level_out => level_out,
+      dyn_gr => dyn_gr,
       effects_enable => effects_enable, od_drive => od_drive, od_gain => od_gain,
       trem_wave => trem_wave, trem_depth => trem_depth, echo_time => echo_time,
       echo_repeat => echo_repeat, echo_level => echo_level, dist_mix => dist_mix,

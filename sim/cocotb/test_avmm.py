@@ -16,7 +16,8 @@ from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge
 EFFECT_REGS = ["effects_enable", "od_drive", "od_gain", "trem_wave", "trem_depth", "echo_time",
                "echo_repeat", "echo_level", "dist_mix", "dist_type", "chorus_level",
                "chorus_depth", "chorus_rate", "reverb_mix", "reverb_type"]
-VERSION = 0x0206
+VERSION = 0x0207
+DYN_GR_VALUE = 0x0ABC            # driven on the dyn_gr input (register 0x2C, read-only)
 CODEC = 0x15
 
 
@@ -76,6 +77,7 @@ async def setup(dut):
     dut.status_in.value = 0x0005
     dut.level_in.value = 0x1234
     dut.level_out.value = 0x4321
+    dut.dyn_gr.value = DYN_GR_VALUE
     h = AvmmHost(dut)
     await ClockCycles(dut.clk, 5)
     dut.rst.value = 0
@@ -110,9 +112,13 @@ async def test_write_read_all(dut):
         await h.write(0x16 + i, v)
     bus = int(dut.ext.value)
     for i, v in enumerate(ext):
+        if 0x16 + i == 0x2C:                                   # DYN_GR (D5): read-only meter, see test_dynamics_eq_regs
+            assert await h.read(0x2C) == DYN_GR_VALUE and (bus >> (16 * i)) & 0xFFFF == 0
+            continue
         assert await h.read(0x16 + i) == v & 0xFFFF, "ext register 0x%02X" % (0x16 + i)
         assert (bus >> (16 * i)) & 0xFFFF == v & 0xFFFF, "ext bus slice 0x%02X" % (0x16 + i)
-    dut._log.info("15 effect + 26 extension registers written / read back (bits 31..16 ignored, read 0)")
+    dut._log.info("15 effect + 25 extension registers written / read back (bits 31..16 ignored, read 0); "
+                  "0x2C is read-only")
 
 
 @cocotb.test()
@@ -128,6 +134,55 @@ async def test_reverb_regs(dut):
     assert ext(0x1F) == 0xF5A1 and ext(0x20) == 0x003C and ext(0x1E) == 0 and ext(0x21) == 0
     assert [await h.read(r) for r in (0x0D, 0x0E, 0x1F, 0x20)] == [0xAB, 4, 0xF5A1, 0x3C]
     dut._log.info("REVERB_MIX / TYPE / SIZE (0x1F) / DAMP (0x20) written and read back")
+
+
+@cocotb.test()
+async def test_dynamics_eq_regs(dut):
+    """Dynamics / EQ registers (D5): 0x21 DYN_CTRL .. 0x27 COMP_MAKEUP and 0x28 EQ_ADDR .. 0x2B EQ_APPLY are
+    ordinary read/write registers, each in its own slice of the ext bus (neighbours 0x20 and 0x2D untouched);
+    0x2C DYN_GR reads the live dyn_gr input and ignores writes (no ext bus change, no side effect); every
+    write of 0x21..0x2B gives one write event, the write to 0x2C does give one too (ignored by the core)."""
+    h = await setup(dut)
+    events = []
+
+    async def monitor():
+        while True:
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            if int(dut.ext_we.value):
+                events.append((int(dut.ext_wa.value), int(dut.ext_wd.value)))
+
+    cocotb.start_soon(monitor())
+    rnd = random.Random(21)
+    vals = {r: rnd.getrandbits(16) for r in range(0x21, 0x2C)}
+    for r, v in vals.items():
+        await h.write(r, 0xCAFE0000 | v)
+    bus = int(dut.ext.value)
+    ext = lambda r: (bus >> (16 * (r - 0x16))) & 0xFFFF
+    for r, v in vals.items():
+        assert await h.read(r) == v, "register 0x%02X read back" % r
+        assert ext(r) == v, "ext bus slice 0x%02X" % r
+    assert ext(0x20) == 0 and ext(0x2C) == 0 and ext(0x2D) == 0, "neighbour slices must stay 0"
+    assert [e[0] for e in events] == list(range(0x21, 0x2C)) and all(e[1] == vals[e[0]] for e in events),         "write events %s" % events
+    # DYN_GR: live, read-only
+    assert await h.read(0x2C) == DYN_GR_VALUE
+    await RisingEdge(dut.clk)                # (leave the ReadOnly phase before driving an input)
+    dut.dyn_gr.value = 0xFFFF
+    assert await h.read(0x2C) == 0xFFFF, "DYN_GR must follow the input"
+    await RisingEdge(dut.clk)
+    dut.dyn_gr.value = 0
+    assert await h.read(0x2C) == 0
+    await RisingEdge(dut.clk)
+    dut.dyn_gr.value = 0x1357
+    n = len(events)
+    await h.write(0x2C, 0xFFFF)
+    await h.write(0x2C, 0x0000, byteenable=0x3)
+    await ClockCycles(dut.clk, 3)
+    assert await h.read(0x2C) == 0x1357, "DYN_GR is read-only"
+    assert int(dut.ext.value) == int(bus) and [await h.read(r) for r in vals] == list(vals.values()),         "a write to 0x2C changed another register"
+    assert all(e[0] == 0x2C for e in events[n:]), "write events %s" % events[n:]
+    assert await h.read(0x10) == VERSION == 0x0207
+    dut._log.info("DYN/EQ registers 0x21..0x2B read/write with write events, 0x2C live and read-only, VERSION 0x%04X", VERSION)
 
 
 @cocotb.test()

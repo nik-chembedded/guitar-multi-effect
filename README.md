@@ -25,13 +25,17 @@ lightweight HPS-to-FPGA bridge. There is no soft CPU.
 | Overdrive  | Hard clipping at a threshold, then gain (saturating)                    | drive, gain |
 | Distortion | Waveshaping with ROM transfer curves (soft / medium / heavy)            | type, mix |
 | Cabinet    | 2048-tap FIR (42.7 ms) with two coefficient banks: 10 selectable cabinet impulse responses (step D3) | cabinet 0 … 9 |
+| Dynamics   | Noise gate + compressor with one level detector and a log-domain gain glide (step D5) | gate / compressor on, thresholds, ratio, attack, release, make-up |
+| EQ         | 3-band EQ: low shelf, peaking mid, high shelf, three biquads with error feedback (step D5) | bass, mid, treble (-12 … +12 dB) |
 | Chorus     | Modulated delay line (triangle LFO) with feedback                       | rate, depth, level |
 | Tremolo    | Amplitude modulation by a smoothed ROM LFO (sine 5–15 Hz, triangle, saw) | waveform, depth |
 | Echo       | Delay line up to ~0.68 s with feedback                                  | time, level, repeat |
 | Reverb     | Freeverb: 8 parallel low-pass-feedback comb filters + 4 series all-pass filters (step D4) | type (4 rooms or custom), size, damping, mix |
 
-Signal chain: `ADC → Overdrive → Distortion → Cabinet → Chorus → Tremolo → Echo → Reverb → DAC`.
-The cabinet (enable bit 6) is off by default and costs no latency when off; when on it adds one sample.
+Signal chain: `ADC → Dynamics → Overdrive → Distortion → Cabinet → EQ → Chorus → Tremolo → Echo → Reverb → DAC`.
+The cabinet (enable bit 6), the dynamics (bit 7) and the EQ (bit 8) are off by default and cost no latency when off; each adds
+one sample when on. Dynamics settings: `gme_hps.py set dyn=gate+comp gate_db=-45 comp_db=-20 ratio=4 ...`, EQ: `gme_hps.py eq 6 -3 2`
+(bass, mid, treble in dB); the gain reduction is register 0x2C (`gme_hps.py status`).
 Cabinets are loaded from Linux with `gme_hps.py cab N` (coefficient files built on the PC by
 `tools/cab_coefs.py --build`, third-party IR files are never committed).
 The I/O is 48 kHz stereo 24-bit and the effects process **24-bit** samples (v2 step C);
@@ -179,8 +183,10 @@ and the equivalence proof of the IP models (`sim/models/run_equiv.sh`).
   done in simulation (frees 66 M10K); D2 modulated delay done; **D3 cabinet FIR integrated** (`cab_fir`/`cab_stage`
   in the chain, CAB registers 0x1B–0x1E, `gme_hps.py cab`); **D4 Freeverb reverb integrated** (`reverb_fv`
   replaces the Schroeder reverb, REVERB_TYPE 0–3 room presets, 4 = custom, registers 0x1F REVERB_SIZE /
-  0x20 REVERB_DAMP, VERSION 0x0206): verified in simulation, timing met in
-  Quartus (see [docs/v2_stepD_design.md](docs/v2_stepD_design.md)); next D5–D6. Board test at the end of step D.
+  0x20 REVERB_DAMP); **D5 dynamics + EQ integrated** (`dynamics`, `eq3`/`biquad` as chain stages with zero-latency
+  bypass, enable bits 7 / 8, registers 0x21–0x2C, `gme_hps.py eq`, VERSION 0x0207): verified in simulation incl. a
+  test that the chain gives identical samples with 16-clock and 1024-clock frames, timing met in
+  Quartus (see [docs/v2_stepD_design.md](docs/v2_stepD_design.md)); next D6. Board test at the end of step D.
 
 ## Third-party code
 

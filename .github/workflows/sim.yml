@@ -47,6 +47,10 @@ jobs:
         working-directory: sim/cocotb
         run: pytest -v -n auto -k test_reverbfv
 
+      - name: Dynamics (gate + compressor) and 3-band EQ blocks (one simulation per testcase), stage fades, timing invariance
+        working-directory: sim/cocotb
+        run: pytest -v -n auto -k "test_dynamics or test_eq3 or test_dyn_eq_xfade or test_timing_invariance"
+
       - name: I2S core + v2 reference (31 presets, 24-bit chain, bit-exact)
         working-directory: sim/cocotb
         run: pytest -v -k "test_i2s or test_refv2"

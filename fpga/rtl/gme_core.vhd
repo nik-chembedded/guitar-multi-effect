@@ -23,7 +23,7 @@ entity gme_core is
     XFADE          : boolean  := true;             -- click-free effect on/off
     CAB_TAPS       : positive := 2048;             -- cabinet FIR length (D3)
     CAB_INIT       : string   := "cab_default.mif"; -- its power-up coefficients
-    VERSION        : std_logic_vector(15 downto 0) := x"0206"
+    VERSION        : std_logic_vector(15 downto 0) := x"0207"
   );
   port (
     clk        : in  std_logic;
@@ -103,6 +103,14 @@ architecture rtl of gme_core is
   end function;
 
   -- cabinet (D3): CAB_ADDR pointer + coefficient write port; CAB_DATA_HI completes a write
+  -- EQ (D5): EQ_ADDR pointer + coefficient write port; EQ_DATA_HI completes a write, EQ_APPLY pulses apply
+  signal eq_ptr                 : unsigned(3 downto 0) := (others => '0');
+  signal eq_cw_en               : std_logic := '0';
+  signal eq_cw_addr             : std_logic_vector(3 downto 0) := (others => '0');
+  signal eq_cw_data             : std_logic_vector(17 downto 0) := (others => '0');
+  signal eq_apply               : std_logic := '0';
+  signal dyn_gr                 : std_logic_vector(15 downto 0);
+
   signal ext_we                 : std_logic;
   signal ext_wa                 : std_logic_vector(7 downto 0);
   signal ext_wd                 : std_logic_vector(15 downto 0);
@@ -151,6 +159,11 @@ begin
   u_fx : entity work.FX_chain
     generic map (DW => 24, XFADE => XFADE, CAB_TAPS => CAB_TAPS, CAB_INIT => CAB_INIT)
     port map (
+      dyn_ctrl => ext_reg(ext, 16#21#), gate_thresh => ext_reg(ext, 16#22#),
+      comp_thresh => ext_reg(ext, 16#23#), comp_ratio => ext_reg(ext, 16#24#),
+      comp_attack => ext_reg(ext, 16#25#), comp_release => ext_reg(ext, 16#26#),
+      comp_makeup => ext_reg(ext, 16#27#), dyn_gr => dyn_gr,
+      eq_cw_en => eq_cw_en, eq_cw_addr => eq_cw_addr, eq_cw_data => eq_cw_data, eq_apply => eq_apply,
       cab_ctrl => ext_reg(ext, 16#1B#), cab_cw_en => cab_cw_en, cab_cw_bank => cab_cw_bank,
       cab_cw_addr => cab_cw_addr, cab_cw_data => cab_cw_data,
       clk => clk, sample_tick => sample_tick, half_tick => half_tick,
@@ -186,6 +199,32 @@ begin
           cab_cw_addr <= std_logic_vector(cab_ptr(10 downto 0));
           cab_cw_data <= ext_wd(1 downto 0) & ext_reg(ext, 16#1D#);
           cab_ptr(10 downto 0) <= cab_ptr(10 downto 0) + 1;
+        end if;
+      end if;
+    end if;
+  end process;
+
+  -- EQ coefficient port. EQ_ADDR (0x28) sets the write pointer (0..15; 15 = scale word),
+  -- EQ_DATA_HI (0x2A) writes {HI(1:0), EQ_DATA_LO (0x29)} at the pointer and increments it
+  -- (wrapping 15 -> 0), EQ_APPLY (0x2B): any write pulses `apply` (the new set becomes active
+  -- at the next half_tick, all sections together).
+  process(clk)
+  begin
+    if rising_edge(clk) then
+      eq_cw_en <= '0';
+      eq_apply <= '0';
+      if rst = '1' then
+        eq_ptr <= (others => '0');
+      elsif ext_we = '1' then
+        if ext_wa = x"28" then
+          eq_ptr <= unsigned(ext_wd(3 downto 0));
+        elsif ext_wa = x"2A" then
+          eq_cw_en   <= '1';
+          eq_cw_addr <= std_logic_vector(eq_ptr);
+          eq_cw_data <= ext_wd(1 downto 0) & ext_reg(ext, 16#29#);
+          eq_ptr     <= eq_ptr + 1;
+        elsif ext_wa = x"2B" then
+          eq_apply <= '1';
         end if;
       end if;
     end if;
@@ -258,6 +297,7 @@ begin
       echo_repeat => echo_repeat, echo_level => echo_level, dist_mix => dist_mix,
       dist_type => dist_type, chorus_level => chorus_level, chorus_depth => chorus_depth,
       chorus_rate => chorus_rate, reverb_mix => reverb_mix, reverb_type => reverb_type, ext => ext,
+      dyn_gr => dyn_gr,
       codec_init => codec_init, mute => mute,
       ext_we => ext_we, ext_wa => ext_wa, ext_wd => ext_wd);
 

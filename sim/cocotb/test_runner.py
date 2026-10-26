@@ -28,7 +28,8 @@ FX_RTL = [RTL / f for f in ("fx_pkg.vhd", "fx_xfade.vhd", "lfo_sine_pkg.vhd", "n
                             "overdrive.vhd", "distortion.vhd", "mod_delay.vhd",
                             "tremolo_v2.vhd", "echo.vhd", "fv_comb.vhd",
                             "fv_allpass.vhd", "reverb_fv.vhd", "cab_fir.vhd", "cab_stage.vhd",
-                            "FX_chain.vhd")]
+                            "dynamics.vhd", "biquad.vhd", "eq3.vhd", "fx_bypass.vhd",
+                            "dyn_stage.vhd", "eq_stage.vhd", "FX_chain.vhd")]
 # chain-level simulations use 16-clock frames: a 16-tap cabinet (2048 taps need 519 clocks per sample)
 CAB16 = {"CAB_TAPS": 16, "CAB_INIT": "cab_test16.mif"}
 GHDL_ARGS = ["--std=08", "-frelaxed"]
@@ -75,6 +76,34 @@ def test_cab_xfade():
         run("fx_chain", "test_fx_chain", IP_MODELS + FX_RTL, testcase="test_cab",
             parameters={"DW": dw, "XFADE": True}, extra_env={"GME_DW": str(dw), "GME_XFADE": "1"},
             tag="_cabx%d" % dw)
+
+
+def test_dyn_eq_xfade():
+    """Dynamics and EQ stages with the click-free chain (XFADE): enabling / disabling fades, no step above
+    the steady states', exact bypass after the fade-out."""
+    for dw in (16, 24):
+        run("fx_chain", "test_fx_chain", IP_MODELS + FX_RTL, testcase="test_dyn_eq_fade",
+            parameters={"DW": dw, "XFADE": True}, extra_env={"GME_DW": str(dw), "GME_XFADE": "1"},
+            tag="_dyneqx%d" % dw)
+
+
+def test_timing_invariance():
+    """The chain gives identical output samples with 16-clock frames (simulation) and 1024-clock frames
+    (board): one configuration with all effects on (dynamics, overdrive, distortion, cabinet, EQ, mod delay,
+    tremolo, echo, reverb), 400 frames, two simulations (GME_HALF = 8 and 512)."""
+    import numpy as np
+    outs = {}
+    for half in (8, 512):
+        f = BUILD / ("invariance_%d.npy" % half)
+        run("fx_chain", "test_invariance", IP_MODELS + FX_RTL, parameters={"DW": 24, "XFADE": True},
+            extra_env={"GME_DW": "24", "GME_HALF": str(half), "GME_INV_OUT": str(f)}, tag="_inv%d" % half)
+        outs[half] = np.load(f)
+    a, b = outs[8], outs[512]
+    assert a.shape == b.shape
+    bad = np.nonzero(a != b)[0]
+    assert not len(bad), "output differs between 16-clock and 1024-clock frames in %d of %d frames, first at %d (%d vs %d)" % (
+        len(bad), len(a), bad[0], a[bad[0]], b[bad[0]])
+    print("timing invariance: %d frames identical at 16 and 1024 clocks per frame" % len(a))
 
 
 def test_lfo():
@@ -159,6 +188,40 @@ def test_reverbfv(dw, testcase):
         tag="_rv%d_%s" % (dw, testcase))
 
 
+# dynamics (gate + compressor, v2 step D5a): the block has no reset, so every row is its own
+# simulation (docstring of test_dynamics.py: DW, clocks per sample, GME_QUICK, testcases)
+DYNAMICS_SIMS = [
+    (24, 16, 0, "test_bitexact,test_bypass,test_click", "_24"),
+    (16, 16, 0, "test_bitexact,test_bypass,test_click", "_16"),
+    (24, 1024, 1, "test_bitexact", "_1024"),
+    (24, 16, 0, "test_timing,test_accuracy", "_tim"),
+    (24, 16, 0, "test_curve", "_curve"),
+    (24, 16, 0, "test_attack_release", "_ar"),
+    (24, 16, 0, "test_gate", "_gate"),
+]
+
+
+@pytest.mark.parametrize("dw,frame,quick,testcase,tag", DYNAMICS_SIMS, ids=[r[4].lstrip("_") for r in DYNAMICS_SIMS])
+def test_dynamics(dw, frame, quick, testcase, tag):
+    """Noise gate + compressor (v2 step D5a) bit-exact to its model + behaviour checks (7 simulations)."""
+    run("dynamics", "test_dynamics", [RTL / "fx_pkg.vhd", RTL / "dynamics.vhd"],
+        testcase=testcase, parameters={"DW": dw},
+        extra_env={"GME_DW": str(dw), "GME_FRAME": str(frame), "GME_QUICK": str(quick)}, tag=tag)
+
+
+EQ3_TESTS = ["test_bitexact", "test_response", "test_flat", "test_lowlevel", "test_saturation"]
+
+
+@pytest.mark.parametrize("dw", [16, 24])
+@pytest.mark.parametrize("testcase", EQ3_TESTS)
+def test_eq3(dw, testcase):
+    """3-band EQ (v2 step D5b) bit-exact to its model + response checks, 16 and 24 bit,
+    one simulation per testcase (the block has no reset)."""
+    run("eq3", "test_eq3", [RTL / "fx_pkg.vhd", RTL / "biquad.vhd", RTL / "eq3.vhd"],
+        testcase=testcase, parameters={"DW": dw}, extra_env={"GME_DW": str(dw)},
+        tag="_eq%d_%s" % (dw, testcase))
+
+
 CTRL_RTL = [RTL / f for f in ("reg_file.vhd", "ctrl_avmm.vhd")]
 
 
@@ -182,6 +245,13 @@ def test_system():
     """gme_core end to end: codec init, control over the Avalon slave (HPS), I2S audio."""
     run("gme_core", "test_system", SYS_RTL, testcase=os.environ.get("TESTCASE"),
         parameters={"INIT_WAIT_CLKS": 2000})
+
+
+def test_system_dyneq():
+    """gme_core with a 16-tap cabinet (the cabinet is off): dynamics and EQ over the Avalon registers on real
+    1024-clock frames (test_system.test_dynamics_eq)."""
+    run("gme_core", "test_system", SYS_RTL, testcase="test_dynamics_eq",
+        parameters={"INIT_WAIT_CLKS": 2000, **CAB16}, extra_env={"GME_SYS_DYNEQ": "1"}, tag="_dyneq")
 
 
 def test_refv2():

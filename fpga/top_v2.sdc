@@ -12,9 +12,12 @@ derive_clock_uncertainty
 # inside and out of the chain get 16 cycles (325 ns). The strobes themselves are
 # NOT covered (they come from u_i2s and must stay single-cycle).
 # Blocks with a per-clock sequencer or pipeline (RAM read -> capture -> compute
-# in consecutive clocks: mod_delay, the D2 echo and the D3 cabinet FIR / its crossfade CAB_left, the D4 reverb REVERB_left) are excluded and keep full
-# single-cycle constraints - a multicycle relaxation would hide real 1-clock paths.
-set seqblk [get_registers {*|u_fx|CHORUS_left|* *|u_fx|ECHO_left|* *|u_fx|CAB_left|* *|u_fx|REVERB_left|*}]
+# in consecutive clocks: mod_delay, the D2 echo and the D3 cabinet FIR / its crossfade CAB_left, the D4 reverb REVERB_left,
+# the D5 dynamics pipeline DYN_left|u_dyn (10 stages) and the EQ biquads EQ_left|u_eq (2 stages per
+# section)) are excluded and keep full single-cycle constraints - a multicycle relaxation would hide
+# real 1-clock paths. The D5 stage crossfades (DYN_left|u_fade, EQ_left|u_fade: a counter that moves on
+# sample_tick and a combinational mix) are plain fx logic and stay in the multicycle group.
+set seqblk [get_registers {*|u_fx|CHORUS_left|* *|u_fx|ECHO_left|* *|u_fx|CAB_left|* *|u_fx|REVERB_left|* *|u_fx|DYN_left|u_dyn|* *|u_fx|EQ_left|u_eq|*}]
 set fx   [remove_from_collection [get_registers {*|u_fx|*}] $seqblk]
 set rx   [get_registers {*|u_i2s|rx_l_out*}]   ;# right channel unused (mono effects)
 set regs [get_registers {*|u_ctrl|u_regs|regs*}]
@@ -42,6 +45,21 @@ set_multicycle_path -hold  -end 15 -from $fx   -to [get_registers {*|u_i2s|tx_* 
 set seqout [get_registers {*|u_fx|CHORUS_left|data_out* *|u_fx|ECHO_left|data_out* *|u_fx|REVERB_left|data_out*}]
 set_multicycle_path -setup -end 16 -to $seqout
 set_multicycle_path -hold  -end 15 -to $seqout
+# D5: the dynamics and EQ blocks are NOT in seqout: their data_out loads the last pipeline result
+# in the clock after the previous register (prod -> sat -> data_out in dynamics, y3 in eq3), a real
+# 1-clock path that a multicycle would hide. The paths leaving them (dyn data_out -> overdrive,
+# eq data_out -> crossfade) are met as ordinary single-cycle paths.
+
+# The data input of the mod_delay line RAM (D5): the RAM is written only on the strobe
+# (wren = en_rise and enable), and the data cone behind it is the chain stages in front of
+# it: dist_fade -> cabinet crossfade -> EQ crossfade -> mod_delay input sum. All their
+# registers change at sample_tick / half_tick + a few clocks and the RAM samples at the
+# next half_tick (>= 448 clocks later), so the cone is a multicycle path like the seqout
+# registers. Without this, three crossfade multipliers in series (dist, cabinet, EQ) were timed as one clock
+# (D5, first compile: -4.4 ns).
+set seqram [get_registers {*|u_fx|CHORUS_left|u_line|*~porta_datain_reg* *|u_fx|CHORUS_left|u_line|*~PORT_A_DATA_IN_*}]
+set_multicycle_path -setup -end 16 -to $seqram
+set_multicycle_path -hold  -end 15 -to $seqram
 
 # ---- I/O --------------------------------------------------------------------------
 # Codec audio: BCLK/LRCLK/DACDAT are registered outputs, ADCDAT is sampled 8

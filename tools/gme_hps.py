@@ -20,7 +20,21 @@ The FPGA registers sit behind the HPS lightweight bridge: register n is the
     python gme_hps.py cab 3                      (load cabinet 3 into the idle bank and switch to it)
     python gme_hps.py cab off                    (cabinet effect off / on; also: effects=...+CAB)
     python gme_hps.py set   reverb_type=4 reverb_size=60000 reverb_damp=30   (custom reverb: size Q0.16, damp 0..255)
+    python gme_hps.py set   effects=DYN dyn=gate+comp gate_db=-45 comp_db=-20 ratio=4 makeup_db=3 attack_ms=2 release_ms=100
+    python gme_hps.py eq 6 -3 2                  (EQ: bass, mid, treble in dB, -12..+12; switches the EQ on)
+    python gme_hps.py eq off                     (EQ off / on again with the last setting: eq on)
     python gme_hps.py selftest                   (no hardware needed)
+
+Dynamics (step D5, enable bit 7 DYN): noise gate and compressor, first stage of the chain. Settings of `set`:
+dyn=none|gate|comp|gate+comp (DYN_CTRL bits), gate_db / comp_db = thresholds in dBFS (e.g. -45, -20; stored as
+Q8 log2 units, 1 unit = 0.0235 dB, signed), ratio = 1, 2, 4, 8 or inf (COMP_RATIO 0..4), attack_ms / release_ms
+(rounded to the nearest power-of-two number of samples, COMP_ATTACK / COMP_RELEASE 0..15; the raw registers
+gate_thresh, comp_thresh, comp_ratio, comp_attack, comp_release, comp_makeup are accepted as well), makeup_db
+= make-up gain in dB. `status` shows the gain reduction (DYN_GR, 0x2C) in dB.
+EQ (step D5, enable bit 8 EQ): `eq B M T` computes the coefficients of three biquads (low shelf 100 Hz, peaking
+mid 800 Hz Q 0.9, high shelf 3.5 kHz; tools/eq_coefs.py, must be next to this script or in ../tools), writes
+them through EQ_ADDR / EQ_DATA_LO / EQ_DATA_HI (16 words, the last is the scale word), applies them (EQ_APPLY:
+all at once at one sample boundary) and switches the EQ on.
 
 Reverb (step D4, Freeverb): reverb_type 0..3 = rooms very light / light / medium / heavy
 (size 0.70 / 0.80 / 0.88 / 0.94, damp 100 / 80 / 60 / 40), 4 = custom from reverb_size
@@ -61,13 +75,25 @@ REGS = {
     "cab_ctrl": 0x1B, "cab_addr": 0x1C, "cab_data_lo": 0x1D, "cab_data_hi": 0x1E,
     # step D4: reverb size (feedback, Q0.16) and damping (0..255), used with reverb_type = 4
     "reverb_size": 0x1F, "reverb_damp": 0x20,
+    # step D5: dynamics (signed thresholds / makeup in Q8 log2 units) and EQ coefficient port
+    "dyn_ctrl": 0x21, "gate_thresh": 0x22, "comp_thresh": 0x23, "comp_ratio": 0x24, "comp_attack": 0x25,
+    "comp_release": 0x26, "comp_makeup": 0x27,
+    "eq_addr": 0x28, "eq_data_lo": 0x29, "eq_data_hi": 0x2A, "eq_apply": 0x2B,
+    "dyn_gr": 0x2C,                      # read-only gain-reduction meter (Q8 log2 units, positive)
 }
 REVERB_ROOMS = ((45875, 100), (52429, 80), (57672, 60), (61604, 40))     # reverb_type 0..3
 CAB_TAPS = 2048
 CAB_BIT = 64
+DYN_BIT = 128
+EQ_BIT = 256
+KEEP_BITS = CAB_BIT | DYN_BIT | EQ_BIT      # presets leave these effects as they are
+Q8_PER_DB = 256 / 6.0206                    # Q8 log2 units per dB
 CAB_SETTLE = 0.02            # s: a bank switch (fade out 128 samples, fade in 128) takes 5.4 ms
 EFFECT_REGS = [k for k in sorted(REGS, key=REGS.get) if REGS[k] <= 0x0E]   # Python 2: dicts unordered
-EFFECT_BITS = {"OD": 1, "TREM": 2, "ECHO": 4, "DIST": 8, "CHORUS": 16, "REVERB": 32, "CAB": CAB_BIT}
+EFFECT_BITS = {"OD": 1, "TREM": 2, "ECHO": 4, "DIST": 8, "CHORUS": 16, "REVERB": 32, "CAB": CAB_BIT,
+               "DYN": DYN_BIT, "EQ": EQ_BIT}
+DYN_MODES = {"none": 0, "gate": 1, "comp": 2, "gate+comp": 3}
+COMP_RATIOS = {"1": 0, "2": 1, "4": 2, "8": 3, "inf": 4}
 # tremolo free mode (step D1): trem_wave = 8 + shape, rate in trem_rate (0.01 Hz)
 TREM_SHAPES = {"sine": 0, "triangle": 1, "saw": 2, "square": 3}
 
@@ -191,11 +217,43 @@ def cab_files(directory):
     return out
 
 
+def db_to_q8(db):
+    """dB -> signed Q8 log2 units (rounded), as used by the threshold and makeup registers."""
+    return int(round(float(db) * Q8_PER_DB))
+
+
+def ms_to_shift(ms):
+    """Attack / release time in ms -> k (time constant 2^k samples at 48 kHz), 0..15."""
+    samples = max(1.0, float(ms) * 48.0)
+    k = 0
+    while k < 15 and abs((1 << (k + 1)) - samples) < abs((1 << k) - samples):
+        k += 1
+    return k
+
+
 def parse_assignments(items):
     regs = {}
     for it in items:
         k, v = it.split("=", 1)
-        if k == "effects":
+        if k == "dyn":
+            if v not in DYN_MODES:
+                raise SystemExit("dyn: %s" % ", ".join(sorted(DYN_MODES)))
+            regs["dyn_ctrl"] = DYN_MODES[v]
+        elif k == "gate_db":
+            regs["gate_thresh"] = db_to_q8(v)
+        elif k == "comp_db":
+            regs["comp_thresh"] = db_to_q8(v)
+        elif k == "makeup_db":
+            regs["comp_makeup"] = db_to_q8(v)
+        elif k == "ratio":
+            if v not in COMP_RATIOS:
+                raise SystemExit("ratio: 1, 2, 4, 8 or inf")
+            regs["comp_ratio"] = COMP_RATIOS[v]
+        elif k == "attack_ms":
+            regs["comp_attack"] = ms_to_shift(v)
+        elif k == "release_ms":
+            regs["comp_release"] = ms_to_shift(v)
+        elif k == "effects":
             if v[:1].isdigit():
                 regs["effects_enable"] = num(v)
             else:
@@ -248,6 +306,69 @@ def cab_command(b, args, directory):
               "" if b.read(REGS["effects_enable"]) & CAB_BIT else "; the cabinet is off: cab on"))
 
 
+def load_eq_coefs():
+    """tools/eq_coefs.py (pure math, Python 2.7 / 3) from this script's directory or ../tools."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for d in (here, os.path.join(here, "..", "tools")):
+        if os.path.exists(os.path.join(d, "eq_coefs.py")):
+            if d not in sys.path:
+                sys.path.insert(0, d)
+            import eq_coefs
+            return eq_coefs
+    raise SystemExit("eq_coefs.py not found next to gme_hps.py (copy tools/eq_coefs.py to the board)")
+
+
+def eq_words(bass, mid, treble):
+    """The 16 words for the EQ write port: 15 signed coefficients (18-bit two's complement) and the scale word."""
+    ec = load_eq_coefs()
+    try:
+        ints, shifts, clipped = ec.coefficient_set_full(bass, mid, treble)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    return [ec.word18(v) for v in ints] + [ec.scale_word(shifts)]
+
+
+def eq_load(b, words):
+    """Write the 16 words through EQ_ADDR / DATA_LO / DATA_HI (the pointer auto-increments), then EQ_APPLY."""
+    b.write(REGS["eq_addr"], 0)
+    for w in words:
+        b.write(REGS["eq_data_lo"], w & 0xFFFF)
+        b.write(REGS["eq_data_hi"], (w >> 16) & 3)
+    b.write(REGS["eq_apply"], 1)
+
+
+def eq_command(b, args):
+    if b.read(REGS["version"]) < 0x0207:
+        raise SystemExit("the EQ needs VERSION 0x0207 or later")
+    en = b.read(REGS["effects_enable"])
+    if len(args) == 1 and args[0] in ("on", "off"):
+        b.write(REGS["effects_enable"], (en & ~EQ_BIT) | (EQ_BIT if args[0] == "on" else 0))
+    elif len(args) == 3:
+        gains = [float(a) for a in args]
+        if any(abs(g) > 12.0 for g in gains):
+            raise SystemExit("EQ gains are limited to -12 .. +12 dB")
+        eq_load(b, eq_words(*gains))
+        b.write(REGS["effects_enable"], en | EQ_BIT)
+        print("EQ bass %+g dB, mid %+g dB, treble %+g dB" % tuple(gains))
+    else:
+        raise SystemExit("eq BASS MID TREBLE (dB, -12..12) | eq on | eq off")
+
+
+class FakeBoard(object):
+    """Records register writes (selftest)."""
+
+    def __init__(self, regs=None):
+        self.regs = dict(regs or {})
+        self.log = []
+
+    def read(self, reg):
+        return self.regs.get(reg, 0)
+
+    def write(self, reg, value):
+        self.log.append((reg, value & 0xFFFF))
+        self.regs[reg] = value & 0xFFFF
+
+
 def selftest():
     r = parse_assignments(["effects=DIST+ECHO", "od_gain=4", "echo_time=0x3840"])
     assert r == {"effects_enable": 12, "od_gain": 4, "echo_time": 14400}, r
@@ -271,6 +392,31 @@ def selftest():
                                                   "reverb_size", "reverb_damp"}
     assert PRESETS["hall"]["reverb_type"] == 4 and REVERB_ROOMS[3] == (61604, 40)
     assert parse_assignments(["reverb_type=4", "reverb_size=60000", "reverb_damp=30"]) ==         {"reverb_type": 4, "reverb_size": 60000, "reverb_damp": 30}
+    # dynamics settings
+    r = parse_assignments(["dyn=gate+comp", "gate_db=-45", "comp_db=-20", "ratio=4", "makeup_db=3",
+                           "attack_ms=2", "release_ms=100"])
+    assert r == {"dyn_ctrl": 3, "gate_thresh": -1913, "comp_thresh": -850, "comp_ratio": 2, "comp_makeup": 128,
+                 "comp_attack": 6, "comp_release": 12}, r
+    assert parse_assignments(["ratio=inf", "effects=DYN+EQ"]) == {"comp_ratio": 4, "effects_enable": 384}
+    assert ms_to_shift(0.01) == 0 and ms_to_shift(1000) == 15 and ms_to_shift(0.34) == 4
+    assert (db_to_q8(-20) & 0xFFFF) == 0xFCAE and REGS["dyn_gr"] == 0x2C
+    # EQ: flat set = unity coefficients; 16 words through the write port, apply, enable
+    w = eq_words(0, 0, 0)
+    assert len(w) == 16 and w[0] == 65536 and w[5] == 65536 and w[10] == 65536 and w[15] == 0 and sum(w[1:5]) == 0
+    fb = FakeBoard({REGS["version"]: 0x0207, REGS["effects_enable"]: 0x0008})
+    eq_command(fb, ["6", "-3", "2"])
+    exp = eq_words(6, -3, 2)
+    assert fb.log[0] == (REGS["eq_addr"], 0) and len(fb.log) == 1 + 32 + 1 + 1
+    for i, wd in enumerate(exp):
+        assert fb.log[1 + 2 * i] == (REGS["eq_data_lo"], wd & 0xFFFF) and fb.log[2 + 2 * i] == (REGS["eq_data_hi"], wd >> 16)
+    assert fb.log[33] == (REGS["eq_apply"], 1) and fb.log[34] == (REGS["effects_enable"], 0x0108)
+    eq_command(fb, ["off"])
+    assert fb.regs[REGS["effects_enable"]] == 0x0008
+    try:
+        eq_command(fb, ["13", "0", "0"])
+        raise AssertionError("eq accepted 13 dB")
+    except SystemExit:
+        pass
     print("selftest OK")
 
 
@@ -281,7 +427,7 @@ def main():
         "GME_CAB_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "cab")),
         help="directory with the cabNN.coef files (default: ./cab next to this script)")
     ap.add_argument("cmd", choices=["status", "read", "write", "set", "preset", "codec", "dump",
-                                    "meter", "cab", "selftest"])
+                                    "meter", "cab", "eq", "selftest"])
     ap.add_argument("args", nargs="*")
     a = ap.parse_args()
     if a.cmd == "selftest":
@@ -295,6 +441,8 @@ def main():
         print("effects %s, mute %s, level in %d, out %d" % (
             effects_text(b.read(REGS["effects_enable"])), "on" if b.read(REGS["control"]) & 2 else "off",
             b.read(REGS["level_in"]), b.read(REGS["level_out"])))
+        if b.read(REGS["version"]) >= 0x0207:
+            print("dynamics gain reduction %.1f dB" % (b.read(REGS["dyn_gr"]) / Q8_PER_DB))
     elif a.cmd == "read":
         print("0x%04X" % b.read(num(a.args[0])))
     elif a.cmd == "write":
@@ -304,13 +452,15 @@ def main():
             b.write(REGS[k], v)
     elif a.cmd == "cab":
         cab_command(b, a.args, a.cab_dir)
+    elif a.cmd == "eq":
+        eq_command(b, a.args)
     elif a.cmd == "preset":
         if not a.args or a.args[0] not in PRESETS:
             raise SystemExit("presets: %s" % ", ".join(PRESETS))
         keys = EFFECT_REGS + ["trem_rate", "mod_base", "mod_fb", "mod_shape", "reverb_size", "reverb_damp"]
         regs = dict((k, 0) for k in keys)
         regs.update(PRESETS[a.args[0]])
-        regs["effects_enable"] |= b.read(REGS["effects_enable"]) & CAB_BIT      # the cabinet stays as it is
+        regs["effects_enable"] |= b.read(REGS["effects_enable"]) & KEEP_BITS    # cabinet, dynamics, EQ stay as they are
         for k in keys:
             b.write(REGS[k], regs[k])
         print("preset '%s' loaded" % a.args[0])

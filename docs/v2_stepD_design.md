@@ -1,6 +1,6 @@
 # v2 step D: better DSP blocks
 
-**Status:** D1 … D4 (generated LFO, modulated delay, cabinet FIR, Freeverb reverb; integrated in the chain, timing met) implemented and verified in simulation; D5 blocks in development; board test at the end of step D.
+**Status:** D1 … D5 (generated LFO, modulated delay, cabinet FIR, Freeverb reverb, dynamics, EQ; integrated in the chain, timing met) implemented and verified in simulation; board test at the end of step D.
 
 ## Overview
 
@@ -375,3 +375,64 @@ room for D5.
 Full regression (`sim/run_all.sh`): **43 passed** in 31.5 min (the 27 of D3 plus the 16 `test_reverbfv` simulations).
 `test_reverb_chain_model` runs before `test_reverb` in its simulation (the model starts with empty lines) and
 `test_system::test_reverb_regs` is the last test of its file (it would leave audio in the cabinet history).
+
+## D5: dynamics and EQ (integrated 2026-10-26)
+
+Blocks (verified on their own before the integration, headers have the details): `dynamics.vhd` (gate + compressor, one level
+detector, log2 / exp2 tables, one 24 x 24 multiplier, `dynamics_model.py`), `eq3.vhd` + `biquad.vhd` (low shelf, peaking mid, high
+shelf; Direct Form I, 48-bit accumulator, error feedback, `eq3_model.py`, coefficients from `tools/eq_coefs.py`).
+
+### Integration
+
+Files: `fx_bypass.vhd` (zero-latency crossfade, generic), `dyn_stage.vhd`, `eq_stage.vhd` (block + crossfade, instances `DYN_left` /
+`EQ_left` in `FX_chain`). `cab_stage.vhd` is unchanged (it has its own bank logic; `fx_bypass` repeats its arithmetic).
+
+* **Chain:** input → **Dynamics** → Overdrive → Distortion → Cabinet → **EQ** → Chorus → Tremolo → Echo → Reverb. Enable bit 7 = DYN,
+  bit 8 = EQ.
+* **Zero-latency bypass:** `dout = din + floor((wet − din)·g / 256)`, combinational from `din`, `g` = 0 … 256 moving once per
+  `sample_tick` (256 samples). Off: the stage output is its input, all 31 older `test_refv2` references stay bit-exact. On: +1 frame.
+* **Strobes** (deterministic in simulation, 16 clocks per frame, and on the board, 1024):
+  * Dynamics: block strobe = `sample_tick` delayed by one clock (the chain input is stable); result registered 10 clocks later = 11
+    clocks after `sample_tick`; the overdrive takes the stage output at the NEXT `sample_tick` → +1 frame when on.
+  * EQ: block strobe = `half_tick`; its input (cabinet stage output) is stable from `sample_tick` + 1; result 7 clocks later; the
+    modulated delay samples at the next `half_tick` → takes the previous frame's result, +1 frame when on.
+  * Both blocks run on every sample (`enable` = 1), also while the stage is off, so envelope / filter state is warm and a fade-in has no
+    start-up transient; `DYN_GR` is masked to 0 while the stage is off.
+  * The consumers of a stage output only sample at their strobe, so the output changing in between does not matter; this is checked by
+    `test_timing_invariance` (below), which fails when a strobe is moved (negative control: dynamics strobe = `half_tick`, 395 of 400 frames differ).
+* **Registers:** 0x21 DYN_CTRL (bit0 gate, bit1 compressor), 0x22 GATE_THRESH, 0x23 COMP_THRESH, 0x24 COMP_RATIO (0 … 4), 0x25 COMP_ATTACK,
+  0x26 COMP_RELEASE (k 0 … 15), 0x27 COMP_MAKEUP, 0x28 EQ_ADDR, 0x29 EQ_DATA_LO, 0x2A EQ_DATA_HI (writing it stores {HI, LO} at EQ_ADDR and
+  increments it), 0x2B EQ_APPLY (any write = apply pulse), 0x2C DYN_GR (read-only live meter; `reg_file` returns the `dyn_gr` input
+  and ignores writes). The EQ pointer and write port live in `gme_core` next to the cabinet's, fed by the same write event
+  (`ext_we`). VERSION 0x0207. Thresholds, ratio and make-up are not smoothed (the gain glide inside the block does that); EQ sets change
+  atomically at `apply`.
+* **Change to `dynamics.vhd`:** the `gain_reduction` meter is now computed one clock later (stage E5, from the registers `cs` / `ga` that E4
+  has just written, instead of from the E4 results in the same clock). Values and the audio path are unchanged (the 7 unit simulations are
+  still bit-exact); in the first compile the meter was the only violating path (−3.9 ns).
+* **Constraints (`top_v2.sdc`):** `*|u_fx|DYN_left|u_dyn|*` and `*|u_fx|EQ_left|u_eq|*` added to `seqblk`. They are NOT added to `seqout`:
+  their `data_out` loads the last pipeline stage's result one clock after it (a real 1-clock path). New: the data inputs of the mod_delay
+  line RAM (`CHORUS_left|u_line|*~porta_datain_reg*`, `*~PORT_A_DATA_IN_*`) get the 16-cycle multicycle like `seqout`: the RAM is written only
+  on `half_tick` and the cone behind it (distortion, cabinet and EQ crossfade multipliers in series) settles hundreds of clocks earlier; without it
+  the three series multipliers were timed as one clock (−4.4 ns).
+* **Board tool:** `gme_hps.py set dyn=gate+comp gate_db=… comp_db=… ratio=… makeup_db=… attack_ms=… release_ms=…`, `eq BASS MID TREBLE`
+  (dB, −12 … +12, coefficients from `eq_coefs.py`, written as 16 words + apply), `eq off | on`, `status` shows the gain reduction;
+  presets leave the DYN / EQ bits alone. `gme_hps.py selftest` covers the conversions and the register write sequence (Python 3 here; no
+  Python 2.7 interpreter was available, the code uses only 2.7-compatible syntax).
+
+### Verification
+
+| Test | Result |
+|------|--------|
+| `test_dynamics` (7 simulations), `test_eq3` (10 simulations: 5 testcases x 16 / 24 bit) | 17 passed, unit blocks unchanged (bit-exact to the models) |
+| `test_fx_chain::test_dynamics_chain`, `test_eq_chain` (16 and 24 bit chain) | off = exact bypass at the latency of the chain without the stage (also after use, with the block running); on = `dynamics_model` fed with the chain input / `eq3_model` fed with the stage input (`cab_out`), bit-exact, +1 frame; `DYN_GR` equals the model's meter in every frame; EQ sets through the write port, half-written set not used |
+| `test_dyn_eq_xfade` (`XFADE`, 16 and 24 bit) | enabling / disabling gives no step above the steady states', exact bypass after the fade-out |
+| `test_timing_invariance` | all effects on (dynamics, overdrive, distortion, cabinet, EQ, mod, tremolo, echo, reverb; 400 frames, dynamics and EQ switched off at 120 and on at 250): identical output at 16 and 1024 clocks per frame. Negative control (dynamics strobe moved to `half_tick`): fails, 395 of 400 frames differ |
+| `test_avmm::test_dynamics_eq_regs` (+ updated `test_write_read_all`) | 0x21 … 0x2B read / write with write events, 0x2C live and read-only, VERSION 0x0207 |
+| `test_system_dyneq` (real 1024-clock frames, 16-tap cabinet) | mid +6 dB set written through 0x28 … 0x2B: 800 Hz sine +6.00 dB (expected 6.00); compressor (−30 dB, 4:1) on a −6 dBFS sine: −18.5 dB, `DYN_GR` = 18.2 dB; off again: 0.000 dB, `DYN_GR` 0 |
+| `test_refv2` | 35 presets: the 31 older ones bit-exact (not re-recorded; `git status` shows only 4 new `.npy`), new `dyn_gate`, `dyn_comp`, `eq_3band`, `combo_d5` (everything on incl. cabinet) recorded with `GME_REF_ONLY`; check mode: all bit-exact |
+
+Quartus Prime Lite 18.1: 0 errors, critical warnings only 169085 / 174073 (HPS pins). **4,511 ALMs (14 %), 4,701 registers, 266 M10K (67 %),
+69 DSP blocks (79 %).** `sys_clk`: setup slack +2.347 ns worst (slow 0 °C; 85 °C +2.527), hold +0.069 ns (slow 0 °C; fast 0 °C +0.056 is the
+smallest over all corners); the HPS SDRAM clock is met (setup +1.73, hold +0.08 … +0.16).
+
+Full regression (`sim/run_all.sh`): **63 passed** in 41 min (the 43 of D4 plus 17 unit simulations of dynamics / EQ, `test_dyn_eq_xfade`, `test_timing_invariance`; `test_system_dyneq`, `test_refv2` with 35 presets).
