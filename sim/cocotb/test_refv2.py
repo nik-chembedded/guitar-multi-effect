@@ -3,12 +3,16 @@ test_refv2.py - v2 reference regression of the 24-bit effect chain.
 
 GME_REF_MODE=record : run every preset and save the outputs to ref_v2/<preset>.npy
 GME_REF_MODE=check  : (default) run the same presets and require identical output
+GME_REF_ONLY=a,b,.. : with GME_REF_MODE=record, write only these presets' files; every other
+                      preset is still run and checked bit-exact in the same simulation (so a
+                      step that changes some effects on purpose can prove the rest unchanged)
 
 The v2 references replace the v1 recordings (step D2, 2026-10-25): they were
 recorded from the chain after every block in it had been verified on its own
 (bit-exact to its Python model, and the unchanged v1 effects bit-exact to the v1
 recordings). A step that changes an effect on purpose re-records only the
-affected presets, after that effect is verified, and says so in its commit.
+affected presets (GME_REF_ONLY), after that effect is verified, and says so in its commit.
+Step D4 (Freeverb) re-recorded reverb_t0..t3, combo_all and combo_change.
 
 All presets run in one simulation from power-up, in a fixed order, with
 deterministic 24-bit stimuli (the state carried between presets, delay lines and
@@ -31,6 +35,7 @@ from fxdriver import CHORUS, DIST, ECHO, OD, REVERB, TREM, FxChain, find_latency
 
 REF_DIR = Path(__file__).resolve().parent / "ref_v2"
 MODE = os.environ.get("GME_REF_MODE", "check")
+ONLY = {n for n in os.environ.get("GME_REF_ONLY", "").split(",") if n}
 NONE = 1 << 30                    # marker for X/U output samples
 IP = Path(__file__).resolve().parents[2] / "fpga" / "ip"
 
@@ -90,6 +95,9 @@ async def test_presets(dut):
     assert fx.dw == 24
     await fx.start()
     REF_DIR.mkdir(exist_ok=True)
+    unknown = ONLY - set(PRESETS)
+    assert not unknown, "GME_REF_ONLY names unknown presets: %s" % sorted(unknown)
+    assert MODE == "record" or not ONLY, "GME_REF_ONLY needs GME_REF_MODE=record"
     failures = []
     for i, (name, (regs, change)) in enumerate(PRESETS.items()):
         fx.set(**{**ZERO, **regs})
@@ -100,7 +108,7 @@ async def test_presets(dut):
         y = await fx.run(stimulus(200 + i), on_frame=on_frame, raw=True)
         y = np.array([NONE if v is None else v for v in y], dtype=np.int32)
         path = REF_DIR / (name + ".npy")
-        if MODE == "record":
+        if MODE == "record" and (not ONLY or name in ONLY):
             np.save(path, y)
             dut._log.info("recorded %-14s peak %d", name, int(np.abs(y[y != NONE]).max()))
             continue
@@ -113,6 +121,9 @@ async def test_presets(dut):
         else:
             dut._log.info("%-14s bit-exact (%d frames)", name, len(y))
     assert not failures, "%d presets differ from the v2 reference" % len(failures)
+    if ONLY:
+        dut._log.info("recorded %d presets, the other %d are bit-exact to the existing references",
+                      len(ONLY), len(PRESETS) - len(ONLY))
 
 
 def rand24(n, seed):

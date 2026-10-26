@@ -23,7 +23,7 @@ entity gme_core is
     XFADE          : boolean  := true;             -- click-free effect on/off
     CAB_TAPS       : positive := 2048;             -- cabinet FIR length (D3)
     CAB_INIT       : string   := "cab_default.mif"; -- its power-up coefficients
-    VERSION        : std_logic_vector(15 downto 0) := x"0205"
+    VERSION        : std_logic_vector(15 downto 0) := x"0206"
   );
   port (
     clk        : in  std_logic;
@@ -67,6 +67,11 @@ architecture rtl of gme_core is
   signal s_od_drive, s_trem_depth, s_echo_level, s_echo_repeat, s_dist_mix,
          s_chorus_level, s_reverb_mix, s_trem_rate, s_chorus_depth, s_chorus_rate,
          s_mod_base, s_mod_fb, s_echo_time : std_logic_vector(15 downto 0);
+  -- reverb (D4): size / damp from the room preset (REVERB_TYPE 0..3) or the custom
+  -- registers 0x1F / 0x20 (type 4; 5..15 act as 4), before and after smoothing
+  signal rev_size, rev_damp, s_rev_size, s_rev_damp : std_logic_vector(15 downto 0);
+  signal rev_t                  : natural range 0 to 15;
+  signal ext_rsize, ext_rdamp   : std_logic_vector(15 downto 0);   -- registers 0x1F, 0x20
   signal fb_ofs, s_fb_ofs       : std_logic_vector(15 downto 0);            -- feedback, offset binary
   signal s_echo_frac            : std_logic_vector(7 downto 0);
 
@@ -76,6 +81,26 @@ architecture rtl of gme_core is
     return e(16 * (r - 16#16#) + 15 downto 16 * (r - 16#16#));
   end function;
   signal codec_init, mute       : std_logic;
+
+  -- room presets: size Q0.16 (feedback), damp 0..255 (docs/register_map.md, REVERB_TYPE)
+  function room_size(t : natural) return natural is
+  begin
+    case t is
+      when 0 => return 45875;       -- very light  0.70
+      when 1 => return 52429;       -- light       0.80
+      when 2 => return 57672;       -- medium      0.88
+      when others => return 61604;  -- heavy       0.94
+    end case;
+  end function;
+  function room_damp(t : natural) return natural is
+  begin
+    case t is
+      when 0 => return 100;
+      when 1 => return 80;
+      when 2 => return 60;
+      when others => return 40;
+    end case;
+  end function;
 
   -- cabinet (D3): CAB_ADDR pointer + coefficient write port; CAB_DATA_HI completes a write
   signal ext_we                 : std_logic;
@@ -137,7 +162,7 @@ begin
       chorus_rate => s_chorus_rate, chorus_level => s_chorus_level, chorus_depth => s_chorus_depth,
       mod_base => s_mod_base, mod_fb => s_mod_fb, mod_shape => mod_shape,
       dist_mix => s_dist_mix, dist_type => dist_type,
-      reverb_type => reverb_type, reverb_mix => s_reverb_mix,
+      reverb_size => s_rev_size, reverb_damp => s_rev_damp, reverb_mix => s_reverb_mix,
       data_in_left  => rx_left,
       data_in_right => rx_right,
       data_out_left => fx_out, data_out_right => open);
@@ -166,13 +191,21 @@ begin
     end if;
   end process;
 
+  rev_t    <= to_integer(unsigned(reverb_type(3 downto 0)));
+  rev_size <= std_logic_vector(to_unsigned(room_size(rev_t), 16)) when rev_t < 4 else ext_rsize;
+  rev_damp <= std_logic_vector(to_unsigned(room_damp(rev_t), 16)) when rev_t < 4
+              else x"00" & ext_rdamp(7 downto 0);
+  ext_rsize <= ext_reg(ext, 16#1F#);
+  ext_rdamp <= ext_reg(ext, 16#20#);
+
   trem_rate <= ext_reg(ext, 16#16#);
   mod_base  <= ext_reg(ext, 16#18#);
   mod_fb    <= ext_reg(ext, 16#19#);
   mod_shape <= ext_reg(ext, 16#1A#);
 
   -- parameter smoothing: levels, depths, mixes, drive, LFO rates, the modulated
-  -- delay's base / depth / feedback and the echo time (with fraction: tape-style
+  -- delay's base / depth / feedback, the reverb size and damping (room preset or custom,
+-- D4) and the echo time (with fraction: tape-style
   -- glide, step D2). Not smoothed: gain (integer factor), selectors, enables
   -- (crossfaded in FX_chain). The signed feedback is smoothed in offset binary.
   fb_ofs   <= (not mod_fb(15)) & mod_fb(14 downto 0);
@@ -185,6 +218,8 @@ begin
     u_sm_dmix   : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => dist_mix,     value => s_dist_mix);
     u_sm_clevel : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => chorus_level, value => s_chorus_level);
     u_sm_rmix   : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => reverb_mix,   value => s_reverb_mix);
+    u_sm_rsize  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => rev_size,     value => s_rev_size);
+    u_sm_rdamp  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => rev_damp,     value => s_rev_damp);
     u_sm_trate  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => trem_rate,    value => s_trem_rate);
     u_sm_cdepth : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => chorus_depth, value => s_chorus_depth);
     u_sm_crate  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => chorus_rate,  value => s_chorus_rate);
@@ -199,6 +234,7 @@ begin
     s_reverb_mix <= reverb_mix;   s_trem_rate <= trem_rate;     s_chorus_depth <= chorus_depth;
     s_chorus_rate <= chorus_rate; s_mod_base <= mod_base;       s_fb_ofs <= fb_ofs;
     s_echo_time <= echo_time;     s_echo_frac <= (others => '0');
+    s_rev_size <= rev_size;       s_rev_damp <= rev_damp;
   end generate;
 
   -- mono effects: processed left channel to both outputs

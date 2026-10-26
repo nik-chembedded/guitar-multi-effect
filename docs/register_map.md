@@ -37,9 +37,9 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 10  | Mod Mix         | W   | `[7:0]`   | Chorus / flanger / vibrato mix | Dry/wet 0 … 255 (step D2; v1: chorus level Q0.16). Smoothed. |
 | 11  | Mod Depth       | W   | `[10:0]`  | Modulation depth               | Delay swing ± depth samples around MOD_BASE (step D2). Smoothed. |
 | 12  | Mod Rate        | W   | `[15:0]`  | Modulation LFO rate            | 0.01 Hz (step D2; v1: clock divider). Smoothed. |
-| 13  | Reverb Mix      | W   | `[7:0]`   | Reverb Mixed Signal Value     | Dry/wet mix, 0 = dry … 255 = wet. |
-| 14  | Reverb Type     | W   | `[3:0]`   | Reverb Type Selection         | Room preset, see [(4)](#4-reverb-type-selection). |
-| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0205` = step D3 (cabinet FIR, CAB registers); `0x0204` = step D2 (modulated delay, fractional echo); `0x0203` = D1 (generated LFO); `0x0202` = step C (24-bit); `0x0201` = HPS control, 16-bit |
+| 13  | Reverb Mix      | W   | `[7:0]`   | Reverb Mixed Signal Value     | Dry/wet mix, 0 = dry (exactly the input) … 255 = wet. Smoothed. |
+| 14  | Reverb Type     | W   | `[3:0]`   | Reverb Type Selection         | Room preset 0 … 3, or 4 = custom size / damp (registers 0x1F / 0x20), see [(4)](#4-reverb-type-selection). Changes glide (size and damp are smoothed). |
+| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0206` = step D4 (Freeverb reverb, REVERB_SIZE / REVERB_DAMP); `0x0205` = step D3 (cabinet FIR, CAB registers); `0x0204` = step D2 (modulated delay, fractional echo); `0x0203` = D1 (generated LFO); `0x0202` = step C (24-bit); `0x0201` = HPS control, 16-bit |
 | 0x11 | STATUS         | R   | `[2:0]`   | | bit0 codec init done, bit1 codec NAK (init), bit2 PLL locked |
 | 0x12 | LEVEL_IN       | R   | `[15:0]`  | | input peak level (left, 16-bit magnitude, decays ~1/256 per sample) |
 | 0x13 | LEVEL_OUT      | R   | `[15:0]`  | | output peak level |
@@ -53,6 +53,8 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 0x1C | CAB_ADDR       | R/W | `[11:0]`  | | cabinet coefficient write pointer: bit11 = bank, `[10:0]` = tap; writing sets the pointer (reads back the last value written, not the auto-incremented pointer) |
 | 0x1D | CAB_DATA_LO    | R/W | `[15:0]`  | | coefficient bits 15..0 (kept until CAB_DATA_HI is written) |
 | 0x1E | CAB_DATA_HI    | R/W | `[1:0]`   | | coefficient bits 17..16; **writing it stores {HI, LO} at the pointer and increments the tap address** |
+| 0x1F | REVERB_SIZE    | R/W | `[15:0]`  | | reverb size = feedback of the 8 comb filters, unsigned Q0.16 (65535 ≈ 1.0; limited to 0.98 = 64225 inside), used when REVERB_TYPE = 4; smoothed |
+| 0x20 | REVERB_DAMP    | R/W | `[7:0]`   | | reverb damping 0 … 255 (0 = bright tail, higher = darker), used when REVERB_TYPE = 4; smoothed |
 | 0x16 … 0x2F | (extension) | R/W | | | registers of step D; unused ones read back what was written |
 
 ## Field encodings
@@ -108,13 +110,22 @@ Since step D1 these come from the generated LFO (16-bit, phase-continuous) inste
 
 ### (4) Reverb Type Selection
 
-| Value | Type              |
-|------:|-------------------|
-| 0     | Very light reverb |
-| 1     | Light reverb      |
-| 2     | Medium reverb     |
-| 3     | Heavy reverb      |
-| other | (= Heavy)         |
+Freeverb-style reverb (step D4): 8 parallel low-pass-feedback comb filters + 4 series all-pass filters.
+`size` is the comb feedback (Q0.16), `damp` the damping of the low-pass in the feedback loop (0 … 255).
+Types 0 … 3 are room presets; the decay time and the brightness of the tail follow from the two values.
+
+| Value | Type              | size (Q0.16)    | damp |
+|------:|-------------------|-----------------|-----:|
+| 0     | Very light reverb | 0.70 (45875)    | 100  |
+| 1     | Light reverb      | 0.80 (52429)    | 80   |
+| 2     | Medium reverb     | 0.88 (57672)    | 60   |
+| 3     | Heavy reverb      | 0.94 (61604)    | 40   |
+| 4 … 15 | Custom           | REVERB_SIZE (0x1F) | REVERB_DAMP (0x20) `[7:0]` |
+
+The mapping is in `gme_core`; `FX_chain` and the reverb block take size and damp. The block limits
+the size to 0.98 (stable tail). Switching the type, size or damp glides over about 30 ms
+(`param_smooth`), the reverb on / off crossfades like every other effect. Up to VERSION 0x0205 the old
+Schroeder reverb used type 0 … 3 and treated other values as 3; since 0x0206 types 5 … 15 act like 4.
 
 ### (5) CODEC register
 

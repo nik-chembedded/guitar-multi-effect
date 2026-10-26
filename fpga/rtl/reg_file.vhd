@@ -22,7 +22,7 @@ use ieee.numeric_std.all;
 
 entity reg_file is
   generic (
-    VERSION : std_logic_vector(15 downto 0) := x"0205"
+    VERSION : std_logic_vector(15 downto 0) := x"0206"
   );
   port (
     clk        : in  std_logic;

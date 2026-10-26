@@ -15,6 +15,7 @@ from pathlib import Path
 import cocotb
 
 import golden
+from reverbfv_model import ReverbFV
 from fxdriver import CAB, CHORUS, DIST, ECHO, OD, REVERB, TREM, FxChain, find_latency
 
 N = 2000
@@ -189,18 +190,61 @@ async def test_echo_frac(dut):
 
 
 @cocotb.test()
-async def test_reverb(dut):
-    """Heavy reverb: no wrap-around, tail after a tone burst that decays."""
+async def test_reverb_chain_model(dut):
+    """(Runs before test_reverb: the model starts with empty lines, so does the chain.)
+    FX_chain reverb output equals the block's Python model (reverbfv_model) fed with the reverb
+    input of the chain (echo_out) - bit-exact, with room presets and size / damp / mix changes."""
     fx = FxChain(dut)
-    await fx.start(effects_enable=REVERB, reverb_type=3, reverb_mix=128)
-    x = sine(2400, amp=12000) + [0] * 2400
-    y = [s or 0 for s in await fx.run(x)]
-    early = sum(abs(v) for v in y[2600:3300])
-    late = sum(abs(v) for v in y[4000:4700])
-    dut._log.info("reverb tail energy early %d, late %d", early, late)
-    assert early > 0, "no reverb tail"
-    assert late < early, "tail does not decay"
-    assert_no_wrap("reverb", y)
+    await fx.start(effects_enable=REVERB, reverb_mix=200)
+    model = ReverbFV(dw=fx.dw)
+    fx.probe = []
+    rnd = random.Random(5)
+    m = 12000 << fx.shift
+    n_total = 0
+    for size, damp, mix, enable in ((45875, 100, 200, 1), (61604, 40, 128, 1), (50000, 255, 255, 1),
+                                    (65535, 0, 90, 1), (52429, 80, 0, 1), (57672, 60, 160, 0),
+                                    (57672, 60, 160, 1)):
+        fx.set(reverb_size=size, reverb_damp=damp, reverb_mix=mix,
+               effects_enable=REVERB if enable else 0)
+        x = [rnd.randint(-m, m) if n < 600 else (m if n % 200 == 0 else 0) for n in range(1500)]
+        fx.probe.clear()
+        y = await fx.run(x, raw=True)
+        for n, (xin, out) in enumerate(zip(fx.probe, y)):
+            exp = model.step(xin, enable, size, damp, mix)
+            assert out == exp, "size %d damp %d mix %d en %d frame %d: chain %s, model %d" % (
+                size, damp, mix, enable, n, out, exp)
+        n_total += len(y)
+    dut._log.info("FX_chain reverb == reverbfv_model for %d frames (7 settings, incl. clamp and bypass)", n_total)
+
+
+def tone_burst_response(y, burst):
+    """Energy (sum |y|) of the reverb tail in three windows after the burst."""
+    e = lambda a, b: sum(abs(v) for v in y[burst + a:burst + b])
+    return e(100, 700), e(2500, 3500), e(5000, 6000)
+
+
+@cocotb.test()
+async def test_reverb(dut):
+    """Freeverb: no wrap-around, a tail that decays after a noise burst, and the room presets
+    0 (very light) .. 3 (heavy) ordered by decay length (rate of tail decay, slower = longer)."""
+    fx = FxChain(dut)
+    await fx.start(effects_enable=REVERB, reverb_mix=128)
+    burst = 1000
+    x = prbs(burst, seed=3, amp=12000) + [0] * 6000                 # noise burst: no coherent tone interference
+    ratios = []
+    for t in range(4):
+        fx.set(reverb_size=0, reverb_damp=0)                    # flush the lines (no feedback)
+        await fx.run([0] * 2400)
+        fx.set(reverb_type=t)
+        y = [s or 0 for s in await fx.run(x)]
+        early, mid, late = tone_burst_response(y, burst)
+        dut._log.info("reverb room %d: tail energy early %d, mid %d, late %d (late/mid %.3f)",
+                      t, early, mid, late, late / mid)
+        assert early > 0, "room %d: no reverb tail" % t
+        assert late < mid, "room %d: tail does not decay" % t
+        assert_no_wrap("reverb room %d" % t, y)
+        ratios.append(late / mid)
+    assert ratios == sorted(ratios) and len(set(ratios)) == 4,         "rooms not ordered by decay length: late/mid energy %s" % ratios
 
 
 # ---------------------------------------------------------------------------

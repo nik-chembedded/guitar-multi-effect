@@ -26,8 +26,8 @@ IP_MODELS = [MODELS / "sim_rom.vhd", MODELS / "sim_dpram.vhd", MODELS / "fx_dpra
              MODELS / "cab_coef_ram.vhd", *sorted((MODELS / "ip").glob("*.vhd"))]
 FX_RTL = [RTL / f for f in ("fx_pkg.vhd", "fx_xfade.vhd", "lfo_sine_pkg.vhd", "nco_lfo.vhd",
                             "overdrive.vhd", "distortion.vhd", "mod_delay.vhd",
-                            "tremolo_v2.vhd", "echo.vhd", "comb_filter.vhd",
-                            "allpass_filter.vhd", "reverbe.vhd", "cab_fir.vhd", "cab_stage.vhd",
+                            "tremolo_v2.vhd", "echo.vhd", "fv_comb.vhd",
+                            "fv_allpass.vhd", "reverb_fv.vhd", "cab_fir.vhd", "cab_stage.vhd",
                             "FX_chain.vhd")]
 # chain-level simulations use 16-clock frames: a 16-tap cabinet (2048 taps need 519 clocks per sample)
 CAB16 = {"CAB_TAPS": 16, "CAB_INIT": "cab_test16.mif"}
@@ -144,6 +144,21 @@ def test_cabfir_full():
         extra_env={"GME_DW": "24", "GME_TAPS": "2048", "GME_LANES": "4"}, tag="_full")
 
 
+REVERB_TESTS = ["test_bitexact", "test_mix0_and_bypass", "test_decay", "test_size", "test_damp",
+                "test_overload", "test_level", "test_hw_timing"]
+
+
+@pytest.mark.parametrize("dw", [16, 24])
+@pytest.mark.parametrize("testcase", REVERB_TESTS)
+def test_reverbfv(dw, testcase):
+    """Freeverb reverb (v2 step D4) bit-exact to its model + behaviour checks, 16 and 24 bit.
+    The block has no reset: every testcase is its own simulation."""
+    run("reverb_fv", "test_reverbfv", [MODELS / "sim_dpram.vhd", MODELS / "fx_dpram.vhd", RTL / "fx_pkg.vhd",
+                                       RTL / "fv_comb.vhd", RTL / "fv_allpass.vhd", RTL / "reverb_fv.vhd"],
+        testcase=testcase, parameters={"DW": dw}, extra_env={"GME_DW": str(dw)},
+        tag="_rv%d_%s" % (dw, testcase))
+
+
 CTRL_RTL = [RTL / f for f in ("reg_file.vhd", "ctrl_avmm.vhd")]
 
 
@@ -170,10 +185,11 @@ def test_system():
 
 
 def test_refv2():
-    """24-bit chain bit-exact to the v2 references (GME_REF_MODE=record to re-record),
+    """24-bit chain bit-exact to the v2 references (GME_REF_MODE=record to re-record; with GME_REF_ONLY=a,b only those presets),
     plus overdrive / distortion bit-exact to golden.py with full 24-bit input."""
     run("fx_chain", "test_refv2", IP_MODELS + FX_RTL, parameters={"DW": 24},
-        extra_env={"GME_DW": "24", "GME_REF_MODE": os.environ.get("GME_REF_MODE", "check")},
+        extra_env={"GME_DW": "24", "GME_REF_MODE": os.environ.get("GME_REF_MODE", "check"),
+                   "GME_REF_ONLY": os.environ.get("GME_REF_ONLY", "")},
         tag="_refv2")
 
 

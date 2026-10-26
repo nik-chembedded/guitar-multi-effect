@@ -19,7 +19,12 @@ The FPGA registers sit behind the HPS lightweight bridge: register n is the
     python gme_hps.py cab list                   (cabinets in the cab directory)
     python gme_hps.py cab 3                      (load cabinet 3 into the idle bank and switch to it)
     python gme_hps.py cab off                    (cabinet effect off / on; also: effects=...+CAB)
+    python gme_hps.py set   reverb_type=4 reverb_size=60000 reverb_damp=30   (custom reverb: size Q0.16, damp 0..255)
     python gme_hps.py selftest                   (no hardware needed)
+
+Reverb (step D4, Freeverb): reverb_type 0..3 = rooms very light / light / medium / heavy
+(size 0.70 / 0.80 / 0.88 / 0.94, damp 100 / 80 / 60 / 40), 4 = custom from reverb_size
+(Q0.16, 65535 = 1.0, limited to 0.98 inside) and reverb_damp (0..255, higher = darker tail).
 
 Cabinet files (step D3): built on the PC with  python3 tools/cab_coefs.py --build  (ir/build/cabNN.coef,
 text: name, shift, 2048 signed integers), copied to the board (scp ir/build/*.coef root@board:cab/) and
@@ -54,7 +59,10 @@ REGS = {
     # cab_addr: bit 11 bank, 10:0 tap (write pointer); cab_data_lo/hi: coefficient bits 15:0 / 17:16
     # (writing hi performs the write and increments the pointer)
     "cab_ctrl": 0x1B, "cab_addr": 0x1C, "cab_data_lo": 0x1D, "cab_data_hi": 0x1E,
+    # step D4: reverb size (feedback, Q0.16) and damping (0..255), used with reverb_type = 4
+    "reverb_size": 0x1F, "reverb_damp": 0x20,
 }
+REVERB_ROOMS = ((45875, 100), (52429, 80), (57672, 60), (61604, 40))     # reverb_type 0..3
 CAB_TAPS = 2048
 CAB_BIT = 64
 CAB_SETTLE = 0.02            # s: a bank switch (fade out 128 samples, fade in 128) takes 5.4 ms
@@ -79,6 +87,8 @@ PRESETS = {
                     chorus_rate=30, mod_base=96, mod_fb=26000, mod_shape=1),
     "vibrato": dict(effects_enable=EFFECT_BITS["CHORUS"], chorus_level=255, chorus_depth=100,
                     chorus_rate=600, mod_base=240),
+    "hall":   dict(effects_enable=EFFECT_BITS["REVERB"], reverb_type=4, reverb_size=60500,
+                   reverb_damp=30, reverb_mix=110),
     "trem":   dict(effects_enable=EFFECT_BITS["TREM"], trem_wave=0, trem_depth=200),
     "pulse":  dict(effects_enable=EFFECT_BITS["TREM"], trem_wave=8 + TREM_SHAPES["square"],
                    trem_rate=650, trem_depth=180),
@@ -257,7 +267,10 @@ def selftest():
     assert ((0x02 & 0x7F) << 9) | 0x079 == 0x0479                 # CODEC word for R2 = 0x079
     assert parse_assignments(["trem_shape=square", "trem_hz=6.5"]) == {"trem_wave": 11, "trem_rate": 650}
     for p in PRESETS.values():
-        assert set(p) <= set(EFFECT_REGS) | {"trem_rate", "mod_base", "mod_fb", "mod_shape"}
+        assert set(p) <= set(EFFECT_REGS) | {"trem_rate", "mod_base", "mod_fb", "mod_shape",
+                                                  "reverb_size", "reverb_damp"}
+    assert PRESETS["hall"]["reverb_type"] == 4 and REVERB_ROOMS[3] == (61604, 40)
+    assert parse_assignments(["reverb_type=4", "reverb_size=60000", "reverb_damp=30"]) ==         {"reverb_type": 4, "reverb_size": 60000, "reverb_damp": 30}
     print("selftest OK")
 
 
@@ -294,7 +307,7 @@ def main():
     elif a.cmd == "preset":
         if not a.args or a.args[0] not in PRESETS:
             raise SystemExit("presets: %s" % ", ".join(PRESETS))
-        keys = EFFECT_REGS + ["trem_rate", "mod_base", "mod_fb", "mod_shape"]
+        keys = EFFECT_REGS + ["trem_rate", "mod_base", "mod_fb", "mod_shape", "reverb_size", "reverb_damp"]
         regs = dict((k, 0) for k in keys)
         regs.update(PRESETS[a.args[0]])
         regs["effects_enable"] |= b.read(REGS["effects_enable"]) & CAB_BIT      # the cabinet stays as it is

@@ -1,6 +1,6 @@
 # v2 step D: better DSP blocks
 
-**Status:** D1, D2 and D3 (cabinet FIR, integrated in the chain, timing met) implemented and verified in simulation; D4–D5 blocks in development; board test at the end of step D.
+**Status:** D1 … D4 (generated LFO, modulated delay, cabinet FIR, Freeverb reverb; integrated in the chain, timing met) implemented and verified in simulation; D5 blocks in development; board test at the end of step D.
 
 ## Overview
 
@@ -12,7 +12,7 @@ models, a WAV demo and a board test (JTAG `.sof`).
 | **D1** | **Generated LFO** (`nco_lfo`): phase accumulator + small sine table, sine / triangle / saw / square, free rate | replaces the 8 LFO tables (about 0.5 Mbit, ~70 M10K); any rate, not only 5–15 Hz; base for D2 |
 | D2 | Interpolated (fractional) delay lines; chorus on the new LFO; flanger, vibrato | delay-time changes without clicks or pitch steps |
 | D3 | FIR cabinet simulation (impulse response, time-multiplexed MAC at 49.152 MHz), **10 cabinet choices** | the guitar-speaker sound; the reason for the 49.152 MHz clock |
-| D4 | Damped reverb (Freeverb- or Dattorro-style) | more natural tail than the 4-comb Schroeder |
+| D4 | Damped reverb (Freeverb, done) | more natural tail than the 4-comb Schroeder |
 | D5 | Noise gate, compressor, EQ (biquads) | new effects |
 | D6 | Distortion / overdrive: level compensation, optional 2× oversampling | even volume, less aliasing |
 
@@ -322,3 +322,56 @@ Quartus Prime Lite 18.1 (`quartus_sh --flow compile My_Audio`): 0 errors, critic
 (HPS pins). **2,759 ALMs (9 %), 3,075 registers, 258 M10K (65 %, 2.14 Mbit), 41 DSP blocks (47 %).**
 `sys_clk` (PLL `divclk`): setup slack +1.975 ns worst (slow 0 °C; 85 °C +2.288), hold +0.089 ns worst
 (slow 0 °C; 85 °C +0.150); all other clocks met.
+
+## D4: Freeverb reverb (integrated 2026-10-26)
+
+Files: `reverb_fv.vhd` (block, see its header), `fv_comb.vhd` (low-pass-feedback comb, one delay line),
+`fv_allpass.vhd` (all-pass, g = 0.5), `sim/cocotb/reverbfv_model.py` (bit-exact model). They replace the
+Schroeder reverb (`reverbe.vhd`, `comb_filter.vhd`, `allpass_filter.vhd`, deleted).
+
+* **Structure:** input >> 7 → 8 parallel low-pass-feedback combs (lengths 1215 … 1760, Freeverb at 48 kHz) summed →
+  4 series all-pass (605, 480, 371, 245) → wet × 4 (saturating) → `mix8(dry, wet, mix)`. The loop delay of every line is
+  exactly its length; the sequencer runs 9 clocks after `en_rise` and the wet value of a sample depends only on past input.
+  Mix 0 gives exactly the input; disabled = registered bypass, state frozen.
+* **Chain:** `REVERB_left` in `FX_chain`, same position (last), enable bit 5, `en_rise = half_tick`, `fx_xfade`
+  around it as before. `FX_chain` now takes `reverb_size` / `reverb_damp` instead of `reverb_type`.
+* **Registers:** 0x0D REVERB_MIX, 0x0E REVERB_TYPE (0 … 3 room presets, 4 custom; 5 … 15 act as 4), new 0x1F REVERB_SIZE
+  (Q0.16, clamped to 0.98 in the block) and 0x20 REVERB_DAMP (`[7:0]`). The mapping is in `gme_core` (functions
+  `room_size` / `room_damp`), the block is unchanged; size and damp pass through two `param_smooth` instances, so
+  switching rooms glides. VERSION 0x0206.
+
+| REVERB_TYPE | room | size | damp |
+|---:|---|---|---:|
+| 0 | very light | 0.70 (45875) | 100 |
+| 1 | light | 0.80 (52429) | 80 |
+| 2 | medium | 0.88 (57672) | 60 |
+| 3 | heavy | 0.94 (61604) | 40 |
+| 4 | custom | reg 0x1F | reg 0x20 |
+
+* **Constraints:** `*|u_fx|REVERB_left|*` added to `seqblk` in `top_v2.sdc` (9-clock sequencer, RAM read pipeline: keeps
+  single-cycle constraints).
+* **Board tool:** `gme_hps.py` knows `reverb_size` / `reverb_damp`, `reverb_type=4`, preset `hall` (custom); presets
+  now also clear the two new registers.
+* **References:** `reverb_t0..t3`, `combo_all`, `combo_change` re-recorded on purpose
+  (`GME_REF_MODE=record GME_REF_ONLY=...`); the other 25 presets were checked bit-exact in the same run and by a
+  check run before recording (exactly these 6 failed, 25 passed), and `git status` shows only these 6 `.npy` files changed.
+
+Verification:
+
+| Test | Result |
+|------|--------|
+| `test_reverbfv` (unit, 16 and 24 bit, one simulation per testcase) | bit-exact to the model (random + square input, size / damp / mix changes, clamp, bypass, mix 0), decay, size and damp behaviour, overload (no wrap), level, 512/512-clock strobes identical to 8/8: 16 simulations passed (3 min 38 s with 4 workers) |
+| `test_fx_chain::test_reverb_chain_model` (16 and 24 bit) | `FX_chain` reverb output equals `reverbfv_model` fed with the chain's reverb input (`echo_out`), bit-exact, 10500 frames, 7 settings incl. clamp, mix 0 and bypass |
+| `test_fx_chain::test_reverb` | no wrap-around, decaying tail; rooms ordered by decay: late/mid tail energy 0.37 / 0.48 / 0.60 / 0.73 (16 bit), 0.36 / 0.47 / 0.59 / 0.71 (24 bit) |
+| `test_refv2` | 31 of 31 bit-exact after recording the 6 affected presets |
+| `test_avmm::test_reverb_regs`, `test_system::test_reverb_regs` | registers 0x0D / 0x0E / 0x1F / 0x20 and VERSION 0x0206; presets / custom mapping over the bridge and smoothed values at the chain |
+
+Quartus Prime Lite 18.1 (`quartus_sh --flow compile My_Audio`): 0 errors, critical warnings only 169085 / 174073 (HPS pins).
+**3,555 ALMs (11 %), 3,797 registers, 266 M10K (67 %, 2.24 Mbit), 49 DSP blocks (56 %).** `sys_clk` (PLL `divclk`):
+setup slack +0.584 ns worst (slow 0 °C; 85 °C +0.714), hold +0.105 ns (0 °C; 85 °C +0.220); all other clocks met.
+The setup slack is down from +1.98 ns (D3): timing is met, but the margin is smaller. M10K 67 % and DSP 56 % leave
+room for D5.
+
+Full regression (`sim/run_all.sh`): **43 passed** in 31.5 min (the 27 of D3 plus the 16 `test_reverbfv` simulations).
+`test_reverb_chain_model` runs before `test_reverb` in its simulation (the model starts with empty lines) and
+`test_system::test_reverb_regs` is the last test of its file (it would leave audio in the cabinet history).

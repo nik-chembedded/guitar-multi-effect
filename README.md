@@ -28,7 +28,7 @@ lightweight HPS-to-FPGA bridge. There is no soft CPU.
 | Chorus     | Modulated delay line (triangle LFO) with feedback                       | rate, depth, level |
 | Tremolo    | Amplitude modulation by a smoothed ROM LFO (sine 5–15 Hz, triangle, saw) | waveform, depth |
 | Echo       | Delay line up to ~0.68 s with feedback                                  | time, level, repeat |
-| Reverb     | Schroeder reverb: 4 parallel comb filters + 2 series all-pass filters   | type (4 rooms), mix |
+| Reverb     | Freeverb: 8 parallel low-pass-feedback comb filters + 4 series all-pass filters (step D4) | type (4 rooms or custom), size, damping, mix |
 
 Signal chain: `ADC → Overdrive → Distortion → Cabinet → Chorus → Tremolo → Echo → Reverb → DAC`.
 The cabinet (enable bit 6) is off by default and costs no latency when off; when on it adds one sample.
@@ -177,8 +177,10 @@ and the equivalence proof of the IP models (`sim/models/run_equiv.sh`).
   on/off) is done: verified in simulation and **on the board**; timing met, 5 % of the logic. See [docs/v2_stepC_design.md](docs/v2_stepC_design.md).
 * Step D (better DSP blocks, [docs/v2_stepD_design.md](docs/v2_stepD_design.md)) in progress: D1 generated LFO
   done in simulation (frees 66 M10K); D2 modulated delay done; **D3 cabinet FIR integrated** (`cab_fir`/`cab_stage`
-  in the chain, CAB registers 0x1B–0x1E, VERSION 0x0205, `gme_hps.py cab`): verified in simulation, timing met in
-  Quartus (see [docs/v2_stepD_design.md](docs/v2_stepD_design.md)); next D4–D6. Board test at the end of step D.
+  in the chain, CAB registers 0x1B–0x1E, `gme_hps.py cab`); **D4 Freeverb reverb integrated** (`reverb_fv`
+  replaces the Schroeder reverb, REVERB_TYPE 0–3 room presets, 4 = custom, registers 0x1F REVERB_SIZE /
+  0x20 REVERB_DAMP, VERSION 0x0206): verified in simulation, timing met in
+  Quartus (see [docs/v2_stepD_design.md](docs/v2_stepD_design.md)); next D5–D6. Board test at the end of step D.
 
 ## Third-party code
 

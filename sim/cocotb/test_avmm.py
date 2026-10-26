@@ -16,7 +16,7 @@ from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge
 EFFECT_REGS = ["effects_enable", "od_drive", "od_gain", "trem_wave", "trem_depth", "echo_time",
                "echo_repeat", "echo_level", "dist_mix", "dist_type", "chorus_level",
                "chorus_depth", "chorus_rate", "reverb_mix", "reverb_type"]
-VERSION = 0x0205
+VERSION = 0x0206
 CODEC = 0x15
 
 
@@ -113,6 +113,21 @@ async def test_write_read_all(dut):
         assert await h.read(0x16 + i) == v & 0xFFFF, "ext register 0x%02X" % (0x16 + i)
         assert (bus >> (16 * i)) & 0xFFFF == v & 0xFFFF, "ext bus slice 0x%02X" % (0x16 + i)
     dut._log.info("15 effect + 26 extension registers written / read back (bits 31..16 ignored, read 0)")
+
+
+@cocotb.test()
+async def test_reverb_regs(dut):
+    """Reverb registers (D4): 0x0D mix and 0x0E type are effect registers, 0x1F REVERB_SIZE and
+    0x20 REVERB_DAMP extension registers; each lands in its own slice of the ext bus."""
+    h = await setup(dut)
+    for reg, v in ((0x0D, 0x00AB), (0x0E, 4), (0x1F, 0xF5A1), (0x20, 0x003C)):
+        await h.write(reg, v)
+    assert int(dut.reverb_mix.value) == 0xAB and int(dut.reverb_type.value) == 4
+    bus = int(dut.ext.value)
+    ext = lambda r: (bus >> (16 * (r - 0x16))) & 0xFFFF
+    assert ext(0x1F) == 0xF5A1 and ext(0x20) == 0x003C and ext(0x1E) == 0 and ext(0x21) == 0
+    assert [await h.read(r) for r in (0x0D, 0x0E, 0x1F, 0x20)] == [0xAB, 4, 0xF5A1, 0x3C]
+    dut._log.info("REVERB_MIX / TYPE / SIZE (0x1F) / DAMP (0x20) written and read back")
 
 
 @cocotb.test()

@@ -216,3 +216,32 @@ async def test_cabinet(dut):
     lat = next(i for i, v in enumerate(y) if v) - n_imp
     assert y[n_imp + lat] == amp and lat + 1 == off, "dry latency %d, cabinet response offset %d" % (lat, off)
     dut._log.info("cabinet off: dry latency %d frames (cabinet adds exactly 1 when on)", lat)
+
+
+@cocotb.test()
+async def test_reverb_regs(dut):
+    """Reverb room presets / custom size and damp over the bridge: REVERB_TYPE 0..3 select the
+    presets, 4 (and 5..15) the registers 0x1F / 0x20 (damp = low byte); the chain gets the value
+    smoothed (param_smooth, time constant 128 frames; its exactness is tested in test_smooth)."""
+    # last test of the file: the cabinet FIR history of test_cabinet must not be disturbed
+    i2c, codec, host = await boot(dut, audio_words(N_FRAMES, 4))
+    await wait_init(dut, host)
+    rooms = ((45875, 100), (52429, 80), (57672, 60), (61604, 40))
+    await host.write(0x1F, 0xBEEF)
+    await host.write(0x20, 0x1234)
+    for t, exp in list(enumerate(rooms)) + [(4, (0xBEEF, 0x34)), (7, (0xBEEF, 0x34)), (3, rooms[3])]:
+        await host.write(0x0E, t)
+        await ClockCycles(dut.clk, 4)
+        got = (int(dut.rev_size.value), int(dut.rev_damp.value))
+        assert got == exp, "REVERB_TYPE %d: (size, damp) = %s, expected %s" % (t, got, exp)
+    s0, d0 = int(dut.u_fx.reverb_size.value), int(dut.u_fx.reverb_damp.value)
+    await host.write(0x0E, 4)
+    await host.write(0x1F, 50000)
+    await host.write(0x20, 77)
+    await ClockCycles(dut.clk, 200 * 1024)      # 200 frames: 1 - (127/128)^200 = 79 % of the way
+    size, damp = int(dut.u_fx.reverb_size.value), int(dut.u_fx.reverb_damp.value)
+    assert abs(50000 - s0) > 5000, "test setup: the smoothed size must start away from 50000"
+    assert 0.1 * abs(50000 - s0) < abs(50000 - size) < 0.3 * abs(50000 - s0),         "smoothed size at the chain: %d -> %d (target 50000)" % (s0, size)
+    assert abs(77 - damp) <= 0.3 * abs(77 - d0), "smoothed damp at the chain: %d -> %d (target 77)" % (d0, damp)
+    dut._log.info("reverb presets 0..3, custom (4, 5..15) OK; smoothed size %d -> %d (target 50000), "
+                  "damp %d -> %d (target 77) after 200 frames", s0, size, d0, damp)

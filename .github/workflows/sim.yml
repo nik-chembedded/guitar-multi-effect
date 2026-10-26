@@ -43,6 +43,10 @@ jobs:
         working-directory: sim/cocotb
         run: pytest -v -k "test_cabfir or test_cab_xfade"
 
+      - name: Freeverb reverb block (16/24 bit, one simulation per testcase)
+        working-directory: sim/cocotb
+        run: pytest -v -n auto -k test_reverbfv
+
       - name: I2S core + v2 reference (31 presets, 24-bit chain, bit-exact)
         working-directory: sim/cocotb
         run: pytest -v -k "test_i2s or test_refv2"

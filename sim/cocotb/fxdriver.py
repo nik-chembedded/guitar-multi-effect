@@ -23,9 +23,13 @@ CLK_PER_HALF = 8
 # effects_enable bits (docs/register_map.md)
 OD, TREM, ECHO, DIST, CHORUS, REVERB, CAB = 1, 2, 4, 8, 16, 32, 64
 
+# D4: room presets of REVERB_TYPE 0..3 as (size Q0.16, damp); the mapping is done by gme_core
+# (checked in test_system), FX_chain takes size / damp. set(reverb_type=t) is shorthand for them.
+ROOMS = ((45875, 100), (52429, 80), (57672, 60), (61604, 40))
+
 PARAMS = ("effects_enable", "od_drive", "od_gain", "trem_depth", "trem_wave",
           "echo_time", "echo_level", "echo_repeat", "chorus_rate", "chorus_level",
-          "chorus_depth", "dist_mix", "dist_type", "reverb_type", "reverb_mix", "trem_rate",
+          "chorus_depth", "dist_mix", "dist_type", "reverb_size", "reverb_damp", "reverb_mix", "trem_rate",
           "mod_base", "mod_fb", "mod_shape", "echo_frac", "cab_ctrl")
 
 
@@ -43,6 +47,7 @@ class FxChain:
         self.frames = 0
         self.dw = int(os.environ.get("GME_DW", "16"))
         self.shift = self.dw - 16
+        self.probe = None          # list: frame() appends the reverb input (signal echo_out) seen at half_tick
 
     async def start(self, **params):
         d = self.dut
@@ -63,6 +68,10 @@ class FxChain:
     def set(self, **params):
         """Write effect registers, e.g. set(effects_enable=OD, od_drive=3000)."""
         for name, value in params.items():
+            if name == "reverb_type":
+                size, damp = ROOMS[int(value)]
+                self.dut.reverb_size.value, self.dut.reverb_damp.value = size, damp
+                continue
             if name not in PARAMS:
                 raise ValueError("unknown parameter " + name)
             getattr(self.dut, name).value = int(value) & (0xFF if name == "echo_frac" else 0xFFFF)
@@ -87,6 +96,8 @@ class FxChain:
         await RisingEdge(d.clk)
         d.sample_tick.value = 0
         await ClockCycles(d.clk, CLK_PER_HALF - 1)
+        if self.probe is not None:
+            self.probe.append(to_signed(int(d.echo_out.value), self.dw))
         d.half_tick.value = 1
         await RisingEdge(d.clk)
         d.half_tick.value = 0

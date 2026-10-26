@@ -34,7 +34,7 @@ if [ "${1:-}" = "--waves" ]; then export GME_WAVES=1; shift; fi
 SELECT=""
 case "${1:-all}" in
   all)   SELECT=""; export GME_WAV_SECONDS=${GME_WAV_SECONDS:-0.25} ;;
-  quick) SELECT="test_fx_chain or (test_cabfir and not test_cabfir_full) or test_cab_xfade or test_fxlib or test_smooth or test_xfade or test_lfo or test_trem or test_moddelay or test_i2s or test_avmm or test_codec or test_system" ;;
+  quick) SELECT="test_fx_chain or (test_cabfir and not test_cabfir_full) or test_cab_xfade or test_reverbfv or test_fxlib or test_smooth or test_xfade or test_lfo or test_trem or test_moddelay or test_i2s or test_avmm or test_codec or test_system" ;;
   full)  SELECT=""; export GME_WAV_SECONDS=${GME_WAV_SECONDS:-3.2} ;;
   -k)    SELECT="${2:-}"; export GME_WAV_SECONDS=${GME_WAV_SECONDS:-0.25} ;;
   *)     echo "usage: $0 [--waves] [all|quick|full|-k EXPR]"; exit 2 ;;

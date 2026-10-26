@@ -1,7 +1,7 @@
 -- -----------------------------------------------------------------------------
 -- FX_chain.vhd
 -- Effect chain: Overdrive -> Distortion -> Cabinet (FIR, D3) -> Chorus/flanger/vibrato
---               (mod_delay, D2) -> Tremolo -> Echo -> Reverb.
+--               (mod_delay, D2) -> Tremolo -> Echo -> Reverb (Freeverb, D4).
 -- Every effect advances on the strobes (sample_tick / half_tick, v2 B1).
 --   DW    : sample width, 16 (bit-exact to v1) or 24 (step C)
 --   XFADE : click-free on/off (fx_xfade, 5.3 ms crossfade per effect)
@@ -56,7 +56,8 @@ port(
 		chorus_depth      : in std_logic_vector(15 downto 0);
 		dist_mix          : in std_logic_vector(15 downto 0);
 		dist_type         : in std_logic_vector(15 downto 0);
-		reverb_type       : in std_logic_vector(15 downto 0);
+		reverb_size       : in std_logic_vector(15 downto 0) := (others => '0');   -- D4: feedback Q0.16 (block clamps to 0.98)
+		reverb_damp       : in std_logic_vector(15 downto 0) := (others => '0');   -- D4: [7:0]
 		reverb_mix        : in std_logic_vector(15 downto 0);
 
 		-- D3 cabinet: CAB_CTRL register and coefficient write port (18-bit, bank, tap address)
@@ -137,10 +138,11 @@ begin
       clk => clk, tick => sample_tick, en_rise => half_tick, enable_in => effects_enable(2),
       enable_eff => echo_en, din => trem_out, wet => echo_wet, dout => echo_out);
 
-  REVERB_left : entity work.reverbe generic map (DW => DW) port map(
-      clk => clk, en_rise => half_tick, en_fall => sample_tick, data_in => echo_out,
-      reverb_mix => reverb_mix, reverb_type => reverb_type, reverbe_enable => rev_en,
-      data_out => rev_wet);
+  -- room presets / custom size and damping are chosen outside (gme_core: smoothed)
+  REVERB_left : entity work.reverb_fv generic map (DW => DW) port map(
+      clk => clk, en_rise => half_tick, en_fall => sample_tick, enable => rev_en,
+      size => reverb_size, damp => reverb_damp, mix => reverb_mix,
+      data_in => echo_out, data_out => rev_wet);
   REVERB_fade : entity work.fx_xfade generic map (DW => DW, XFADE => XFADE) port map(
       clk => clk, tick => sample_tick, en_rise => half_tick, enable_in => effects_enable(5),
       enable_eff => rev_en, din => echo_out, wet => rev_wet, dout => data_out_left);
