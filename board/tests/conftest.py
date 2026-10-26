@@ -44,7 +44,7 @@ def cabdir(tmp_path):
 
 @pytest.fixture
 def mock():
-    return gd.Mock(version=0x0205)
+    return gd.Mock(version=0x0208)
 
 
 @pytest.fixture

@@ -245,7 +245,7 @@ def test_chain_not_editable(model):
 def test_chain_editable_when_routing_exists(model, monkeypatch):
     monkeypatch.setattr(gm, "ROUTING_VERSION", 0x0205)
     assert model.chain()["editable"] is True
-    new = ["echo", "od", "dist", "cab", "mod", "trem", "reverb"]
+    new = ["echo", "dyn", "od", "dist", "cab", "eq", "mod", "trem", "reverb"]
     assert model.set_chain(new)["order"] == new
     assert model.chain()["order"] == new
     assert model.store.settings()["chain"] == new

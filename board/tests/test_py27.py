@@ -89,7 +89,7 @@ def test_scan_detects_python3_only_code(tmp_path):
 
 
 def test_files_found():
-    assert len(FILES) == 8 and all(os.path.isfile(f) for f in FILES)
+    assert len(FILES) == 9 and all(os.path.isfile(f) for f in FILES)
 
 
 def test_python2_compiles_if_available(tmp_path):

@@ -73,7 +73,7 @@ def test_ids_used_by_js_exist_in_html(api):
     for m in re.finditer(r'getElementById\("([\w-]+)"\)', js):
         i = m.group(1)
         # ids created by the script itself
-        if i in ("cabbody", "preset-sel", "preset-name", "raw-reg", "raw-val"):
+        if i in ("cabbody", "preset-sel", "preset-name", "raw-reg", "raw-val", "gr-bar", "gr-text"):
             continue
         assert i in p.ids, i
     for t in ("board", "settings", "expert"):

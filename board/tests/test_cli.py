@@ -1,137 +1,20 @@
-"""CLI parity: every command line of the old tools/gme_hps.py (kept verbatim as
-legacy_gme_hps.py) is run against the old code and against the new CLI, both on a Mock
-(VERSION 0x0204 = the image the old tool was written for); registers, codec writes,
-stdout and exit messages must be identical."""
+"""The library CLI (board/gme_hps.py): commands beyond the old tool, options, mock state, dynamics, EQ, levels.
+Parity with the old tool is in test_cli_parity.py."""
 import os
 import sys
 
 import pytest
 
-import legacy_gme_hps as legacy
 import gme_hps
 from gme import device as gd
+from gme import model as gm
 
 
-class LegacyBoard(legacy.Board):
-    """The old Board class on top of a Mock instead of /dev/mem."""
-
-    def __init__(self, dev):
-        self.dev = dev
-
-    def read(self, reg):
-        return self.dev.read(reg)
-
-    def write(self, reg, value):
-        self.dev.write(reg, value)
-
-
-def seeded_mock(version=0x0204):
+def seeded_mock(version=0x0208):
     t = [0.37]
     dev = gd.Mock(version=version, clock=lambda: t[0])
     dev.t0 = 0.0
-    for i in range(0x20):
-        if i not in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15):
-            dev.regs[i] = (i * 0x1111 + 7) & 0xFFFF
     return dev
-
-
-def run_old(argv, dev, monkeypatch, capsys):
-    monkeypatch.setattr(legacy, "Board", lambda check=True: LegacyBoard(dev))
-    monkeypatch.setattr(sys, "argv", ["gme_hps.py"] + argv)
-    code = None
-    try:
-        legacy.main()
-    except SystemExit as e:
-        code = e.code
-    return capsys.readouterr().out, code
-
-
-def run_new(argv, dev, tmp_path, capsys):
-    code = None
-    try:
-        gme_hps.run(["--data-dir", str(tmp_path)] + argv, dev=dev)
-    except SystemExit as e:
-        code = e.code
-    return capsys.readouterr().out, code
-
-
-PRESETS = ["clean", "crunch", "lead", "ambient", "chorus", "flanger", "vibrato", "trem", "pulse"]
-
-CASES = [
-    ["status"],
-    ["read", "0x10"], ["read", "0x02"], ["read", "0x16"], ["read", "17"],
-    ["write", "0x03", "0x0005"], ["write", "0", "9"], ["write", "0x19", "0xFFFF"],
-    ["set", "od_drive=3000", "od_gain=4", "effects=OD"],
-    ["set", "effects=DIST+ECHO"],
-    ["set", "effects=TREM", "trem_shape=square", "trem_hz=6.5", "trem_depth=200"],
-    ["set", "effects=TREM", "trem_shape=sine"],
-    ["set", "trem_shape=saw", "trem_hz=20"],
-    ["set", "trem_shape=triangle"],
-    ["set", "mod_fb=-26000"],
-    ["set", "mod_fb=26000", "mod_shape=1", "mod_base=96"],
-    ["set", "effects=0x0009"],
-    ["set", "effects=9"],
-    ["set", "effects=OD+TREM+ECHO+DIST+CHORUS+REVERB"],
-    ["set", "effects=reverb+chorus"],
-    ["set", "chorus_level=128", "chorus_depth=90", "chorus_rate=30", "mod_base=96", "mod_shape=1"],
-    ["set", "echo_time=0x3840", "echo_repeat=90", "echo_level=20000"],
-    ["set", "reverb_type=3", "reverb_mix=128", "dist_type=2", "dist_mix=220", "trem_wave=7",
-     "mod_base=720", "trem_rate=650"],
-    ["set", "effects_enable=12", "od_drive=0x0BB8"],
-    ["set", "control=2"],
-    ["codec", "0x00", "0x080"], ["codec", "0x02", "0x079"], ["codec", "9", "1"],
-    ["--no-check", "status"],
-    ["preset", "bogus"], ["preset"],
-    ["set", "foo=1"], ["set", "trem_shape=bad"],
-] + [["preset", n] for n in PRESETS]
-
-
-@pytest.mark.parametrize("argv", CASES, ids=lambda a: " ".join(a))
-def test_parity(argv, monkeypatch, capsys, tmp_path):
-    old, new = seeded_mock(), seeded_mock()
-    o_out, o_code = run_old(argv, old, monkeypatch, capsys)
-    n_out, n_code = run_new(argv, new, tmp_path, capsys)
-    if o_code is not None and not isinstance(o_code, str):
-        assert n_code == o_code
-    elif o_code is not None:
-        # error text: the old and new message start the same way
-        assert isinstance(n_code, str) and n_code.split(":")[0].split("'")[0] == o_code.split(":")[0].split("'")[0]
-        if argv[0] == "preset":
-            assert n_code == o_code
-    assert n_out == o_out
-    assert new.regs == old.regs
-    assert new.codec_log == old.codec_log
-
-
-def test_parity_dump_values(monkeypatch, capsys, tmp_path):
-    old, new = seeded_mock(), seeded_mock()
-    o_out, _ = run_old(["dump"], old, monkeypatch, capsys)
-    n_out, _ = run_new(["dump"], new, tmp_path, capsys)
-
-    def table(text):
-        d = {}
-        for line in text.splitlines():
-            name, rest = line.split(" 0x", 1)
-            addr, val = rest.split(" = 0x")
-            d[int(addr, 16)] = int(val, 16)
-        return d
-    assert table(n_out) == table(o_out)
-    assert len(o_out.splitlines()) == len(n_out.splitlines())
-
-
-def test_old_presets_register_for_register(monkeypatch, capsys, tmp_path):
-    """Each factory preset gives exactly the register values the old PRESETS table defined."""
-    for name in PRESETS:
-        dev = seeded_mock()
-        run_new(["preset", name], dev, tmp_path, capsys)
-        exp = dict((k, 0) for k in legacy.EFFECT_REGS + ["trem_rate", "mod_base", "mod_fb", "mod_shape"])
-        exp.update(legacy.PRESETS[name])
-        for k, v in exp.items():
-            assert dev.regs[legacy.REGS[k]] == v & 0xFFFF, (name, k)
-
-
-def test_every_old_command_exists():
-    assert set(["status", "read", "write", "set", "preset", "codec", "dump", "meter", "selftest"]) <= set(gme_hps.COMMANDS)
 
 
 def test_selftest(capsys):
@@ -183,7 +66,7 @@ def test_set_errors(tmp_path, capsys):
 
 def test_params_list(tmp_path, capsys):
     out = new(["params"], gd.Mock(), tmp_path, capsys)
-    assert len(out.splitlines()) == 30
+    assert len(out.splitlines()) == 47
     assert "echo_time" in out and "cab_shift1" in out
 
 
@@ -238,7 +121,7 @@ def test_mock_flag_and_wrapper(tmp_path):
         r = subprocess.run([sys.executable, script, "--mock", "--mock-state", str(tmp_path / "st.json"), "--data-dir", str(tmp_path), "status"],
                            capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
-        assert r.stdout.startswith("version 0x0205, status 0x0005")
+        assert r.stdout.startswith("version 0x0208, status 0x0005")
         r = subprocess.run([sys.executable, script, "--mock", "--mock-state", str(tmp_path / "st.json"), "--data-dir", str(tmp_path), "selftest"],
                            capture_output=True, text=True)
         assert "selftest OK" in r.stdout
@@ -273,7 +156,7 @@ def test_mock_state_file_semantics(tmp_path):
     assert a.read(6) == 77 and a.read(5) == 1234     # a sees b's write, keeps its own
     assert gd.Mock(state_file=f).read(5) == 1234     # a new process starts from the file
     a.write(0x10, 9)
-    assert a.read(0x10) == 0x0205                    # read-only registers are not taken from the file
+    assert a.read(0x10) == 0x0208                    # read-only registers are not taken from the file
     open(f, "w").write("garbage")
     assert a.read(5) == 1234                         # a broken file is ignored
 

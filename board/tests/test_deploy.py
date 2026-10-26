@@ -60,14 +60,14 @@ def test_init_start_status_stop(initenv):
     r = init(d, env, "start")
     assert r.returncode == 0, r.stderr
     assert "started" in r.stdout
-    assert get(port, "/api/info")["fpga_version"] == 0x0205
+    assert get(port, "/api/info")["fpga_version"] == 0x0208
     assert init(d, env, "status").returncode == 0
     assert "already running" in init(d, env, "start").stdout
     pid = int(open(str(tmp / "pid")).read())
     r = init(d, env, "restart")
     assert r.returncode == 0
     assert int(open(str(tmp / "pid")).read()) != pid
-    assert get(port, "/api/state")["status"]["version"] == 0x0205
+    assert get(port, "/api/state")["status"]["version"] == 0x0208
     assert init(d, env, "stop").returncode == 0
     assert init(d, env, "status").returncode == 3
     assert not os.path.exists(str(tmp / "pid"))
@@ -270,7 +270,7 @@ def test_deploy_and_smoke_with_fake_ssh(tmp_path, fakessh):
         assert outside.read_text() == "untouched"
         assert os.access(str(remote / "gme_web.init"), os.X_OK)
         assert "ALL CHECKS PASSED" in r.stdout and "FAIL" not in r.stdout
-        assert r.stdout.count("PASS set/read back/restore") == 7
+        assert r.stdout.count("PASS set/read back/restore") == 9
         assert "PASS GET /api/info" in r.stdout and "PASS PC -> board" in r.stdout
         assert get(port, "/api/info")["mock"] is True
         # the smoke test restored the values it changed

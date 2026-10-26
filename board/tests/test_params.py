@@ -20,6 +20,9 @@ def test_table_basics():
         assert p.lsb + p.width <= 16
         assert p.help and p.name and p.group
         assert p.min_version >= 0x0201
+        if p.virtual:                                  # kept by the model, no register field
+            assert p.reg is None and p.width == 0
+            continue
         assert max(abs(p.min), abs(p.max)) <= (1 << p.width) - 1 if p.type != "signed" \
             else max(abs(p.min), abs(p.max)) < (1 << (p.width - 1))
     # bit fields of one register do not overlap
@@ -63,14 +66,17 @@ def test_display_roundtrip(p):
 
 @pytest.mark.parametrize("p", T.params, ids=lambda p: p.id)
 def test_register_roundtrip(p):
-    dev = gd.Mock(version=0x0205)
+    dev = gd.Mock(version=0x0208)
     m = gm.Model(dev)
     # neighbours in shared registers must survive
-    other = [q for q in T.params if q.reg == p.reg and q is not p]
+    other = [q for q in T.params if q.reg == p.reg and q is not p and not q.virtual]
     for q in other:
         m.set_raw({q.id: q.max if q.type != "signed" else q.min})
     before = dict((q.id, m.get_raw(q.id)) for q in other)
-    for raw in sample_raws(p):
+    samples = sample_raws(p)
+    if p.virtual:                                      # every change computes EQ coefficients (slow)
+        samples = [p.min, p.max, 0, 7, -33]
+    for raw in samples:
         m.set_raw({p.id: raw})
         assert m.get_raw(p.id) == raw
         assert m.get(p.id) == p.to_display(raw)
@@ -129,13 +135,13 @@ def test_version_gating():
     with pytest.raises(gm.ParamError):
         m.set({"mod_base": 10})
     assert "trem_rate" not in [p.id for p in m.params()]
-    m = gm.Model(gd.Mock(version=0x0205))
+    m = gm.Model(gd.Mock(version=0x0208))
     m.set({"cab_on": True})
     assert m.get_raw("cab_on") == 1 and m.read(0) == 0x40
 
 
 def test_set_is_atomic_on_error():
-    dev = gd.Mock(version=0x0205)
+    dev = gd.Mock(version=0x0208)
     m = gm.Model(dev)
     with pytest.raises(gm.ParamError):
         m.set({"od_drive": 1000, "echo_time": "5Hz"})
@@ -154,20 +160,28 @@ def parse_register_map():
 
 def test_table_covers_register_map():
     doc = parse_register_map()
-    assert len(doc) >= 25, doc                      # the parser found the table
-    assert {0, 14, 0x10, 0x15, 0x16, 0x18, 0x19, 0x1A} <= set(doc)
+    assert len(doc) >= 45, doc                      # the parser found the table
+    assert {0, 14, 0x10, 0x15, 0x16, 0x18, 0x19, 0x1A, 0x1F, 0x21, 0x27, 0x28, 0x2B, 0x2C, 0x2D, 0x2E} <= set(doc)
     table_regs = dict((r["reg"], r) for r in T.registers)
     missing = sorted(set(doc) - set(table_regs))
     assert not missing, "registers in docs/register_map.md missing from params.json: %s" % missing
-    # every writable register of the map is driven by at least one parameter, except codec
-    # (an action, see Model.codec_write)
-    param_regs = set(p.reg for p in T.params)
+    # every writable register of the map is driven by at least one parameter, except the actions: codec
+    # (Model.codec_write), the cabinet coefficient port (cab_load), the EQ coefficient port + apply
+    # (eq_set); the read-only DYN_GR is the meter (Model.gain_reduction)
+    param_regs = set(p.reg for p in T.params if not p.virtual)
     for reg, (name, rw) in doc.items():
-        if "W" in rw and reg != 0x15:
+        if "W" in rw and "action" not in table_regs[reg]:
             assert reg in param_regs, "register 0x%02X %s has no parameter" % (reg, name)
         assert table_regs[reg]["rw"] == rw, (reg, rw, table_regs[reg]["rw"])
+    actions = dict((r["reg"], r["action"]) for r in T.registers if "action" in r)
+    assert actions == {0x15: "codec", 0x1C: "cab", 0x1D: "cab", 0x1E: "cab", 0x28: "eq", 0x29: "eq", 0x2A: "eq",
+                       0x2B: "eq", 0x2C: "meter"}
     # every bit of the effects register is a parameter
-    assert set(p.lsb for p in T.params if p.reg == 0) >= set(range(6))
+    assert set(p.lsb for p in T.params if p.reg == 0) == set(range(9))
+    assert [r["min_version"] for r in T.registers if r["reg"] in (0x1F, 0x20)] == [0x0206, 0x0206]
+    assert set(r["min_version"] for r in T.registers if 0x21 <= r["reg"] <= 0x2C) == {0x0207}
+    assert set(r["min_version"] for r in T.registers if r["reg"] in (0x2D, 0x2E)) == {0x0208}
+    assert T.by_id["dyn_on"].lsb == 7 and T.by_id["eq_on"].lsb == 8
     # the upcoming cabinet registers are present and version-gated
     for reg in (0x1B, 0x1C, 0x1D, 0x1E):
         assert table_regs[reg]["min_version"] == 0x0205
@@ -178,14 +192,18 @@ def test_table_covers_register_map():
 
 def test_enum_labels_match_register_map():
     assert len(T.by_id["trem_wave"].enum) == 12
-    assert [e["label"] for e in T.by_id["reverb_type"].enum] == ["Very light", "Light", "Medium", "Heavy"]
+    assert [e["label"] for e in T.by_id["reverb_type"].enum] == ["Very light", "Light", "Medium", "Heavy", "Custom"]
+    assert [e["label"] for e in T.by_id["comp_ratio"].enum if not e.get("alias")] == ["1:1", "2:1", "4:1", "8:1", "Infinite"]
+    assert [e["value"] for e in T.by_id["comp_ratio"].enum] == list(range(8))
     assert T.by_id["mod_shape"].enum[1]["label"] == "Triangle"
     assert len(T.by_id["dist_type"].enum) == 4
 
 
 def test_chain_default_order():
-    m = gm.Model(gd.Mock(version=0x0205))
-    assert m.chain()["order"] == ["od", "dist", "cab", "mod", "trem", "echo", "reverb"]
+    m = gm.Model(gd.Mock(version=0x0208))
+    assert m.chain()["order"] == ["dyn", "od", "dist", "cab", "eq", "mod", "trem", "echo", "reverb"]
     assert m.chain()["editable"] is False
+    m = gm.Model(gd.Mock(version=0x0206))
+    assert m.chain()["order"] == ["od", "dist", "cab", "mod", "trem", "echo", "reverb"]
     m = gm.Model(gd.Mock(version=0x0204))
     assert m.chain()["order"] == ["od", "dist", "mod", "trem", "echo", "reverb"]

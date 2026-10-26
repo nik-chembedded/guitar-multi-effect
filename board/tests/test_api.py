@@ -55,7 +55,7 @@ def start(version, tmp_path, cabdir, **mockkw):
 
 @pytest.fixture
 def api(tmp_path, cabdir):
-    srv, dev, model, cl = start(0x0205, tmp_path, cabdir)
+    srv, dev, model, cl = start(0x0208, tmp_path, cabdir)
     cl.dev, cl.model = dev, model
     yield cl
     srv.stop()
@@ -80,26 +80,30 @@ def err(resp, status):
 def test_info(api):
     s, j = api.get("/api/info")
     assert s == 200
-    assert j["fpga_version"] == 0x0205 and j["fpga_version_hex"] == "0x0205" and j["mock"] is True
-    assert j["capabilities"] == {"cab": True, "chain_editable": False}
-    assert len(j["params"]) == 29 and all(p["available"] for p in j["params"])
+    assert j["fpga_version"] == 0x0208 and j["fpga_version_hex"] == "0x0208" and j["mock"] is True
+    assert j["capabilities"] == {"cab": True, "eq": True, "dyn": True, "chain_editable": False}
+    assert len(j["params"]) == 46 and all(p["available"] for p in j["params"])
     p = [x for x in j["params"] if x["id"] == "echo_time"][0]
     assert p["unit"] == "ms" and p["reg"] == 5 and p["min_version"] == 0x0201
-    assert [e["id"] for e in j["effects"]] == ["od", "dist", "cab", "mod", "trem", "echo", "reverb"]
+    assert [e["id"] for e in j["effects"]] == ["dyn", "od", "dist", "cab", "eq", "mod", "trem", "echo", "reverb"]
     assert any(r["name"] == "cab_data_hi" for r in j["registers"])
 
 
 def test_info_old_image(old_api):
     s, j = old_api.get("/api/info")
     assert j["capabilities"]["cab"] is False
-    assert [x["id"] for x in j["params"] if not x["available"]] == ["cab_on", "cab_bank", "cab_shift0", "cab_shift1"]
+    assert [x["id"] for x in j["params"] if not x["available"]] == [
+        "dyn_on", "gate_on", "gate_thresh", "comp_on", "comp_thresh", "comp_ratio", "comp_attack", "comp_release",
+        "comp_makeup", "cab_on", "eq_on", "od_level", "dist_level", "reverb_size", "reverb_damp",
+        "cab_bank", "cab_shift0", "cab_shift1", "eq_bass", "eq_mid", "eq_treble"]
+    assert j["capabilities"] == {"cab": False, "eq": False, "dyn": False, "chain_editable": False}
 
 
 def test_state(api):
     s, j = api.get("/api/state")
     assert s == 200
     assert set(j) == {"values", "raw", "status", "chain", "cab"}
-    assert len(j["values"]) == 29 and j["values"]["echo_on"] is False
+    assert len(j["values"]) == 46 and j["values"]["echo_on"] is False
     assert j["status"]["pll_locked"] is True and j["status"]["codec_init_done"] is True
     assert j["chain"]["editable"] is False and j["cab"]["available"] is True
 
@@ -275,7 +279,7 @@ def test_codec(api):
 
 
 def test_codec_nak_is_502(tmp_path, cabdir):
-    srv, dev, model, cl = start(0x0205, tmp_path, cabdir, nak=True)
+    srv, dev, model, cl = start(0x0208, tmp_path, cabdir, nak=True)
     try:
         err(cl.post("/api/codec", {"reg": 2, "value": 1}), 502)
     finally:
@@ -287,8 +291,9 @@ def test_codec_nak_is_502(tmp_path, cabdir):
 def test_chain_fixed(api):
     s, j = api.get("/api/chain")
     assert s == 200 and j["editable"] is False
-    assert j["order"] == ["od", "dist", "cab", "mod", "trem", "echo", "reverb"]
-    assert j["effects"][0] == {"id": "od", "name": "Overdrive", "enable": "od_on", "on": False}
+    assert j["order"] == ["dyn", "od", "dist", "cab", "eq", "mod", "trem", "echo", "reverb"]
+    assert j["effects"][0] == {"id": "dyn", "name": "Dynamics", "enable": "dyn_on", "on": False}
+    assert j["effects"][1] == {"id": "od", "name": "Overdrive", "enable": "od_on", "on": False}
     err(api.post("/api/chain", {"order": j["order"]}), 409)
     err(api.post("/api/chain", {}), 400)
     err(api.post("/api/chain", {"order": "od"}), 400)
@@ -297,7 +302,7 @@ def test_chain_fixed(api):
 def test_chain_editable(api, monkeypatch):
     monkeypatch.setattr(gm, "ROUTING_VERSION", 0x0205)
     assert api.get("/api/chain")[1]["editable"] is True
-    new = ["echo", "od", "dist", "cab", "mod", "trem", "reverb"]
+    new = ["echo", "dyn", "od", "dist", "cab", "eq", "mod", "trem", "reverb"]
     s, j = api.post("/api/chain", {"order": new})
     assert s == 200 and j["order"] == new
     assert api.get("/api/chain")[1]["order"] == new
@@ -308,17 +313,17 @@ def test_chain_editable(api, monkeypatch):
 # ---- raw -------------------------------------------------------------------------------------------------------
 
 def test_raw(api):
-    assert api.get("/api/raw/0x10")[1] == {"reg": 16, "value": 0x0205, "hex": "0x0205"}
-    assert api.get("/api/raw/16")[1]["value"] == 0x0205
-    assert api.get("/api/raw/version")[1]["value"] == 0x0205
+    assert api.get("/api/raw/0x10")[1] == {"reg": 16, "value": 0x0208, "hex": "0x0208"}
+    assert api.get("/api/raw/16")[1]["value"] == 0x0208
+    assert api.get("/api/raw/version")[1]["value"] == 0x0208
     s, j = api.post("/api/raw/0x03", {"value": 0x0005})
     assert s == 200 and j["value"] == 5 and api.dev.regs[3] == 5
     api.post("/api/raw/effects_enable", {"value": 12})
     assert api.dev.regs[0] == 12
-    assert api.post("/api/raw/0x10", {"value": 1})[1]["value"] == 0x0205       # read-only: ignored
+    assert api.post("/api/raw/0x10", {"value": 1})[1]["value"] == 0x0208       # read-only: ignored
     assert api.get("/api/raw/0x30")[1]["value"] == 0
     s, j = api.get("/api/raw")
-    assert s == 200 and any(r["name"] == "version" and r["value"] == 0x0205 for r in j["registers"])
+    assert s == 200 and any(r["name"] == "version" and r["value"] == 0x0208 for r in j["registers"])
     err(api.get("/api/raw/64"), 400)
     err(api.get("/api/raw/zzz"), 400)
     err(api.post("/api/raw/3", {"value": 70000}), 400)
@@ -353,7 +358,7 @@ def test_wrong_image_refused_by_server():
 # ---- concurrency ------------------------------------------------------------------------------------------------------
 
 def test_concurrent_posts_are_serialised(tmp_path, cabdir):
-    srv, dev, model, cl = start(0x0205, tmp_path, cabdir, write_delay=0.0003)
+    srv, dev, model, cl = start(0x0208, tmp_path, cabdir, write_delay=0.0003)
     try:
         A = {"od_drive": 1000, "od_gain": 1, "echo_time": "100ms", "echo_on": True, "dist_mix": "10%"}
         B = {"od_drive": 2000, "od_gain": 2, "echo_time": "200ms", "echo_on": False, "dist_mix": "20%"}
@@ -397,7 +402,7 @@ def test_concurrent_posts_are_serialised(tmp_path, cabdir):
 
 
 def test_concurrent_cab_load_and_params(tmp_path, cabdir):
-    srv, dev, model, cl = start(0x0205, tmp_path, cabdir, write_delay=0.00005)
+    srv, dev, model, cl = start(0x0208, tmp_path, cabdir, write_delay=0.00005)
     try:
         res = []
         t1 = threading.Thread(target=lambda: res.append(cl.post("/api/cab", {"slot": 0})))
