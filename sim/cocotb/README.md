@@ -8,8 +8,13 @@ The same tests run locally (WSL2 Ubuntu) and in GitHub Actions on every push.
 | File | Purpose |
 |------|---------|
 | `fxdriver.py` | frame-level driver for `FX_chain`: clock, `sample_tick`/`half_tick` strobes, register writes from Python |
-| `golden.py` | bit-exact Python reference models (overdrive, distortion with the `.mif` curves) |
-| `test_fx_chain.py` | the 8 effect tests (run on the 16-bit and the 24-bit chain), incl. the modulated-delay sweep and the fractional echo |
+| `golden.py` | bit-exact Python reference models (overdrive, distortion with the `.mif` curves; since D6 with the output level `level=` = `level_gain.vhd`: Q8 log2 units, 0 = unity) |
+| `test_fx_chain.py` | the 10 effect tests (run on the 16-bit and the 24-bit chain), incl. the modulated-delay sweep and the fractional echo |
+| `test_dynamics.py` | noise gate + compressor `dynamics` (step D5a) bit-exact to `dynamics_model.py` plus level accuracy, static curve, attack / release, gate, click checks. The block has no reset: the runner entry `test_dynamics` runs the 7 simulations listed in the module docstring (16/24 bit, 16- and 1024-clock frames) |
+| `test_eq3.py` | 3-band EQ `eq3` / `biquad` (step D5b) bit-exact to `eq3_model.py`, magnitude response against `tools/eq_coefs.py`, flat, low-level (no limit cycles), saturation. Runner entry `test_eq3`: every testcase its own simulation, 16 and 24 bit (10 simulations) |
+| `test_invariance.py` | the configuration of `test_timing_invariance` (all effects on, 400 frames); the runner entry runs it twice, `GME_HALF = 8` (16-clock frames) and `512` (the board's 1024-clock frames), and requires identical output samples |
+| `test_cabfir.py` | cabinet FIR block `cab_fir` (step D3) bit-exact to `cabfir_model.py`: random data, saturation, bank switch, impulse = coefficients, minimum frame length; `test_full` = the real 2048 taps with `cab_default.mif` at 1024 clocks per sample (~7 min). Runner entries `test_cabfir` (16/24 bit, 16/64 taps) and `test_cabfir_full` |
+| `test_reverbfv.py` | Freeverb reverb block `reverb_fv` (step D4) bit-exact to `reverbfv_model.py` (size / damp / mix changes, clamp, bypass), decay, size and damping behaviour, overload, level, hardware timing. The block has no reset: the runner entry `test_reverbfv` runs every testcase as its own simulation, at 16 and 24 bit (16 simulations, ~4 min with 4 workers) |
 | `test_moddelay.py` | modulated delay (`mod_delay`, step D2) bit-exact to `moddelay_model.py`, 16/24 bit, plus an exact static-delay check |
 | `test_lfo.py` | generated LFO `nco_lfo` (step D1): bit-exact to `lfo_model.py`, frequency, sine accuracy |
 | `test_lfo_v1.py` | no simulation: the 8 v1 LFO tables against the generated LFO (period, shape within 2 %) |
@@ -17,11 +22,11 @@ The same tests run locally (WSL2 Ubuntu) and in GitHub Actions on every push.
 | `test_fxlib.py` | fixed-point library `fx_pkg` (wrapper `hdl/fxlib_wrap.vhd`): every function against Python |
 | `test_smooth.py` | `param_smooth`: bit-exact to a model, exact final value, time constant |
 | `test_xfade.py` | click-free effect on/off: steady states exact, no step larger than the signals' own |
-| `test_refv2.py` | 24-bit chain bit-exact to the v2 references in `ref_v2/` (31 presets incl. chorus / flanger / vibrato, free-mode tremolo, fractional echo; `GME_REF_MODE=record` re-records) and overdrive / distortion bit-exact to `golden.py` with full 24-bit input. Replaced the v1 recordings in step D2 |
+| `test_refv2.py` | 24-bit chain bit-exact to the v2 references in `ref_v2/` (36 presets incl. chorus / flanger / vibrato, free-mode tremolo, fractional echo, since D5 `dyn_gate`, `dyn_comp`, `eq_3band`, `combo_d5` with everything on, and since D6 `level_od_dist` with non-zero output levels (recorded with `GME_REF_ONLY=level_od_dist`); `GME_REF_MODE=record` re-records, with `GME_REF_ONLY=a,b,..` only those presets while all others are still checked bit-exact in the same run; the Freeverb presets `reverb_t0..t3`, `combo_all`, `combo_change` were re-recorded in step D4) and overdrive / distortion (also with 8 output levels) bit-exact to `golden.py` with full 24-bit input. Replaced the v1 recordings in step D2 |
 | `test_i2s.py` | I²S master core (v2 B2) against a WM8731 slave model |
-| `test_avmm.py` | HPS control slave (`ctrl_avmm`): Avalon-MM reads/writes, all registers, invalid/read-only addresses, CONTROL, CODEC register |
+| `test_avmm.py` | HPS control slave (`ctrl_avmm`): Avalon-MM reads/writes, all registers (incl. REVERB_SIZE 0x1F / REVERB_DAMP 0x20, the dynamics / EQ registers 0x21..0x2B and the read-only live DYN_GR 0x2C, OD_LEVEL 0x2D / DIST_LEVEL 0x2E), invalid/read-only addresses, CONTROL, CODEC register |
 | `test_codec.py` | I²C master + codec init sequencer against an I²C slave model |
-| `test_system.py` | `gme_core` end to end: codec init, control over the HPS bridge (Avalon-MM), I²S audio |
+| `test_system.py` | `gme_core` end to end: codec init, control over the HPS bridge (Avalon-MM), I²S audio; `test_reverb_regs`: room presets 0..3 / custom size and damp mapping and smoothed values at the chain; `test_cabinet`: the 2048-tap default cabinet via enable bit 6 / CAB_CTRL, impulse over I²S = coefficients >> (17+shift), writes to the active bank ignored, bank 1 loaded through CAB_ADDR / CAB_DATA_LO / CAB_DATA_HI and switched; `test_dynamics_eq`: EQ set written through 0x28..0x2B changes an 800 Hz sine by the expected dB, the compressor lowers a loud sine and `DYN_GR` (0x2C) reads the reduction, both over real 1024-clock frames; `test_level_via_hps` (runner entry `test_system_level`, 16-tap cabinet, real 1024-clock frames): OD_LEVEL = 256 / -256 written over the bridge doubles / halves a 1 kHz sine exactly (+-6.02 dB), level 0 is exactly unity from reset on, the change glides (no step larger than the steady states') |
 | `test_wav.py` | real guitar audio through 8 presets; writes WAVs, checks dry bit-exact / no X / no wrap / no tremolo clicks |
 | `test_runner.py` | pytest entry: builds with GHDL (`--std=08 -frelaxed`) and runs the cocotb modules |
 
@@ -31,13 +36,18 @@ The same tests run locally (WSL2 Ubuntu) and in GitHub Actions on every push.
 |------|-------|
 | `test_bypass` | all effects off, 2000 full-scale random samples, bit-exact |
 | `test_overdrive` | bit-exact to `golden.overdrive`, incl. saturation at high gain |
+| `test_level` | D6 output level of the overdrive / distortion: level 0 equals the pre-D6 formulas, every level -1100 … +600 (one per frame, incl. the clamps) bit-exact to `golden.py` for OD and the 3 curves, +6.02 dB = exactly 2x, -24 dB within 0.05 dB, saturation without wrap (16 and 24 bit chain) |
 | `test_distortion` | bit-exact to `golden.distortion` for all 3 curves × mix 255/128 |
 | `test_tremolo` | 5 Hz sine envelope modulated; sawtooth: largest 1-sample step < 5 % |
 | `test_chorus` | delay sweeps > 100 samples; stays ≤ 52 + latency after lowering the depth mid-sweep |
 | `test_echo` | echo 1 = 8000, echo 2 = 4000 at the measured delay (1200..1208) |
-| `test_reverb` | no wrap-around, decaying tail after a tone burst |
+| `test_reverb` | Freeverb: no wrap-around, decaying tail after a noise burst; room presets 0 … 3 ordered by decay length (late/mid tail energy about 0.36 < 0.47 < 0.59 < 0.71, 24 bit; 16 bit 0.37 .. 0.73) |
+| `test_reverb_chain_model` | the chain's reverb output equals `reverbfv_model.py` fed with the chain's reverb input (signal `echo_out`), bit-exact over 7 size / damp / mix / enable settings (incl. clamp, mix 0, bypass) at 16 and 24 bit |
+| `test_dynamics_chain`, `test_eq_chain` | dynamics (first stage) and EQ (after the cabinet) in the chain: bit off = exact bypass with the latency of the chain without them (also after use, with the block running), bit on = `dynamics_model` fed with the chain input / `eq3_model` fed with the stage input (signal `cab_out`), bit-exact, one frame later; `DYN_GR` equals the model's meter; EQ coefficient sets through the chain's write port, a half-written set is not used. These two run first in the module (the models start from the power-up state) |
+| `test_dyn_eq_fade` | with `XFADE` (runner entry `test_dyn_eq_xfade`, 16 and 24 bit): enabling / disabling either stage mid-signal gives no step above the steady states', exact bypass after the fade-out |
+| `test_cab` | cabinet stage with `CAB_TAPS = 16` (`sim/models/cab_test16.mif`, copied by the runner; chain frames are 16 clocks): impulse response = coefficients >> (17+shift) one frame after the bypass latency (independent reference), cab off = bit-exact bypass with the same latency, bank 1 loaded through the write port, bank switch mid-stream (steady states exact; with `XFADE`, run by `test_cab_xfade`, no step above the signal's own), writes to the active bank ignored, idle bank rewritten and switched back |
 
-All tests run in **one simulation** (about 30 s). Because the delay RAMs keep their contents
+All tests run in **one simulation** (about 3 min since the Freeverb `test_reverb`, ~2 min of it). Because the delay RAMs keep their contents
 between tests, a test that measures a delay flushes the line first (see `test_echo`).
 
 ## How a test runs

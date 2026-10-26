@@ -24,7 +24,7 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 
 | Reg | Name            | R/W | Bits used | Field                         | Description |
 |----:|-----------------|:---:|-----------|-------------------------------|-------------|
-| 0   | Effects Enable  | W   | `[5:0]`   | `REVERB CHORUS DIST ECHO TREM OD` | One enable bit per effect, see [(1)](#1-effects-enable). |
+| 0   | Effects Enable  | W   | `[8:0]`   | `EQ DYN CAB REVERB CHORUS DIST ECHO TREM OD` | One enable bit per effect, see [(1)](#1-effects-enable). |
 | 1   | Overdrive Drive | W   | `[15:0]`  | Drive Value                   | Clipping threshold (unsigned sample amplitude). GUI range 0 … 3500. |
 | 2   | Overdrive Gain  | W   | `[15:0]`  | Gain Volume                   | Integer post-clip gain multiplier. GUI range 1 … 5. |
 | 3   | Tremolo Wave    | W   | `[3:0]`   | Waveform Selection            | LFO waveform/rate, see [(2)](#2-tremolo-waveform-selection). |
@@ -37,9 +37,9 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 10  | Mod Mix         | W   | `[7:0]`   | Chorus / flanger / vibrato mix | Dry/wet 0 … 255 (step D2; v1: chorus level Q0.16). Smoothed. |
 | 11  | Mod Depth       | W   | `[10:0]`  | Modulation depth               | Delay swing ± depth samples around MOD_BASE (step D2). Smoothed. |
 | 12  | Mod Rate        | W   | `[15:0]`  | Modulation LFO rate            | 0.01 Hz (step D2; v1: clock divider). Smoothed. |
-| 13  | Reverb Mix      | W   | `[7:0]`   | Reverb Mixed Signal Value     | Dry/wet mix, 0 = dry … 255 = wet. |
-| 14  | Reverb Type     | W   | `[3:0]`   | Reverb Type Selection         | Room preset, see [(4)](#4-reverb-type-selection). |
-| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0204` = step D2 (modulated delay, fractional echo); `0x0203` = D1 (generated LFO); `0x0202` = step C (24-bit); `0x0201` = HPS control, 16-bit |
+| 13  | Reverb Mix      | W   | `[7:0]`   | Reverb Mixed Signal Value     | Dry/wet mix, 0 = dry (exactly the input) … 255 = wet. Smoothed. |
+| 14  | Reverb Type     | W   | `[3:0]`   | Reverb Type Selection         | Room preset 0 … 3, or 4 = custom size / damp (registers 0x1F / 0x20), see [(4)](#4-reverb-type-selection). Changes glide (size and damp are smoothed). |
+| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0208` = step D6 (output level of the overdrive / distortion, registers 0x2D / 0x2E); `0x0207` = step D5 (dynamics, EQ: bits 7 / 8, registers 0x21 … 0x2C); `0x0206` = step D4 (Freeverb reverb, REVERB_SIZE / REVERB_DAMP); `0x0205` = step D3 (cabinet FIR, CAB registers); `0x0204` = step D2 (modulated delay, fractional echo); `0x0203` = D1 (generated LFO); `0x0202` = step C (24-bit); `0x0201` = HPS control, 16-bit |
 | 0x11 | STATUS         | R   | `[2:0]`   | | bit0 codec init done, bit1 codec NAK (init), bit2 PLL locked |
 | 0x12 | LEVEL_IN       | R   | `[15:0]`  | | input peak level (left, 16-bit magnitude, decays ~1/256 per sample) |
 | 0x13 | LEVEL_OUT      | R   | `[15:0]`  | | output peak level |
@@ -49,7 +49,27 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 0x18 | MOD_BASE       | R/W | `[10:0]`  | | modulated delay: centre delay in samples (1 … 2046; 48 = 1 ms), smoothed |
 | 0x19 | MOD_FB         | R/W | `[15:0]`  | | modulated delay feedback, signed Q15 (−32767 … 32767 = −1 … +1), smoothed |
 | 0x1A | MOD_SHAPE      | R/W | `[0]`     | | modulated delay LFO: 0 sine, 1 triangle |
-| 0x16 … 0x2F | (extension) | R/W | | | registers of step D; unused ones read back what was written |
+| 0x1B | CAB_CTRL       | R/W | `[6:0]`   | | cabinet: bit0 = active coefficient bank, `[3:1]` = shift of bank 0, `[6:4]` = shift of bank 1, see [(7)](#7-cabinet-fir-step-d3) |
+| 0x1C | CAB_ADDR       | R/W | `[11:0]`  | | cabinet coefficient write pointer: bit11 = bank, `[10:0]` = tap; writing sets the pointer (reads back the last value written, not the auto-incremented pointer) |
+| 0x1D | CAB_DATA_LO    | R/W | `[15:0]`  | | coefficient bits 15..0 (kept until CAB_DATA_HI is written) |
+| 0x1E | CAB_DATA_HI    | R/W | `[1:0]`   | | coefficient bits 17..16; **writing it stores {HI, LO} at the pointer and increments the tap address** |
+| 0x1F | REVERB_SIZE    | R/W | `[15:0]`  | | reverb size = feedback of the 8 comb filters, unsigned Q0.16 (65535 ≈ 1.0; limited to 0.98 = 64225 inside), used when REVERB_TYPE = 4; smoothed |
+| 0x20 | REVERB_DAMP    | R/W | `[7:0]`   | | reverb damping 0 … 255 (0 = bright tail, higher = darker), used when REVERB_TYPE = 4; smoothed |
+| 0x21 | DYN_CTRL       | R/W | `[1:0]`   | | dynamics: bit0 = noise gate on, bit1 = compressor on, see [(8)](#8-dynamics-step-d5) |
+| 0x22 | GATE_THRESH    | R/W | `[15:0]`  | | gate threshold, signed, Q8 log2 units re full scale (−45 dBFS = −1913) |
+| 0x23 | COMP_THRESH    | R/W | `[15:0]`  | | compressor threshold, signed, Q8 log2 units (−20 dBFS = −850) |
+| 0x24 | COMP_RATIO     | R/W | `[2:0]`   | | 0 = 1:1, 1 = 2:1, 2 = 4:1, 3 = 8:1, 4 … 7 = ∞:1 |
+| 0x25 | COMP_ATTACK    | R/W | `[3:0]`   | | gain attack, time constant 2^k samples (k = 0 immediate … 15 = 683 ms) |
+| 0x26 | COMP_RELEASE   | R/W | `[3:0]`   | | gain release, time constant 2^k samples |
+| 0x27 | COMP_MAKEUP    | R/W | `[15:0]`  | | make-up gain, signed, Q8 log2 units (+6 dB = 255) |
+| 0x28 | EQ_ADDR        | R/W | `[3:0]`   | | EQ coefficient write pointer 0 … 15 (0 … 14 coefficient, 15 = scale word), see [(9)](#9-eq-step-d5) |
+| 0x29 | EQ_DATA_LO     | R/W | `[15:0]`  | | coefficient bits 15..0 (kept until EQ_DATA_HI is written) |
+| 0x2A | EQ_DATA_HI     | R/W | `[1:0]`   | | coefficient bits 17..16; **writing it stores {HI, LO} at the pointer and increments the pointer** (15 wraps to 0) |
+| 0x2B | EQ_APPLY       | W   | –         | | **any write** applies the written set: all three EQ sections change at the next half-frame strobe (reads back what was written) |
+| 0x2C | DYN_GR         | R   | `[15:0]`  | | **read-only** gain-reduction meter of the dynamics stage, unsigned Q8 log2 units (÷ 42.52 = dB); 0 while the stage is off. Writes are ignored |
+| 0x2D | OD_LEVEL       | R/W | `[15:0]`  | | overdrive output level, **signed**, Q8 log2 units (1 unit = 0.0235 dB, register = dB × 42.52): −1024 … +512 = −24 … +12 dB, **0 = exactly unity** (reset value; the output is then bit-identical to VERSION ≤ 0x0207); values outside the range are clamped. Smoothed (glides), see [(10)](#10-output-level-of-the-overdrive-and-distortion-step-d6) |
+| 0x2E | DIST_LEVEL     | R/W | `[15:0]`  | | distortion output level, same format, applies to the shaped (wet) signal before the dry/wet mix |
+| 0x16 … 0x2F | (extension) | R/W | | | registers of step D; unused ones (0x17, 0x2F) read back what was written |
 
 ## Field encodings
 
@@ -63,9 +83,15 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 3   | Distortion | Bypass  | Enable |
 | 4   | Chorus     | Bypass  | Enable |
 | 5   | Reverb     | Bypass  | Enable |
+| 6   | Cabinet (FIR, step D3) | Bypass | Enable |
+| 7   | Dynamics (gate + compressor, step D5) | Bypass | Enable |
+| 8   | EQ (3 bands, step D5) | Bypass | Enable |
 
 Signal chain order (fixed in `FX_chain.vhd`):
-`Overdrive → Distortion → Chorus → Tremolo → Echo → Reverb`
+`Dynamics → Overdrive → Distortion → Cabinet → EQ → Chorus → Tremolo → Echo → Reverb`
+
+Dynamics, cabinet and EQ cost **no latency when off** (the stage output is its input); each adds one sample
+(20.8 µs) when on. Enabling / disabling fades over 256 samples like every other effect.
 
 ### (2) Tremolo Waveform Selection
 
@@ -103,13 +129,22 @@ Since step D1 these come from the generated LFO (16-bit, phase-continuous) inste
 
 ### (4) Reverb Type Selection
 
-| Value | Type              |
-|------:|-------------------|
-| 0     | Very light reverb |
-| 1     | Light reverb      |
-| 2     | Medium reverb     |
-| 3     | Heavy reverb      |
-| other | (= Heavy)         |
+Freeverb-style reverb (step D4): 8 parallel low-pass-feedback comb filters + 4 series all-pass filters.
+`size` is the comb feedback (Q0.16), `damp` the damping of the low-pass in the feedback loop (0 … 255).
+Types 0 … 3 are room presets; the decay time and the brightness of the tail follow from the two values.
+
+| Value | Type              | size (Q0.16)    | damp |
+|------:|-------------------|-----------------|-----:|
+| 0     | Very light reverb | 0.70 (45875)    | 100  |
+| 1     | Light reverb      | 0.80 (52429)    | 80   |
+| 2     | Medium reverb     | 0.88 (57672)    | 60   |
+| 3     | Heavy reverb      | 0.94 (61604)    | 40   |
+| 4 … 15 | Custom           | REVERB_SIZE (0x1F) | REVERB_DAMP (0x20) `[7:0]` |
+
+The mapping is in `gme_core`; `FX_chain` and the reverb block take size and damp. The block limits
+the size to 0.98 (stable tail). Switching the type, size or damp glides over about 30 ms
+(`param_smooth`), the reverb on / off crossfades like every other effect. Up to VERSION 0x0205 the old
+Schroeder reverb used type 0 … 3 and treated other values as 3; since 0x0206 types 5 … 15 act like 4.
 
 ### (5) CODEC register
 
@@ -156,3 +191,89 @@ One block (effect enable bit 4) with a fractional delay
 | Vibrato | 240 (5 ms) | 100 | 600 (6 Hz) | 0 | 255 |
 
 (`gme_hps.py preset chorus | flanger | vibrato`)
+
+### (7) Cabinet FIR (step D3)
+
+A 2048-tap FIR (42.7 ms at 48 kHz, `cab_fir.vhd`) between distortion and chorus, enable bit 6.
+Two coefficient banks of 2048 × 18-bit signed values (Q1.17 scaled up by 2^shift, block floating
+point, built by `tools/cab_coefs.py`); output `y = sat(Σ h[k]·x[n−k] >> (17 + shift))`. Bank 0
+holds the default cabinet (cabinet 0, shift 3) at power-up, bank 1 is zero. The cabinet costs one
+sample (20.8 µs) of latency when it is on and **nothing when it is off** (the stage output is then
+the distortion output itself).
+
+| Register | Meaning |
+|----------|---------|
+| CAB_CTRL (0x1B) | bit0 = bank to play; `[3:1]` = shift of bank 0; `[6:4]` = shift of bank 1 (0 … 7) |
+| CAB_ADDR (0x1C) | bit11 = bank, `[10:0]` = tap address of the next coefficient write |
+| CAB_DATA_LO (0x1D) | coefficient bits 15..0 |
+| CAB_DATA_HI (0x1E) | coefficient bits 17..16; the write of `{HI, LO}` happens when this register is written, the tap address then increments (it wraps inside the bank) |
+
+Loading a cabinet (`gme_hps.py cab N` does this): write CAB_ADDR = `bank << 11` for the idle bank, then
+for every tap write CAB_DATA_LO and CAB_DATA_HI, then CAB_CTRL with the new bank bit and its shift.
+
+* **Writes to the active bank are ignored** (a playing cabinet is never disturbed). "Active" is the bank
+  in use *and* the requested one: while a switch is running (about 5 ms) neither bank accepts writes, so wait
+  about 10 ms after a switch before loading the next cabinet. The pointer still increments for ignored writes.
+* **Switching** (CAB_CTRL bit0 changes): the cabinet level fades out over 128 samples, the bank (and its
+  shift) switches, it fades back in over 128 samples. Enabling / disabling the effect fades over 256 samples
+  like every effect. The shift of the playing bank may be changed any time (it steps the gain at the next
+  sample); set the idle bank's shift before switching to it.
+* The register side effects (pointer, write) happen on a write that contains byte 1 (like CODEC): use
+  32-bit or halfword stores, or store byte 0 before byte 1. CAB_DATA_HI only has bits `[1:0]` but must be
+  written with a 16-bit or 32-bit store (or byte 0 followed by byte 1) to trigger the write.
+* Coefficient files for the board: `python3 tools/cab_coefs.py --build` writes `ir/build/cabNN.coef`
+  (git-ignored; third-party IR files are never committed), copy them to the board, then
+  `gme_hps.py cab list | cab N | cab on | cab off`.
+
+### (8) Dynamics (step D5)
+
+Noise gate and compressor in one block (`dynamics.vhd`, one level detector, one gain multiplier), the **first** stage of
+the chain (enable bit 7). `DYN_CTRL` bit 0 switches the gate, bit 1 the compressor; with both off and bit 7 on the stage
+is a transparent one-sample delay. Levels are in **Q8 log2 units**: 1 unit = 1/256 of a factor 2 = 0.0235 dB,
+register value = dB × 42.52 (signed 16-bit two's complement), e.g. −20 dBFS = −850 (`0xFCAE`), −45 dBFS = −1913,
++6 dB make-up = 255.
+
+* **Detector:** peak follower on |x|, attack 4 samples, release 43 ms; a sine reads about 0.1 dB under its peak.
+* **Compressor** (above `COMP_THRESH`): reduction = over − over/ratio (shift-based: 2:1, 4:1, 8:1; ∞:1 = over), limited to 95.9 dB;
+  gain = make-up − reduction. The gain is smoothed in the log domain (linear-in-dB glide): attack time constant 2^`COMP_ATTACK`
+  samples when the gain falls, 2^`COMP_RELEASE` when it rises. Switching the compressor off glides the reduction and the
+  make-up to 0 dB at the release speed, then the stage is an exact pass-through.
+* **Gate:** opens at level ≥ `GATE_THRESH`, closes below it − 3 dB (hysteresis, no chatter); closing glides the attenuation
+  to −84 dB in 50 ms, opening takes 1 ms. Switching the gate off glides it open in 1 ms.
+* **Smoothing:** the gain itself glides (attack / release / gate speeds above), so register changes do not click.
+  Thresholds, ratio, make-up and the times are **not** smoothed further: they take effect at the next sample and act through
+  the gain glide.
+* **DYN_GR (0x2C):** `max(0, −compressor exponent) + gate attenuation`, i.e. the net reduction in Q8 log2 units (make-up counts
+  against it), updated every sample, 0 while the stage is off. Read-only.
+* Board tool: `gme_hps.py set effects=DYN dyn=gate+comp gate_db=-45 comp_db=-20 ratio=4 makeup_db=3 attack_ms=2 release_ms=100`.
+
+### (9) EQ (step D5)
+
+Three biquad sections in series (`eq3.vhd`): low shelf (100 Hz), peaking mid (800 Hz, Q 0.9), high shelf (3.5 kHz),
+−12 … +12 dB each (`tools/eq_coefs.py`, RBJ cookbook), between the cabinet and the modulated delay (enable bit 8).
+The coefficients come from the host (Q2.16, 18 bit): 15 signed coefficients, section × 5 + (b0 b1 b2 a1 a2), then address 15 =
+**scale word** (2 bits per section, section 0 in bits 1:0: the section's feed-forward sum is multiplied by 2^n, needed by a
+boosting shelf whose b0 exceeds 2). Power-up: transparent.
+
+To load a set: write `EQ_ADDR` = 0; for each of the 16 words write `EQ_DATA_LO` then `EQ_DATA_HI` (the pointer increments); then write
+`EQ_APPLY`. The writes go to shadow registers; only `EQ_APPLY` makes the whole set (all three sections and the scale word) active, at
+the next half-frame strobe, so a half-written set is never used and the three sections never change at different samples. Like all
+registers with side effects, the writes must contain byte 1 (32-bit or halfword stores). The pointer wraps from 15 to 0.
+Board tool: `gme_hps.py eq BASS MID TREBLE` (dB), `gme_hps.py eq off`.
+
+### (10) Output level of the overdrive and distortion (step D6)
+
+`OD_LEVEL` (0x2D) and `DIST_LEVEL` (0x2E) set the loudness of the effect's wet path, in the same **Q8 log2 units** as the dynamics
+registers: a signed 16-bit value *L* means a gain of 2^(*L*/256) (dB = *L* × 6.0206 / 256; −1020 = −24.0 dB, −256 = −6.02 dB, 0 = 0 dB,
++256 = +6.02 dB, +512 = +12.04 dB; the range −1024 … +512 is enforced by clamping). **0 is exactly unity**: the output is bit-identical
+to the one without the stage (all older references stay bit-exact).
+
+* **Where:** overdrive: after the clipping and the `OD_GAIN` multiplication, before the saturation to the sample width
+  (`y = sat(floor(clipped × gain × G))`). Distortion: on the magnitude of the shaped value (table output), before the sign is restored
+  and before the dry/wet mix, limited to ±(2^(DW−1) − 1) (`golden.py`). With the effect off (or in its fade) nothing changes.
+* **Gain:** *G* = mantissa × 2^*n* / 2^16, *n* = *L* ≫ 8, mantissa = round(2^(frac/256) × 65536) from a 256-entry table
+  (`level_gain.vhd`, accuracy: the table rounding, < 0.0001 dB; the gain step per register unit is 0.0235 dB). One multiplier per effect.
+* **Smoothing:** each level goes through `param_smooth` in offset binary like `MOD_FB` (time constant 128 frames, exact after about
+  1600), so a change glides linearly in dB and never clicks. The smoothers start at unity (not at −24 dB) after reset.
+* **Presets:** `gme_hps.py` presets carry the levels that make them as loud as the clean signal (`tools/level_presets.py`).
+  Board tool: `gme_hps.py set od_db=-3 dist_db=-6` (dB) or `od_level=… dist_level=…` (raw values).

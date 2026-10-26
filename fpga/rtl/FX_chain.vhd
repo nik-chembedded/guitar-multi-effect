@@ -1,22 +1,35 @@
 -- -----------------------------------------------------------------------------
 -- FX_chain.vhd
--- Effect chain: Overdrive -> Distortion -> Chorus/flanger/vibrato (mod_delay, D2)
---               -> Tremolo -> Echo -> Reverb.
+-- Effect chain: Dynamics (gate + compressor, D5) -> Overdrive -> Distortion ->
+--               Cabinet (FIR, D3) -> EQ (3 bands, D5) -> Chorus/flanger/vibrato
+--               (mod_delay, D2) -> Tremolo -> Echo -> Reverb (Freeverb, D4).
 -- Every effect advances on the strobes (sample_tick / half_tick, v2 B1).
 --   DW    : sample width, 16 (bit-exact to v1) or 24 (step C)
 --   XFADE : click-free on/off (fx_xfade, 5.3 ms crossfade per effect)
 --   ECHO_AW : echo line 2^ECHO_AW words (15 = 32 k; 16 = the v1 size)
+--   CAB_TAPS, CAB_INIT : cabinet FIR length (2048; 16 for simulations with 16-clock
+--             frames) and the .mif of its power-up coefficients (bank 0)
+-- Cabinet (enable bit 6): cab_ctrl = CAB_CTRL register (bit 0 bank, 3:1 shift of bank 0,
+-- 6:4 shift of bank 1), coefficient write port cab_cw_*; with the cabinet off the stage
+-- output is the distortion output itself (no latency), see cab_stage.vhd.
+-- Dynamics (enable bit 7) and EQ (enable bit 8): zero-latency bypass when off (dyn_stage /
+-- eq_stage, fx_bypass); when on each adds one frame. dyn_ctrl = DYN_CTRL register (bit 0 gate,
+-- bit 1 compressor), eq_cw_* / eq_apply = EQ coefficient port.
+-- D6: od_level / dist_level scale the overdrive / distortion wet path (level_gain.vhd).
 -- Mono: the left input is processed; data_out_right is not driven by effects.
 -- -----------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
+use work.cab_fir_pkg.all;
 
 entity FX_chain is
 generic (
       DW    : positive := 16;
       XFADE : boolean  := false;
-      ECHO_AW : positive := 15
+      ECHO_AW : positive := 15;
+      CAB_TAPS : positive := 2048;
+      CAB_INIT : string  := "cab_default.mif"
 );
 port(
 
@@ -48,8 +61,36 @@ port(
 		chorus_depth      : in std_logic_vector(15 downto 0);
 		dist_mix          : in std_logic_vector(15 downto 0);
 		dist_type         : in std_logic_vector(15 downto 0);
-		reverb_type       : in std_logic_vector(15 downto 0);
+		reverb_size       : in std_logic_vector(15 downto 0) := (others => '0');   -- D4: feedback Q0.16 (block clamps to 0.98)
+		reverb_damp       : in std_logic_vector(15 downto 0) := (others => '0');   -- D4: [7:0]
 		reverb_mix        : in std_logic_vector(15 downto 0);
+
+		-- D3 cabinet: CAB_CTRL register and coefficient write port (18-bit, bank, tap address)
+		cab_ctrl          : in std_logic_vector(15 downto 0) := (others => '0');
+		cab_cw_en         : in std_logic := '0';
+		cab_cw_bank       : in std_logic := '0';
+		cab_cw_addr       : in std_logic_vector(10 downto 0) := (others => '0');
+		cab_cw_data       : in std_logic_vector(17 downto 0) := (others => '0');
+
+		-- D5 dynamics: DYN_CTRL .. COMP_MAKEUP registers (signed Q8 log2 units), gain-reduction meter
+		dyn_ctrl          : in std_logic_vector(15 downto 0) := (others => '0');
+		gate_thresh       : in std_logic_vector(15 downto 0) := (others => '0');
+		comp_thresh       : in std_logic_vector(15 downto 0) := (others => '0');
+		comp_ratio        : in std_logic_vector(15 downto 0) := (others => '0');
+		comp_attack       : in std_logic_vector(15 downto 0) := (others => '0');
+		comp_release      : in std_logic_vector(15 downto 0) := (others => '0');
+		comp_makeup       : in std_logic_vector(15 downto 0) := (others => '0');
+		dyn_gr            : out std_logic_vector(15 downto 0);
+
+		-- D6: output level of the overdrive / distortion, signed Q8 log2 units (0 = unity, -1024 .. +512)
+		od_level          : in std_logic_vector(15 downto 0) := (others => '0');
+		dist_level        : in std_logic_vector(15 downto 0) := (others => '0');
+
+		-- D5 EQ: coefficient write port (address 0..14 coefficient, 15 scale word) and apply pulse
+		eq_cw_en          : in std_logic := '0';
+		eq_cw_addr        : in std_logic_vector(3 downto 0) := (others => '0');
+		eq_cw_data        : in std_logic_vector(17 downto 0) := (others => '0');
+		eq_apply          : in std_logic := '0';
 
 		data_in_left  : in std_logic_vector(DW - 1 downto 0);
 		data_in_right : in std_logic_vector(DW - 1 downto 0);
@@ -65,7 +106,7 @@ architecture rtl of FX_chain is
 
   -- per stage: effect output (wet) and stage output after the crossfade
   signal od_wet, dist_wet, chorus_wet, trem_wet, echo_wet, rev_wet : sample_t;
-  signal od_out, dist_out, chorus_out, trem_out, echo_out          : sample_t;
+  signal dyn_out, od_out, dist_out, cab_out, eq_out, chorus_out, trem_out, echo_out : sample_t;
   signal od_en, dist_en, chorus_en, trem_en, echo_en, rev_en       : std_logic;
 
 begin
@@ -73,28 +114,51 @@ begin
   -- strobes per effect (as in v1): overdrive / distortion on sample_tick,
   -- the delay-based effects on half_tick (en_fall = the other strobe)
 
+  -- dynamics: the first stage; combinational at g = 0 (no latency), see dyn_stage.vhd
+  DYN_left : entity work.dyn_stage generic map (DW => DW, XFADE => XFADE) port map(
+      clk => clk, sample_tick => sample_tick, enable => effects_enable(7),
+      dyn_ctrl => dyn_ctrl, gate_thresh => gate_thresh, comp_thresh => comp_thresh,
+      comp_ratio => comp_ratio, comp_attack => comp_attack, comp_release => comp_release,
+      comp_makeup => comp_makeup, din => data_in_left, dout => dyn_out, gain_red => dyn_gr);
+
   OD_left : entity work.overdrive generic map (DW => DW) port map(
       clk => clk, en_rise => sample_tick, en_fall => half_tick, od_enable => od_en,
-      drive => od_drive, gain => od_gain, data_in => data_in_left, data_out => od_wet);
+      drive => od_drive, gain => od_gain, level => od_level, data_in => dyn_out, data_out => od_wet);
   OD_fade : entity work.fx_xfade generic map (DW => DW, XFADE => XFADE) port map(
       clk => clk, tick => sample_tick, en_rise => sample_tick, enable_in => effects_enable(0),
-      enable_eff => od_en, din => data_in_left, wet => od_wet, dout => od_out);
+      enable_eff => od_en, din => dyn_out, wet => od_wet, dout => od_out);
 
   dist_left : entity work.distortion generic map (DW => DW) port map(
       clk => clk, en_rise => sample_tick, en_fall => half_tick, dist_enable => dist_en,
-      mix => dist_mix, d_type => dist_type, data_in => od_out, data_out => dist_wet);
+      mix => dist_mix, d_type => dist_type, level => dist_level, data_in => od_out, data_out => dist_wet);
   dist_fade : entity work.fx_xfade generic map (DW => DW, XFADE => XFADE) port map(
       clk => clk, tick => sample_tick, en_rise => sample_tick, enable_in => effects_enable(3),
       enable_eff => dist_en, din => od_out, wet => dist_wet, dout => dist_out);
+
+  -- cabinet: crossfade with the distortion output, combinational at g = 0 (no latency)
+  CAB_left : entity work.cab_stage
+    generic map (DW => DW, TAPS => CAB_TAPS, LANES => 4, XFADE => XFADE, INIT_FILE => CAB_INIT)
+    port map (
+      clk => clk, sample_tick => sample_tick, enable => effects_enable(6),
+      bank_req => cab_ctrl(0), shift0 => cab_ctrl(3 downto 1), shift1 => cab_ctrl(6 downto 4),
+      cw_en => cab_cw_en, cw_bank => cab_cw_bank,
+      cw_addr => cab_cw_addr(clog2(CAB_TAPS) - 1 downto 0), cw_data => cab_cw_data,
+      din => dist_out, dout => cab_out);
+
+  -- EQ: samples the cabinet output at half_tick, combinational at g = 0, see eq_stage.vhd
+  EQ_left : entity work.eq_stage generic map (DW => DW, XFADE => XFADE) port map(
+      clk => clk, sample_tick => sample_tick, half_tick => half_tick, enable => effects_enable(8),
+      cw_en => eq_cw_en, cw_addr => eq_cw_addr, cw_data => eq_cw_data, apply => eq_apply,
+      din => cab_out, dout => eq_out);
 
   CHORUS_left : entity work.mod_delay generic map (DW => DW) port map(
       clk => clk, en_rise => half_tick, enable => chorus_en,
       mix => chorus_level, depth => chorus_depth, rate => chorus_rate,
       base => mod_base, fb => mod_fb, shape => mod_shape,
-      data_in => dist_out, data_out => chorus_wet);
+      data_in => eq_out, data_out => chorus_wet);
   CHORUS_fade : entity work.fx_xfade generic map (DW => DW, XFADE => XFADE) port map(
       clk => clk, tick => sample_tick, en_rise => half_tick, enable_in => effects_enable(4),
-      enable_eff => chorus_en, din => dist_out, wet => chorus_wet, dout => chorus_out);
+      enable_eff => chorus_en, din => eq_out, wet => chorus_wet, dout => chorus_out);
 
   TREMOLO_left : entity work.tremolo_v2 generic map (DW => DW) port map(
       clk => clk, en_rise => half_tick, en_fall => sample_tick, tremolo_enable => trem_en,
@@ -112,10 +176,11 @@ begin
       clk => clk, tick => sample_tick, en_rise => half_tick, enable_in => effects_enable(2),
       enable_eff => echo_en, din => trem_out, wet => echo_wet, dout => echo_out);
 
-  REVERB_left : entity work.reverbe generic map (DW => DW) port map(
-      clk => clk, en_rise => half_tick, en_fall => sample_tick, data_in => echo_out,
-      reverb_mix => reverb_mix, reverb_type => reverb_type, reverbe_enable => rev_en,
-      data_out => rev_wet);
+  -- room presets / custom size and damping are chosen outside (gme_core: smoothed)
+  REVERB_left : entity work.reverb_fv generic map (DW => DW) port map(
+      clk => clk, en_rise => half_tick, en_fall => sample_tick, enable => rev_en,
+      size => reverb_size, damp => reverb_damp, mix => reverb_mix,
+      data_in => echo_out, data_out => rev_wet);
   REVERB_fade : entity work.fx_xfade generic map (DW => DW, XFADE => XFADE) port map(
       clk => clk, tick => sample_tick, en_rise => half_tick, enable_in => effects_enable(5),
       enable_eff => rev_en, din => echo_out, wet => rev_wet, dout => data_out_left);

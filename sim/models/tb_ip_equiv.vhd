@@ -41,6 +41,14 @@ architecture sim of tb_ip_equiv is
   signal m5_wa, m5_ra : std_logic_vector(9 downto 0) := (others => '0');
   signal m5_d : std_logic_vector(15 downto 0) := (others => '0');
   signal m5_qi, m5_qm : std_logic_vector(15 downto 0);
+  signal c0_wa : std_logic_vector(11 downto 0) := (others => '0');
+  signal c0_ra : std_logic_vector(9 downto 0) := (others => '0');
+  signal c0_d : std_logic_vector(17 downto 0) := (others => '0');
+  signal c0_qi, c0_qm : std_logic_vector(71 downto 0);
+  signal c1_wa : std_logic_vector(6 downto 0) := (others => '0');
+  signal c1_ra : std_logic_vector(4 downto 0) := (others => '0');
+  signal c1_d : std_logic_vector(17 downto 0) := (others => '0');
+  signal c1_qi, c1_qm : std_logic_vector(71 downto 0);
 
 begin
   clk  <= not clk  after 5 ns when not done else '0';
@@ -64,13 +72,20 @@ begin
   m4_m : entity model.fx_dpram generic map (WIDTH => 24, ADDR_W => 10) port map (clock => clk, data => m4_d, rdaddress => m4_ra, wraddress => m4_wa, wren => wren, clocken => cen, q => m4_qm);
   m5_i : entity intel.fx_dpram generic map (WIDTH => 16, ADDR_W => 10) port map (clock => clk, data => m5_d, rdaddress => m5_ra, wraddress => m5_wa, wren => wren, clocken => cen, q => m5_qi);
   m5_m : entity model.fx_dpram generic map (WIDTH => 16, ADDR_W => 10) port map (clock => clk, data => m5_d, rdaddress => m5_ra, wraddress => m5_wa, wren => wren, clocken => cen, q => m5_qm);
+  c0_i : entity intel.cab_coef_ram generic map (WIDTH => 18, LANES_LOG2 => 2, ADDR_W => 12, INIT_FILE => "cab_eq_12.mif") port map (clock => clk, wren => wren, wraddress => c0_wa, data => c0_d, rdaddress => c0_ra, q => c0_qi);
+  c0_m : entity model.cab_coef_ram generic map (WIDTH => 18, LANES_LOG2 => 2, ADDR_W => 12, INIT_FILE => "cab_eq_12.mif") port map (clock => clk, wren => wren, wraddress => c0_wa, data => c0_d, rdaddress => c0_ra, q => c0_qm);
+  c1_i : entity intel.cab_coef_ram generic map (WIDTH => 18, LANES_LOG2 => 2, ADDR_W => 7, INIT_FILE => "cab_eq_7.mif") port map (clock => clk, wren => wren, wraddress => c1_wa, data => c1_d, rdaddress => c1_ra, q => c1_qi);
+  c1_m : entity model.cab_coef_ram generic map (WIDTH => 18, LANES_LOG2 => 2, ADDR_W => 7, INIT_FILE => "cab_eq_7.mif") port map (clock => clk, wren => wren, wraddress => c1_wa, data => c1_d, rdaddress => c1_ra, q => c1_qm);
 
 
   stim : process
     variable s1 : positive := 7;
     variable s2 : positive := 99;
     variable r  : real;
-    variable errors, xskips : natural := 0;
+    variable errors, xskips, cskips : natural := 0;
+    variable cw, cr : integer;
+    variable k0_1, k0_2 : boolean := true;
+    variable k1_1, k1_2 : boolean := true;
     impure function rnd(n : positive) return natural is
     begin
       uniform(s1, s2, r);
@@ -82,8 +97,8 @@ begin
         xskips := xskips + 1;
       elsif a /= b then
         if errors < 20 then
-          report "MISMATCH " & name & " intel=" & integer'image(to_integer(unsigned(a)))
-                 & " model=" & integer'image(to_integer(unsigned(b))) severity error;
+          report "MISMATCH " & name & " intel=" & to_hstring(a)
+                 & " model=" & to_hstring(b) severity error;
         end if;
         errors := errors + 1;
       end if;
@@ -125,10 +140,25 @@ begin
       if rnd(4) = 0 then m5_ra <= m5_wa; else m5_ra <= std_logic_vector(to_unsigned(rnd(64), 10)); end if;
       m5_d <= std_logic_vector(to_unsigned(rnd(2 ** 16), 16));
       cmp("fx_dpram_16x10", m5_qi, m5_qm, false);
+      cw := rnd(2) * 2048 + rnd(64);
+      c0_wa <= std_logic_vector(to_unsigned(cw, 12));
+      if rnd(2) = 0 then cr := (cw / 4 + rnd(2)) mod 1024; else cr := rnd(1024); end if;
+      c0_ra <= std_logic_vector(to_unsigned(cr, 10));
+      c0_d <= std_logic_vector(to_unsigned(rnd(262144), 18));
+      if not k0_2 then cmp("cab_coef_ram_12", c0_qi, c0_qm, false); else cskips := cskips + 1; end if;
+      k0_2 := k0_1; k0_1 := (cr = cw / 4);
+      cw := rnd(2) * 64 + rnd(64);
+      c1_wa <= std_logic_vector(to_unsigned(cw, 7));
+      if rnd(2) = 0 then cr := (cw / 4 + rnd(2)) mod 32; else cr := rnd(32); end if;
+      c1_ra <= std_logic_vector(to_unsigned(cr, 5));
+      c1_d <= std_logic_vector(to_unsigned(rnd(262144), 18));
+      if not k1_2 then cmp("cab_coef_ram_7", c1_qi, c1_qm, false); else cskips := cskips + 1; end if;
+      k1_2 := k1_1; k1_1 := (cr = cw / 4);
     end loop;
     wait for 200 ns;
     report "EQUIV: " & integer'image(errors) & " mismatches, " & integer'image(xskips)
-           & " X outputs skipped (DONT_CARE collisions), " & integer'image(CYCLES) & " cycles";
+           & " X outputs skipped (DONT_CARE collisions), "
+           & integer'image(cskips) & " cab_coef_ram read/write collisions skipped, " & integer'image(CYCLES) & " cycles";
     if errors = 0 then report "RESULT: PASS ip_equiv"; else report "RESULT: FAIL ip_equiv"; end if;
     done <= true;
     std.env.stop;

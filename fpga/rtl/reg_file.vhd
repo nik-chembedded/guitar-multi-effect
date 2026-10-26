@@ -10,9 +10,11 @@
 --   0x13        output peak level                                              R
 --   0x14        CONTROL: bit0 = re-run codec init, bit1 = mute (level)         W, R
 --               bit0 is a self-clearing pulse on codec_init
---   0x16..0x2F  extension registers (step D), R/W, all reaching the core on the
+--   0x16..0x2F  extension registers (step D), R/W (0x2C DYN_GR is read-only: the live
+--               gain-reduction meter of the dynamics stage, dyn_gr), all reaching the core on the
 --               flat bus ext (register 0x16 + i = ext(16*i+15 downto 16*i)):
 --               0x16 TREM_RATE, 0x18 MOD_BASE, 0x19 MOD_FB, 0x1A MOD_SHAPE, ...
+--               0x2D OD_LEVEL, 0x2E DIST_LEVEL (D6: signed Q8 log2 output level, 0 = unity)
 --               (docs/register_map.md)
 -- Any other address: err = '1' (read and write).
 -- -----------------------------------------------------------------------------
@@ -22,7 +24,7 @@ use ieee.numeric_std.all;
 
 entity reg_file is
   generic (
-    VERSION : std_logic_vector(15 downto 0) := x"0204"
+    VERSION : std_logic_vector(15 downto 0) := x"0208"
   );
   port (
     clk        : in  std_logic;
@@ -37,6 +39,7 @@ entity reg_file is
     status_in  : in  std_logic_vector(15 downto 0);
     level_in   : in  std_logic_vector(15 downto 0);
     level_out  : in  std_logic_vector(15 downto 0);
+    dyn_gr     : in  std_logic_vector(15 downto 0) := (others => '0');   -- 0x2C (D5)
     -- effect registers
     effects_enable : out std_logic_vector(15 downto 0);
     od_drive       : out std_logic_vector(15 downto 0);
@@ -66,6 +69,7 @@ architecture rtl of reg_file is
   signal control : std_logic_vector(15 downto 0) := (others => '0');
   constant EXT_LO : natural := 16#16#;
   constant EXT_HI : natural := 16#2F#;
+  constant DYN_GR_ADDR : natural := 16#2C#;
   type ext_t is array (EXT_LO to EXT_HI) of std_logic_vector(15 downto 0);
   signal ext_r   : ext_t := (others => (others => '0'));
   signal init_p  : std_logic := '0';
@@ -87,14 +91,14 @@ begin
         elsif a = 16#14# then
           control <= wdata and x"0002";      -- bit0 is a pulse, not stored
           init_p  <= wdata(0);
-        elsif a >= EXT_LO and a <= EXT_HI then
+        elsif a >= EXT_LO and a <= EXT_HI and a /= DYN_GR_ADDR then
           ext_r(a) <= wdata;
         end if;
       end if;
     end if;
   end process;
 
-  read_mux : process(addr, regs, status_in, level_in, level_out, control, ext_r)
+  read_mux : process(addr, regs, status_in, level_in, level_out, control, ext_r, dyn_gr)
     variable a : natural range 0 to 255;
   begin
     a     := to_integer(unsigned(addr));
@@ -112,6 +116,8 @@ begin
       rdata <= level_out;
     elsif a = 16#14# then
       rdata <= control;
+    elsif a = DYN_GR_ADDR then
+      rdata <= dyn_gr;
     elsif a >= EXT_LO and a <= EXT_HI then
       rdata <= ext_r(a);
     else

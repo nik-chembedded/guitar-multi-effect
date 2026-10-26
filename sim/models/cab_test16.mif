@@ -1,0 +1,43 @@
+-- cab_coefs.py: cabinet FIR coefficients, signed Q1.17 x 2^shift (block floating point)
+-- output shift = 2 (cab_fir input 'shift')
+
+WIDTH=18;
+DEPTH=32;
+
+ADDRESS_RADIX=UNS;
+DATA_RADIX=UNS;
+
+CONTENT BEGIN
+	0	:	29235;
+	1	:	57467;
+	2	:	60419;
+	3	:	9157;
+	4	:	21882;
+	5	:	259082;
+	6	:	25789;
+	7	:	230143;
+	8	:	10454;
+	9	:	580;
+	10	:	261348;
+	11	:	260337;
+	12	:	254283;
+	13	:	1526;
+	14	:	1705;
+	15	:	2787;
+	16	:	0;
+	17	:	0;
+	18	:	0;
+	19	:	0;
+	20	:	0;
+	21	:	0;
+	22	:	0;
+	23	:	0;
+	24	:	0;
+	25	:	0;
+	26	:	0;
+	27	:	0;
+	28	:	0;
+	29	:	0;
+	30	:	0;
+	31	:	0;
+END;

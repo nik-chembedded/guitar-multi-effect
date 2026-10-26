@@ -1,6 +1,6 @@
 # v2 step D: better DSP blocks
 
-**Status:** D1 and D2 implemented and verified in simulation; D3–D5 blocks in development; board test at the end of step D.
+**Status:** D1 … D5 (generated LFO, modulated delay, cabinet FIR, Freeverb reverb, dynamics, EQ; integrated in the chain, timing met) and D6 (output level of the overdrive / distortion; 2x oversampling measured, not implemented) implemented and verified in simulation; board test at the end of step D.
 
 ## Overview
 
@@ -12,9 +12,9 @@ models, a WAV demo and a board test (JTAG `.sof`).
 | **D1** | **Generated LFO** (`nco_lfo`): phase accumulator + small sine table, sine / triangle / saw / square, free rate | replaces the 8 LFO tables (about 0.5 Mbit, ~70 M10K); any rate, not only 5–15 Hz; base for D2 |
 | D2 | Interpolated (fractional) delay lines; chorus on the new LFO; flanger, vibrato | delay-time changes without clicks or pitch steps |
 | D3 | FIR cabinet simulation (impulse response, time-multiplexed MAC at 49.152 MHz), **10 cabinet choices** | the guitar-speaker sound; the reason for the 49.152 MHz clock |
-| D4 | Damped reverb (Freeverb- or Dattorro-style) | more natural tail than the 4-comb Schroeder |
+| D4 | Damped reverb (Freeverb, done) | more natural tail than the 4-comb Schroeder |
 | D5 | Noise gate, compressor, EQ (biquads) | new effects |
-| D6 | Distortion / overdrive: level compensation, optional 2× oversampling | even volume, less aliasing |
+| D6 | Distortion / overdrive: level compensation (done), optional 2× oversampling (data only, not implemented) | even volume, less aliasing |
 
 ## D1: generated LFO
 
@@ -258,13 +258,311 @@ dist_out ──┬────────────────────�
   coefficient scale: the build tool stores every IR scaled to full 18-bit range
   (block floating point, see "Done ahead of the RTL").
 * **Two coefficient banks:** the HPS writes the inactive bank (registers
-  CAB_ADDR with auto-increment, CAB_DATA_LO / CAB_DATA_HI, CAB_SHIFT), then
-  CAB_CTRL switches banks. The switch is click-free without computing two FIRs:
+  CAB_ADDR with auto-increment, CAB_DATA_LO / CAB_DATA_HI; the per-bank shifts are in
+  CAB_CTRL), then CAB_CTRL switches banks. The switch is click-free without computing two FIRs:
   the wet level fades out over 128 samples, the bank switches, and it fades back in
   over 128 samples (dry stays on, so it is a 5 ms dip of the cabinet sound only).
 * **Power-up:** bank A initialised with cabinet 0 (generated `.mif`), so the cabinet
   works without Linux. Effect enable bit 6 (CAB), level-matched wet.
 * **Simulation:** generic `CAB_TAPS` (2048 in the FPGA). The FX_chain tests use
-  32 taps so the FIR fits the 16-clock frames of the fast frame driver; `test_cab`
-  runs the full 2048 taps with 1024-clock frames, bit-exact to a numpy model
-  (convolution, rounding, saturation, bank switch).
+  16 taps so the FIR fits the 16-clock frames of the fast frame driver; `test_cabfir`
+  runs the FIR block alone, the full 2048 taps with 1024-clock frames, bit-exact to a numpy
+  model (convolution, rounding, saturation, bank switch), and `test_system` runs the
+  whole design with the 2048-tap default cabinet.
+
+### D3 implementation and results (integrated 2026-10-25)
+
+Files: `cab_fir.vhd` (the FIR, see its header), `cab_coef_ram.vhd` (Intel altsyncram, simulation twin in
+`sim/models/`), `cab_stage.vhd` (FIR + fades + write protection, instance `CAB_left` in `FX_chain`),
+`fpga/ip/cab_default.mif` (cabinet 0, 2 × 2048 words), `tools/cab_coefs.py`.
+
+* **Position / bypass:** `FX_chain`: Overdrive → Distortion → **Cabinet** → Chorus → Tremolo → Echo → Reverb,
+  enable bit 6. The stage output is `dout = din + floor((wet − din)·g / 256)` with `g` = 0 … 256,
+  **combinational from `din`** (not `fx_xfade`, whose dry path is registered): with the cabinet off
+  (`g = 0`) the output is exactly `dist_out`, so latency and all `test_refv2` references stay unchanged
+  (`test_refv2` passes without re-recording); `g = 256` gives exactly the FIR output.
+* **Strobe:** `start` = `sample_tick` delayed by one clock (the distortion output has been updated by the
+  `sample_tick` edge); the FIR runs on every sample, also when the cabinet is off (warm history). Its output is
+  one sample late and valid from `start` to the next `start`, long before `half_tick`, when the chorus samples it.
+* **Fades:** `g` moves once per `sample_tick`: ±1 for enable / disable (256 samples). **Bank change**
+  (`CAB_CTRL` bit 0 ≠ the bank in use): `g` runs down in steps of 2 (128 samples), at `g = 0` the bank in use
+  (and with it the shift) switches, `g` runs back up in steps of 2 (128 samples) if the cabinet is enabled.
+  `XFADE = false`: `g` and the bank jump.
+* **Write protection:** `cab_stage` forwards a coefficient write only when `cw_bank` is neither the bank in use nor
+  the requested bank; writes to the active bank (including both banks while a switch is running) are dropped.
+* **Register side effects:** `ctrl_avmm` gives a 1-cycle strobe (`ext_we`) with the register number and the complete
+  value for every write of 0x16 … 0x2F that contains byte 1 (like CODEC), one clock after the write, when the
+  register already holds the new value. `gme_core` keeps the 12-bit pointer: CAB_ADDR (0x1C) loads it;
+  CAB_DATA_HI (0x1E) writes `{HI[1:0], CAB_DATA_LO}` at it (registered `cab_cw_*` port of `FX_chain`) and increments
+  the tap address (bank bit unchanged). The registers 0x1B … 0x1E are ordinary R/W registers (read back what was written).
+* **Constraints:** `top_v2.sdc` adds `*|u_fx|CAB_left|*` to the per-clock blocks (`seqblk`) that are excluded from the
+  16-cycle multicycle relaxation: the FIR pipeline and the crossfade keep single-cycle constraints (the crossfade is
+  a combinational path from the distortion output to the chorus input, checked with the full 20 ns).
+  `top_v2.vhd` passes `CAB_INIT => "ip/cab_default.mif"` (Quartus looks for the `.mif` relative to the project, the
+  simulation finds `cab_default.mif` in its working directory).
+* **Board tool:** `gme_hps.py cab list | cab N | cab on | cab off`; `tools/cab_coefs.py --build` writes
+  `ir/build/cabNN.coef` for every manifest slot whose IR file is present (name, shift, 2048 integers; git-ignored).
+  Loading writes the idle bank (4096 register writes), then CAB_CTRL.
+* **Version:** 0x0205.
+
+Verification (all through the real RTL, GHDL + cocotb):
+
+| Test | Result |
+|------|--------|
+| `test_cabfir` (FIR block) | DW 16/TAPS 16, DW 24/TAPS 64, DW 16/TAPS 64: random full-scale data with saturation, shifts 0 … 7 and 4 bank switches bit-exact to `cabfir_model.py` (632 / 776 / 776 samples), impulse = coefficients, minimum frame length TAPS/LANES + 7 clocks; `test_full`: 2048 taps, the default `.mif`, 1024-clock frames, bit-exact. (`test_impulse` now flushes the history left by `test_random`: with the old two zero frames it failed whenever it ran after `test_random`.) |
+| `test_fx_chain::test_cab` (16- and 24-bit chain, `CAB_TAPS = 16`) | cab off: bit-exact bypass, latency 4 frames, the same after the cabinet was used; impulse = coefficients >> (17 + shift) 1 frame behind the bypass latency; bank 1 loaded through the write port; bank switch; writes to the active bank ignored, idle bank rewritten and played |
+| `test_cab_xfade` (`XFADE`, 16 and 24 bit) | the same with fades: steady states exact, the largest step during the bank switch equals the signal's own largest step (ratio 1.00) |
+| `test_refv2` | unchanged, 31 presets bit-exact (cabinet off) |
+| `test_avmm::test_ext_write_event` | CAB registers read back; one event per byte-1 write of an extension register, none for byte-0-only stores, CODEC, effect registers, invalid addresses |
+| `test_system::test_cabinet` | whole design, 1024-clock frames, 2048 taps: enable via registers, I²S impulse → 400 taps equal the default `.mif` >> (17 + 3), 7 coefficients written to bank 1 through CAB_ADDR / DATA_LO / DATA_HI, switch, 400 taps exact; cabinet adds exactly 1 frame |
+
+Full regression (`sim/run_all.sh`): **27 passed** in 34 min, including `test_cabfir_full`, `test_refv2` unchanged and `test_system`.
+
+Quartus Prime Lite 18.1 (`quartus_sh --flow compile My_Audio`): 0 errors, critical warnings only 169085 / 174073
+(HPS pins). **2,759 ALMs (9 %), 3,075 registers, 258 M10K (65 %, 2.14 Mbit), 41 DSP blocks (47 %).**
+`sys_clk` (PLL `divclk`): setup slack +1.975 ns worst (slow 0 °C; 85 °C +2.288), hold +0.089 ns worst
+(slow 0 °C; 85 °C +0.150); all other clocks met.
+
+## D4: Freeverb reverb (integrated 2026-10-26)
+
+Files: `reverb_fv.vhd` (block, see its header), `fv_comb.vhd` (low-pass-feedback comb, one delay line),
+`fv_allpass.vhd` (all-pass, g = 0.5), `sim/cocotb/reverbfv_model.py` (bit-exact model). They replace the
+Schroeder reverb (`reverbe.vhd`, `comb_filter.vhd`, `allpass_filter.vhd`, deleted).
+
+* **Structure:** input >> 7 → 8 parallel low-pass-feedback combs (lengths 1215 … 1760, Freeverb at 48 kHz) summed →
+  4 series all-pass (605, 480, 371, 245) → wet × 4 (saturating) → `mix8(dry, wet, mix)`. The loop delay of every line is
+  exactly its length; the sequencer runs 9 clocks after `en_rise` and the wet value of a sample depends only on past input.
+  Mix 0 gives exactly the input; disabled = registered bypass, state frozen.
+* **Chain:** `REVERB_left` in `FX_chain`, same position (last), enable bit 5, `en_rise = half_tick`, `fx_xfade`
+  around it as before. `FX_chain` now takes `reverb_size` / `reverb_damp` instead of `reverb_type`.
+* **Registers:** 0x0D REVERB_MIX, 0x0E REVERB_TYPE (0 … 3 room presets, 4 custom; 5 … 15 act as 4), new 0x1F REVERB_SIZE
+  (Q0.16, clamped to 0.98 in the block) and 0x20 REVERB_DAMP (`[7:0]`). The mapping is in `gme_core` (functions
+  `room_size` / `room_damp`), the block is unchanged; size and damp pass through two `param_smooth` instances, so
+  switching rooms glides. VERSION 0x0206.
+
+| REVERB_TYPE | room | size | damp |
+|---:|---|---|---:|
+| 0 | very light | 0.70 (45875) | 100 |
+| 1 | light | 0.80 (52429) | 80 |
+| 2 | medium | 0.88 (57672) | 60 |
+| 3 | heavy | 0.94 (61604) | 40 |
+| 4 | custom | reg 0x1F | reg 0x20 |
+
+* **Constraints:** `*|u_fx|REVERB_left|*` added to `seqblk` in `top_v2.sdc` (9-clock sequencer, RAM read pipeline: keeps
+  single-cycle constraints).
+* **Board tool:** `gme_hps.py` knows `reverb_size` / `reverb_damp`, `reverb_type=4`, preset `hall` (custom); presets
+  now also clear the two new registers.
+* **References:** `reverb_t0..t3`, `combo_all`, `combo_change` re-recorded on purpose
+  (`GME_REF_MODE=record GME_REF_ONLY=...`); the other 25 presets were checked bit-exact in the same run and by a
+  check run before recording (exactly these 6 failed, 25 passed), and `git status` shows only these 6 `.npy` files changed.
+
+Verification:
+
+| Test | Result |
+|------|--------|
+| `test_reverbfv` (unit, 16 and 24 bit, one simulation per testcase) | bit-exact to the model (random + square input, size / damp / mix changes, clamp, bypass, mix 0), decay, size and damp behaviour, overload (no wrap), level, 512/512-clock strobes identical to 8/8: 16 simulations passed (3 min 38 s with 4 workers) |
+| `test_fx_chain::test_reverb_chain_model` (16 and 24 bit) | `FX_chain` reverb output equals `reverbfv_model` fed with the chain's reverb input (`echo_out`), bit-exact, 10500 frames, 7 settings incl. clamp, mix 0 and bypass |
+| `test_fx_chain::test_reverb` | no wrap-around, decaying tail; rooms ordered by decay: late/mid tail energy 0.37 / 0.48 / 0.60 / 0.73 (16 bit), 0.36 / 0.47 / 0.59 / 0.71 (24 bit) |
+| `test_refv2` | 31 of 31 bit-exact after recording the 6 affected presets |
+| `test_avmm::test_reverb_regs`, `test_system::test_reverb_regs` | registers 0x0D / 0x0E / 0x1F / 0x20 and VERSION 0x0206; presets / custom mapping over the bridge and smoothed values at the chain |
+
+Quartus Prime Lite 18.1 (`quartus_sh --flow compile My_Audio`): 0 errors, critical warnings only 169085 / 174073 (HPS pins).
+**3,555 ALMs (11 %), 3,797 registers, 266 M10K (67 %, 2.24 Mbit), 49 DSP blocks (56 %).** `sys_clk` (PLL `divclk`):
+setup slack +0.584 ns worst (slow 0 °C; 85 °C +0.714), hold +0.105 ns (0 °C; 85 °C +0.220); all other clocks met.
+The setup slack is down from +1.98 ns (D3): timing is met, but the margin is smaller. M10K 67 % and DSP 56 % leave
+room for D5.
+
+Full regression (`sim/run_all.sh`): **43 passed** in 31.5 min (the 27 of D3 plus the 16 `test_reverbfv` simulations).
+`test_reverb_chain_model` runs before `test_reverb` in its simulation (the model starts with empty lines) and
+`test_system::test_reverb_regs` is the last test of its file (it would leave audio in the cabinet history).
+
+## D5: dynamics and EQ (integrated 2026-10-26)
+
+Blocks (verified on their own before the integration, headers have the details): `dynamics.vhd` (gate + compressor, one level
+detector, log2 / exp2 tables, one 24 x 24 multiplier, `dynamics_model.py`), `eq3.vhd` + `biquad.vhd` (low shelf, peaking mid, high
+shelf; Direct Form I, 48-bit accumulator, error feedback, `eq3_model.py`, coefficients from `tools/eq_coefs.py`).
+
+### Integration
+
+Files: `fx_bypass.vhd` (zero-latency crossfade, generic), `dyn_stage.vhd`, `eq_stage.vhd` (block + crossfade, instances `DYN_left` /
+`EQ_left` in `FX_chain`). `cab_stage.vhd` is unchanged (it has its own bank logic; `fx_bypass` repeats its arithmetic).
+
+* **Chain:** input → **Dynamics** → Overdrive → Distortion → Cabinet → **EQ** → Chorus → Tremolo → Echo → Reverb. Enable bit 7 = DYN,
+  bit 8 = EQ.
+* **Zero-latency bypass:** `dout = din + floor((wet − din)·g / 256)`, combinational from `din`, `g` = 0 … 256 moving once per
+  `sample_tick` (256 samples). Off: the stage output is its input, all 31 older `test_refv2` references stay bit-exact. On: +1 frame.
+* **Strobes** (deterministic in simulation, 16 clocks per frame, and on the board, 1024):
+  * Dynamics: block strobe = `sample_tick` delayed by one clock (the chain input is stable); result registered 10 clocks later = 11
+    clocks after `sample_tick`; the overdrive takes the stage output at the NEXT `sample_tick` → +1 frame when on.
+  * EQ: block strobe = `half_tick`; its input (cabinet stage output) is stable from `sample_tick` + 1; result 7 clocks later; the
+    modulated delay samples at the next `half_tick` → takes the previous frame's result, +1 frame when on.
+  * Both blocks run on every sample (`enable` = 1), also while the stage is off, so envelope / filter state is warm and a fade-in has no
+    start-up transient; `DYN_GR` is masked to 0 while the stage is off.
+  * The consumers of a stage output only sample at their strobe, so the output changing in between does not matter; this is checked by
+    `test_timing_invariance` (below), which fails when a strobe is moved (negative control: dynamics strobe = `half_tick`, 395 of 400 frames differ).
+* **Registers:** 0x21 DYN_CTRL (bit0 gate, bit1 compressor), 0x22 GATE_THRESH, 0x23 COMP_THRESH, 0x24 COMP_RATIO (0 … 4), 0x25 COMP_ATTACK,
+  0x26 COMP_RELEASE (k 0 … 15), 0x27 COMP_MAKEUP, 0x28 EQ_ADDR, 0x29 EQ_DATA_LO, 0x2A EQ_DATA_HI (writing it stores {HI, LO} at EQ_ADDR and
+  increments it), 0x2B EQ_APPLY (any write = apply pulse), 0x2C DYN_GR (read-only live meter; `reg_file` returns the `dyn_gr` input
+  and ignores writes). The EQ pointer and write port live in `gme_core` next to the cabinet's, fed by the same write event
+  (`ext_we`). VERSION 0x0207. Thresholds, ratio and make-up are not smoothed (the gain glide inside the block does that); EQ sets change
+  atomically at `apply`.
+* **Change to `dynamics.vhd`:** the `gain_reduction` meter is now computed one clock later (stage E5, from the registers `cs` / `ga` that E4
+  has just written, instead of from the E4 results in the same clock). Values and the audio path are unchanged (the 7 unit simulations are
+  still bit-exact); in the first compile the meter was the only violating path (−3.9 ns).
+* **Constraints (`top_v2.sdc`):** `*|u_fx|DYN_left|u_dyn|*` and `*|u_fx|EQ_left|u_eq|*` added to `seqblk`. They are NOT added to `seqout`:
+  their `data_out` loads the last pipeline stage's result one clock after it (a real 1-clock path). New: the data inputs of the mod_delay
+  line RAM (`CHORUS_left|u_line|*~porta_datain_reg*`, `*~PORT_A_DATA_IN_*`) get the 16-cycle multicycle like `seqout`: the RAM is written only
+  on `half_tick` and the cone behind it (distortion, cabinet and EQ crossfade multipliers in series) settles hundreds of clocks earlier; without it
+  the three series multipliers were timed as one clock (−4.4 ns).
+* **Board tool:** `gme_hps.py set dyn=gate+comp gate_db=… comp_db=… ratio=… makeup_db=… attack_ms=… release_ms=…`, `eq BASS MID TREBLE`
+  (dB, −12 … +12, coefficients from `eq_coefs.py`, written as 16 words + apply), `eq off | on`, `status` shows the gain reduction;
+  presets leave the DYN / EQ bits alone. `gme_hps.py selftest` covers the conversions and the register write sequence (Python 3 here; no
+  Python 2.7 interpreter was available, the code uses only 2.7-compatible syntax).
+
+### Verification
+
+| Test | Result |
+|------|--------|
+| `test_dynamics` (7 simulations), `test_eq3` (10 simulations: 5 testcases x 16 / 24 bit) | 17 passed, unit blocks unchanged (bit-exact to the models) |
+| `test_fx_chain::test_dynamics_chain`, `test_eq_chain` (16 and 24 bit chain) | off = exact bypass at the latency of the chain without the stage (also after use, with the block running); on = `dynamics_model` fed with the chain input / `eq3_model` fed with the stage input (`cab_out`), bit-exact, +1 frame; `DYN_GR` equals the model's meter in every frame; EQ sets through the write port, half-written set not used |
+| `test_dyn_eq_xfade` (`XFADE`, 16 and 24 bit) | enabling / disabling gives no step above the steady states', exact bypass after the fade-out |
+| `test_timing_invariance` | all effects on (dynamics, overdrive, distortion, cabinet, EQ, mod, tremolo, echo, reverb; 400 frames, dynamics and EQ switched off at 120 and on at 250): identical output at 16 and 1024 clocks per frame. Negative control (dynamics strobe moved to `half_tick`): fails, 395 of 400 frames differ |
+| `test_avmm::test_dynamics_eq_regs` (+ updated `test_write_read_all`) | 0x21 … 0x2B read / write with write events, 0x2C live and read-only, VERSION 0x0207 |
+| `test_system_dyneq` (real 1024-clock frames, 16-tap cabinet) | mid +6 dB set written through 0x28 … 0x2B: 800 Hz sine +6.00 dB (expected 6.00); compressor (−30 dB, 4:1) on a −6 dBFS sine: −18.5 dB, `DYN_GR` = 18.2 dB; off again: 0.000 dB, `DYN_GR` 0 |
+| `test_refv2` | 35 presets: the 31 older ones bit-exact (not re-recorded; `git status` shows only 4 new `.npy`), new `dyn_gate`, `dyn_comp`, `eq_3band`, `combo_d5` (everything on incl. cabinet) recorded with `GME_REF_ONLY`; check mode: all bit-exact |
+
+Quartus Prime Lite 18.1: 0 errors, critical warnings only 169085 / 174073 (HPS pins). **4,511 ALMs (14 %), 4,701 registers, 266 M10K (67 %),
+69 DSP blocks (79 %).** `sys_clk`: setup slack +2.347 ns worst (slow 0 °C; 85 °C +2.527), hold +0.069 ns (slow 0 °C; fast 0 °C +0.056 is the
+smallest over all corners); the HPS SDRAM clock is met (setup +1.73, hold +0.08 … +0.16).
+
+Full regression (`sim/run_all.sh`): **63 passed** in 41 min (the 43 of D4 plus 17 unit simulations of dynamics / EQ, `test_dyn_eq_xfade`, `test_timing_invariance`; `test_system_dyneq`, `test_refv2` with 35 presets).
+
+## D6: output level and oversampling decision data (2026-10-26)
+
+### Level compensation (implemented)
+
+The overdrive and the distortion are much louder than the clean signal; switching them on jumps the level by 4 … 12 dB. Two new
+registers, **0x2D OD_LEVEL** and **0x2E DIST_LEVEL**, give each effect an output level in **Q8 log2 units** (signed 16 bit, 1 unit =
+1/256 of a factor 2 = 0.0235 dB, the unit of the dynamics thresholds; −1024 … +512 = −24 … +12 dB, **0 = exactly unity**, out-of-range values are
+clamped). VERSION 0x0208.
+
+* **Gain stage (`level_gain.vhd`):** L is clamped to −1024 … +512, n = L ≫ 8 (floor, −4 … +2), f = L & 255; the gain is
+  mant(f) × 2^n / 2^16 with mant(f) = round(2^(f/256) × 65536), a 256-entry constant table (65536 … 130718, 17 bit; mant(0) = 65536, so
+  L = 0 gives sh = 16 and `x × 65536 ≫ 16 = x` exactly). Outputs: `mant` and the right shift `sh = 16 − n` (14 … 20). The module is purely
+  combinational; the Python model is `golden.level_gain` / `golden.apply_level` (`(v × mant) ≫ sh`, floor).
+* **Overdrive:** `od_lvl = mul_shr(od_out, mant_r, sh_r)` between the gain multiplication and `sat(…, DW)` (the old `od_out` was `new_out × gain`):
+  one multiplier of (DW + 19) × 17 bit (the product is exact, so the saturation clamps the exact value). **Distortion:** on the magnitude of
+  the ROM value (16 × 17 bit multiplier, one DSP), shifted by 2^(DW − 16) and by sh, limited to 2^(DW−1) − 1 (the wet value could not exceed the
+  sample range before), then the sign is restored and the dry/wet mix follows. So the level acts on the wet path only: with mix < 255 the dry
+  part stays at unity. With the effect off nothing changes (`data_out <= data_in`), and the click-free fade of `fx_xfade` is unchanged.
+* **Smoothing:** in `gme_core` both levels go through `param_smooth` in offset binary (like `MOD_FB`, so the signed value glides without a
+  sign problem), K = 7 (time constant 128 frames), 8 extra fraction bits: a change glides linearly in dB and settles exactly in about 1600 frames.
+  `param_smooth` got a generic `INIT` (default 0 = old behaviour) so the two level smoothers start at the offset-binary unity value after reset
+  (without it the effect would fade in from −24 dB for 35 ms after every reset).
+* **Timing / constraints:** `mant` / `sh` (the output of `level_gain`) are registered on the effect's strobe together with the sample they
+  belong to (`lv_mant_r`, `lv_sh_r`: next to `new_out` in the overdrive, next to the table address in the distortion); the multiplier, the shift and the
+  saturation behind them are combinational between strobe-loaded registers, i.e. the usual 16-cycle `fx` multicycle paths. The first version without
+  these two registers failed (−0.87 ns setup, 20.3 ns single-cycle relationship): the path smoother `y` → `level_gain` table → multiplier → `data_out` was
+  timed as one clock, because the multicycle for `$sm` (`get_registers {*|u_sm_*|y*}`) matches nothing (the instance path reads
+  `param_smooth:\smooth_on:u_sm_dlvl|y`, there is no `|u_sm_`). With the registers the only single-cycle part is smoother → table → register (~5 ns).
+  **Nothing was added to `seqblk` or `seqout`** in `top_v2.sdc`: there is no per-clock pipeline (the two registers load on the strobe the block already uses).
+  `test_timing_invariance` (now with non-zero levels, changed at frame 300) passes.
+* **Strobe alignment:** because the level is registered with its sample, the level that applies to the sample of frame n is the one valid at the strobe at which
+  the sample enters the stage: the overdrive uses `levels[n]` for x[n], the distortion (behind the bypassed but registered overdrive) `levels[n+1]`
+  (`test_level` sweeps one level per frame and checks exactly this).
+* **`tools/level_presets.py`** (numpy, PC): loudness of `sim/audio/the_lick_e_minor.wav` (mono, 48 kHz, 24-bit scale, peak −17.6 dBFS as
+  recorded) through the preset's overdrive / distortion with the bit-exact models (`golden.py` equivalents vectorised, checked against `golden.py`
+  on every run), measured as the RMS in the 100 Hz … 5 kHz band (ideal FFT band-pass over the whole clip; removes rumble and the fizz above
+  5 kHz that a guitar speaker does not play) — `--weighting a` uses the A-weighting curve instead and both are always printed. The OD level is
+  searched first (OD output = input loudness), then the distortion level (final output = input loudness), over all integer levels. The dry part of
+  the mix is not scaled, so the gain is found by search, not by formula.
+
+  | preset | uses | clean (dB) | no level | levelled | diff band / A | OD_LEVEL | DIST_LEVEL |
+  |---|---|---|---|---|---|---|---|
+  | crunch | DIST (medium, mix 160) | −28.92 | −25.09 | −28.91 | +0.01 / −0.02 dB | 0 | **−233** (−5.5 dB) |
+  | lead | DIST (hard, mix 220) | −28.92 | −17.10 | −28.93 | −0.01 / −0.08 dB | 0 | **−544** (−12.8 dB) |
+  | (od example, not a preset: drive 3000, gain 4) | OD | −28.92 | −16.92 | −28.91 | +0.01 / −0.01 dB | −510 (−12.0 dB) | 0 |
+
+  No factory preset uses the overdrive, hence the extra example row. The values are within ±0.1 dB of the target. Sensitivity to the input level
+  (`--peak-dbfs`): the needed distortion level changes by about ±1.5 dB for ±12 dB of input level (crunch −180 / −233 / −248 at peaks of −6 / −17.6 / −30 dBFS),
+  so the presets are a good starting point, not a guarantee for every pickup. The presets in `tools/gme_hps.py` carry `dist_level=-233` (crunch) and
+  `dist_level=-544` (lead); `gme_hps.py set od_db=-3 dist_db=-6` sets a level in dB. `preset` writes the two levels only when VERSION ≥ 0x0208.
+
+### Verification (D6)
+
+| Test | Result |
+|------|--------|
+| `test_fx_chain::test_level` (16 and 24 bit chain) | level 0 equals the pre-D6 formulas (written out in the test); all levels −1100 … +600 (1701 values, one per frame, incl. the clamps) bit-exact to `golden.py` for the overdrive (2 settings, with and without clipping / saturation) and the 3 curves (mix 255 and 100); +6.02 dB (256) = exactly 2x and −6.02 dB = exactly x/2 below saturation; −24 dB (level −1020): 23.988 dB (overdrive and distortion, limit 24 ± 0.05); level −5000 = clamp −1024 = 24.082 dB; +12 dB saturates at the sample limits and never wraps |
+| `test_refv2` | 36 presets: the 35 earlier ones bit-exact (level 0), new `level_od_dist` (OD −5 dB, distortion +4 dB, changed to +3 / −9 dB at frame 3000) recorded with `GME_REF_ONLY=level_od_dist`; `test_golden24`: 8 levels (−4000 … +4000) bit-exact for OD and the hard curve with full-scale 24-bit input |
+| `test_avmm::test_level_regs` | 0x2D / 0x2E read/write, sign kept, reset 0, own ext-bus slices, write events, VERSION 0x0208 |
+| `test_system_level` (`test_system::test_level_via_hps`, 16-tap cabinet, real 1024-clock frames, 4700 frames) | OD_LEVEL over the bridge: level 0 exactly unity from reset on, 256 → exactly 2x (+6.02 dB), −256 → exactly x/2; the glide has no sample step larger than the steady states' |
+| `test_timing_invariance` | identical output at 16 and 1024 clocks per frame with non-zero levels (changed at frame 300) |
+
+Quartus Prime Lite 18.1 (D6 RTL): 0 errors. **4,802 ALMs (15 %), 4,764 registers, 268 M10K (68 %), 72 DSP blocks (83 %; +3 for the two level multipliers: the overdrive's
+(DW + 19) × 17 bit and the distortion's 16 × 17 bit; a pre-clamp of the overdrive product to DW + 5 bits would be exact and might save one)**. `sys_clk`: setup +1.773 ns worst (slow 0 °C; 85 °C +1.936), hold +0.068 ns
+(fast 0 °C; the smallest over all corners and clocks, incl. the HPS SDRAM clocks: setup ≥ +1.7, hold ≥ +0.077). The first compile (without the
+registered `mant` / `sh`) was −0.869 ns setup / −0.026 ns hold, see "Timing / constraints" above.
+
+### D6: oversampling decision data
+
+Question: should the distortion run at 2x the sample rate to reduce aliasing? **Measured and simulated only, nothing implemented.**
+`tools/dist_aliasing.py` (numpy; run `python tools/dist_aliasing.py`) uses the bit-exact `golden.distortion` model (24 bit, mix 255 = wet only) on
+sines of exactly coherent frequency (2 s, 96000 samples, 4-term Blackman-Harris window, 96000-point FFT).
+
+*What is measured.* "inharm" = the level of the strongest spectral line that is not a multiple of the fundamental (baseband harmonics excluded),
+dB re the fundamental. At 1 kHz every alias lands on a harmonic bin (48 kHz / 1 kHz is an integer), so there is no inharmonic line; the
+second column "error" avoids that: the strongest line of `y − y_ideal`, where `y_ideal` is the same waveshaper evaluated at 8x the rate and band-limited
+to 24 kHz (exactly the harmonics below 24 kHz, no alias). 1.1 kHz is added to show what 1 kHz hides. 2x = zero-stuff, half-band Kaiser FIR
+(23 or 31 taps, gain 2), the same table at 96 kHz (address |x| ≫ 8 of the interpolated sample), the same half-band FIR, every second sample (floating-point
+filters, output rounded to 24 bit).
+
+Amplitude −3 dBFS (the table end is reached for part of every period: the curve is driven hard), dB re the fundamental:
+
+| f0 | curve | current: inharm / error | 2x, 23 taps: inharm / error | 2x, 31 taps: inharm / error |
+|----|-------|--------------------|--------------------|--------------------|
+| 1 kHz | soft | n/a / −56.2 | n/a / −72.6 | n/a / −72.6 |
+| 1 kHz | medium | n/a / −58.7 | n/a / −72.6 | n/a / −72.9 |
+| 1 kHz | hard | n/a / −58.2 | n/a / −61.8 | n/a / −62.4 |
+| 1.1 kHz | soft | −57.4 / −57.4 | −66.2 / −65.3 | −67.2 / −65.9 |
+| 1.1 kHz | medium | −61.4 / −61.5 | −72.5 / −68.5 | −73.5 / −71.6 |
+| 1.1 kHz | hard | −59.1 / −59.1 | −70.8 / −65.8 | −71.7 / −66.8 |
+| 2.5 kHz | soft | −43.0 / −43.1 | −57.6 / −51.5 | −60.8 / −52.6 |
+| 2.5 kHz | medium | −43.1 / −43.1 | −57.9 / −50.6 | −61.3 / −51.7 |
+| 2.5 kHz | hard | −38.7 / −38.7 | −54.0 / −44.0 | −57.7 / −45.1 |
+| 5 kHz | soft | −36.2 / −36.2 | −44.1 / −44.2 | −44.7 / −44.8 |
+| 5 kHz | medium | −34.8 / −34.8 | −43.0 / −43.0 | −43.7 / −43.7 |
+| 5 kHz | hard | **−22.4 / −22.4** | −30.5 / −30.5 | −31.2 / −31.2 |
+
+At −12 dBFS every value is 10 … 30 dB lower (hard curve, current: 1 kHz −76, 2.5 kHz −54 (inharm), 5 kHz −33; 2x with 31 taps: −78, −73, −42);
+the full table is the script output. The half-band filters: 23 taps = 13 non-zero taps, 6 distinct multipliers, −1.3 dB at 20 kHz, −17 dB at 28 kHz,
+−42 dB at 32 kHz, ≥ 76 dB beyond 40 kHz; 31 taps = 17 non-zero taps, 8 distinct multipliers, −0.7 dB at 20 kHz, −22 dB at 28 kHz, −73 dB at 32 kHz,
+≥ 88 dB beyond 40 kHz.
+
+*Reading.* 2x improves the strongest alias by 8 … 19 dB (inharmonic lines; 4 … 16 dB by the error measure) for 23 or 31 taps, far less than the 40 … 60 dB one would like. The reason is the short
+half-band filter: its transition band (20 … 32 kHz) leaves everything the shaper creates between 24 and 32 kHz unfiltered, and those components fold back to
+16 … 24 kHz. At fundamentals up to ~1.3 kHz (a guitar's highest fret) the present aliasing is already 56 … 61 dB below the fundamental at −3 dBFS and
+74 … 92 dB at −12 dBFS (1 / 1.1 kHz rows); it becomes significant only for fundamentals above ~2.5 kHz (−39 … −43 dB) which a guitar does not play, and for strong
+harmonic content that the cabinet FIR (after the distortion in the chain) removes. A longer filter (47 … 63 taps) would be needed for a 20 dB further gain.
+
+*Hardware cost (31 taps; 23 taps in brackets).* Interpolator: the even output phase is the (delayed) input itself, the odd phase needs the 16 odd
+taps; with the symmetry (pre-add two samples) 8 [6] multiplications per 48 kHz input sample. Decimator: 8 [6] more. So **16 [12] multiplications per
+sample** (24 × 18 bit, one DSP block each if parallel), 2 shaper table reads per sample (the M10K ROMs are single-read; two reads in sequence),
+two delay lines of 16 [12] samples × 24 bit (registers / MLABs, no M10K), the dry path delayed by the filter delay for the mix (15 [11] samples = 0.31 [0.23] ms
+for interpolator + decimator), 8 [6] coefficient constants.
+
+| Option | DSP blocks (now 69/87) | clocks per sample | fits 16-clock simulation frames? |
+|--------|--------------|-------------------|----------------------------|
+| fully parallel (the style of the current datapath) | +16 [12] → 85 [81] of 87 | 3 (combinational, multicycle) | yes, but leaves 2 [6] DSP blocks free: not sensible |
+| one time-multiplexed MAC (like `cab_fir`) | +1 → 70 | 16 [12] MAC clocks + ROM / pipeline ≈ 24 [20] | no: needs > 16 clocks; fine for the board's 1024 |
+| 4 MAC lanes (`LANES` generic as in `cab_fir`) | +4 → 73 | 4 [3] MAC clocks + ≈ 8 ≈ 12 [11] | yes (16 - clock frames need the result a few clocks before the next strobe) |
+
+Any variant needs a sequencer in `seqblk`/`seqout` (per-clock pipeline) and the two strobes of the distortion would change (latency +1 frame, the
+timing-invariance test must prove it), plus a new unit model and test (bit-exact filters with an integer implementation).
+
+**Recommendation: do not implement 2x oversampling now.** The gain is 4 … 19 dB on aliases that are already 56 … 92 dB down for realistic guitar notes
+(fundamentals ≤ 1.3 kHz) and the cabinet filters what is left; the cost is 1 … 4 DSP blocks, a new sequenced block with its tests and constraint changes,
+~0.3 ms extra latency and a delayed dry path. If a listening test on the board finds audible aliasing at high gain and high notes, the cheapest
+step is the 23-tap variant with 4 MAC lanes (73 DSP blocks, 12 clocks), or better a longer half-band (47 taps, ~12 multipliers per direction) on one MAC
+(board frames only; the simulation twin would need the lanes). Decide after the board test of step D.
+
+Full regression (`sim/run_all.sh`, D6 RTL): **64 passed** in 50 min (the 63 of D5 plus `test_system_level`; `test_fx_chain` / `test_fx_chain_24` include `test_level`, `test_refv2` has 36 presets).

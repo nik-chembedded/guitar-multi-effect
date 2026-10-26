@@ -3,12 +3,22 @@ test_refv2.py - v2 reference regression of the 24-bit effect chain.
 
 GME_REF_MODE=record : run every preset and save the outputs to ref_v2/<preset>.npy
 GME_REF_MODE=check  : (default) run the same presets and require identical output
+GME_REF_ONLY=a,b,.. : with GME_REF_MODE=record, write only these presets' files; every other
+                      preset is still run and checked bit-exact in the same simulation (so a
+                      step that changes some effects on purpose can prove the rest unchanged)
 
 The v2 references replace the v1 recordings (step D2, 2026-10-25): they were
 recorded from the chain after every block in it had been verified on its own
 (bit-exact to its Python model, and the unchanged v1 effects bit-exact to the v1
 recordings). A step that changes an effect on purpose re-records only the
-affected presets, after that effect is verified, and says so in its commit.
+affected presets (GME_REF_ONLY), after that effect is verified, and says so in its commit.
+Step D4 (Freeverb) re-recorded reverb_t0..t3, combo_all and combo_change.
+Step D5 (dynamics, EQ) added dyn_gate, dyn_comp, eq_3band and combo_d5 at the end of PRESETS and
+recorded only them; the 31 earlier presets stayed bit-exact (dynamics and EQ are off in them: zero
+latency bypass). A preset key "eq" = (bass, mid, treble) dB writes that EQ set (tools/eq_coefs.py)
+through the chain's write port before the run (flat for the other presets).
+Step D6 (output level of the overdrive / distortion) added level_od_dist at the end of PRESETS and
+recorded only it (GME_REF_ONLY=level_od_dist); the 35 earlier presets stayed bit-exact (level 0 = unity).
 
 All presets run in one simulation from power-up, in a fixed order, with
 deterministic 24-bit stimuli (the state carried between presets, delay lines and
@@ -21,16 +31,21 @@ random input.
 import math
 import os
 import random
+import sys
 from pathlib import Path
 
 import cocotb
 import numpy as np
 
 import golden
-from fxdriver import CHORUS, DIST, ECHO, OD, REVERB, TREM, FxChain, find_latency
+from fxdriver import CAB, CHORUS, DIST, DYN, ECHO, EQ, OD, REVERB, TREM, FxChain, find_latency
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+import eq_coefs as ec                                        # noqa: E402
 
 REF_DIR = Path(__file__).resolve().parent / "ref_v2"
 MODE = os.environ.get("GME_REF_MODE", "check")
+ONLY = {n for n in os.environ.get("GME_REF_ONLY", "").split(",") if n}
 NONE = 1 << 30                    # marker for X/U output samples
 IP = Path(__file__).resolve().parents[2] / "fpga" / "ip"
 
@@ -46,6 +61,13 @@ def stimulus(seed):
 
 
 ALL = OD | TREM | ECHO | DIST | CHORUS | REVERB
+
+
+def q8(db):
+    """dB -> Q8 log2 units of the dynamics registers."""
+    return round(db * 256 / (20 * math.log10(2)))
+
+
 CHORUS_REGS = dict(chorus_level=128, chorus_depth=144, chorus_rate=80, mod_base=720)
 # name -> (registers, registers changed at frame 3000 or None)
 PRESETS = {
@@ -76,11 +98,38 @@ PRESETS = {
     "combo_change":  (dict(effects_enable=DIST | ECHO | REVERB, dist_type=2, dist_mix=200, echo_time=900,
                            echo_level=25000, echo_repeat=90, reverb_type=0, reverb_mix=100),
                       dict(reverb_type=3, effects_enable=DIST | REVERB)),
+    # ---- step D5: recorded with GME_REF_ONLY (the 31 presets above are unchanged) ----
+    "dyn_gate":      (dict(effects_enable=DYN, dyn_ctrl=1, gate_thresh=q8(-30)), dict(gate_thresh=q8(-45))),
+    "dyn_comp":      (dict(effects_enable=DYN, dyn_ctrl=2, comp_thresh=q8(-20), comp_ratio=2, comp_attack=3,
+                           comp_release=8, comp_makeup=q8(3)), dict(comp_ratio=4, comp_thresh=q8(-30))),
+    "eq_3band":      (dict(effects_enable=EQ, eq=(6, -4, 9)), dict(eq=(-8, 6, -5))),
+    "combo_d5":      (dict(effects_enable=ALL | CAB | DYN | EQ, dyn_ctrl=3, gate_thresh=q8(-40), comp_thresh=q8(-18),
+                           comp_ratio=2, comp_attack=3, comp_release=7, comp_makeup=q8(2), eq=(4, -3, 6),
+                           cab_ctrl=2 << 1, od_drive=7000, od_gain=2, dist_type=0, dist_mix=100, trem_wave=8 + 1,
+                           trem_rate=500, trem_depth=100, echo_time=1500, echo_level=18000, echo_repeat=90,
+                           reverb_type=1, reverb_mix=70, **CHORUS_REGS),
+                      dict(effects_enable=(ALL | CAB) & ~DIST, eq=(-6, 5, -4), comp_ratio=4)),
+    # ---- step D6: recorded with GME_REF_ONLY (the 35 presets above are unchanged, level 0 = unity) ----
+    "level_od_dist": (dict(effects_enable=OD | DIST | ECHO, od_drive=5000, od_gain=3, od_level=q8(-5),
+                           dist_type=1, dist_mix=200, dist_level=q8(4), echo_time=700, echo_level=15000,
+                           echo_repeat=80),
+                      dict(od_level=q8(3), dist_level=q8(-9), od_drive=9000)),
 }
 ZERO = {k: 0 for k in ("effects_enable", "od_drive", "od_gain", "trem_depth", "trem_wave", "trem_rate",
                        "echo_time", "echo_frac", "echo_level", "echo_repeat", "chorus_rate", "chorus_level",
                        "chorus_depth", "mod_base", "mod_fb", "mod_shape", "dist_mix", "dist_type",
-                       "reverb_type", "reverb_mix")}
+                       "reverb_type", "reverb_mix", "dyn_ctrl", "gate_thresh", "comp_thresh", "comp_ratio",
+                       "comp_attack", "comp_release", "comp_makeup", "cab_ctrl", "od_level", "dist_level")}
+
+
+async def set_regs(fx, regs):
+    """Registers, plus the EQ set of the key "eq" (flat when absent) through the write port."""
+    regs = dict(regs)
+    eq = regs.pop("eq", None)
+    fx.set(**regs)
+    if eq is not None:
+        ints, sh, _ = ec.coefficient_set_full(*eq)
+        await fx.eq_write(ints, ec.scale_word(sh))
 
 
 @cocotb.test()
@@ -90,17 +139,22 @@ async def test_presets(dut):
     assert fx.dw == 24
     await fx.start()
     REF_DIR.mkdir(exist_ok=True)
+    unknown = ONLY - set(PRESETS)
+    assert not unknown, "GME_REF_ONLY names unknown presets: %s" % sorted(unknown)
+    assert MODE == "record" or not ONLY, "GME_REF_ONLY needs GME_REF_MODE=record"
     failures = []
     for i, (name, (regs, change)) in enumerate(PRESETS.items()):
-        fx.set(**{**ZERO, **regs})
-
-        def on_frame(n, change=change):
-            if change and n == 3000:
-                fx.set(**change)
-        y = await fx.run(stimulus(200 + i), on_frame=on_frame, raw=True)
+        await set_regs(fx, {"eq": (0, 0, 0), **ZERO, **regs})
+        x = stimulus(200 + i)
+        if change:                                   # the registers change before frame 3000
+            y = await fx.run(x[:3000], raw=True)
+            await set_regs(fx, change)
+            y += await fx.run(x[3000:], raw=True)
+        else:
+            y = await fx.run(x, raw=True)
         y = np.array([NONE if v is None else v for v in y], dtype=np.int32)
         path = REF_DIR / (name + ".npy")
-        if MODE == "record":
+        if MODE == "record" and (not ONLY or name in ONLY):
             np.save(path, y)
             dut._log.info("recorded %-14s peak %d", name, int(np.abs(y[y != NONE]).max()))
             continue
@@ -113,6 +167,9 @@ async def test_presets(dut):
         else:
             dut._log.info("%-14s bit-exact (%d frames)", name, len(y))
     assert not failures, "%d presets differ from the v2 reference" % len(failures)
+    if ONLY:
+        dut._log.info("recorded %d presets, the other %d are bit-exact to the existing references",
+                      len(ONLY), len(PRESETS) - len(ONLY))
 
 
 def rand24(n, seed):
@@ -145,3 +202,13 @@ async def test_golden24(dut):
             y = await fx.run(x, tail=4, raw=True)
             check("distortion %s/%d" % (name, mix), golden.distortion(x, curve, mix, dw=24), y)
     dut._log.info("24-bit bypass / overdrive / 3 distortion curves x 2 mixes bit-exact")
+    # D6: output levels (constant per run), full-scale 24-bit input, saturating and not
+    for lv in (-1020, -300, 1, 256, 400, 512, -4000, 4000):
+        fx.set(**{**ZERO, **dict(effects_enable=OD, od_drive=12345, od_gain=3, od_level=lv)})
+        y = await fx.run(x, tail=4, raw=True)
+        check("overdrive level %d" % lv, golden.overdrive(x, 12345, 3, dw=24, level=lv), y)
+        curve = golden.load_mif(IP / "distortion_hard.mif")
+        fx.set(**{**ZERO, **dict(effects_enable=DIST, dist_type=2, dist_mix=200, dist_level=lv)})
+        y = await fx.run(x, tail=4, raw=True)
+        check("distortion level %d" % lv, golden.distortion(x, curve, 200, dw=24, level=lv), y)
+    dut._log.info("24-bit overdrive / distortion with 8 output levels bit-exact")
