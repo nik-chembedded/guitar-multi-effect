@@ -15,9 +15,11 @@ import threading
 import time
 
 from . import device
+from . import eq_coefs
 from .device import (DeviceError, WrongImage, REG_VERSION, REG_STATUS, REG_LEVEL_IN, REG_LEVEL_OUT,
                      REG_CONTROL, REG_CODEC, REG_CAB_CTRL, REG_CAB_ADDR, REG_CAB_DATA_LO,
-                     REG_CAB_DATA_HI, CAB_VERSION)
+                     REG_CAB_DATA_HI, REG_EQ_ADDR, REG_EQ_DATA_LO, REG_EQ_DATA_HI, REG_EQ_APPLY,
+                     REG_DYN_GR, CAB_VERSION, DYN_VERSION, Q8_PER_DB)
 
 try:
     string_types = (basestring,)        # noqa: F821  (Python 2)
@@ -33,6 +35,10 @@ ROUTING_VERSION = None
 
 CAB_TAPS = 2048
 CAB_COEF_BITS = 18
+CAB_SETTLE = 0.02               # s: a bank switch (fade out 128 samples, fade in 128) takes 5.4 ms
+EQ_IDS = ("eq_bass", "eq_mid", "eq_treble")
+EQ_LIMIT_DB = 12.0
+_EQ_CACHE = {}                  # (section, gain dB) -> (5 coefficients, shift): the search in eq_coefs is slow
 
 
 class ParamError(ValueError):
@@ -77,6 +83,8 @@ class Param(object):
         self.enum = d.get("enum")
         self.mask = (1 << self.width) - 1
         self.has_unit = bool(self.unit)
+        self.scale = d.get("scale")             # "pow2": the register holds k, the value is 2^k * mul / div
+        self.virtual = d.get("virtual")         # no register: kept by the model (the EQ gains)
 
     # -- register field ---------------------------------------------------
     def extract(self, regval):
@@ -109,6 +117,8 @@ class Param(object):
                     return e["label"]
             return raw
         if self.has_unit:
+            if self.scale == "pow2":
+                return round((1 << raw) * self.mul / self.div, 6)
             return round(raw * self.mul / self.div, 6)
         return raw
 
@@ -141,9 +151,18 @@ class Param(object):
     def _display_to_raw(self, x):
         """Display number -> raw; a value within half a step beyond the range clamps to the end."""
         r = x * self.div / self.mul if self.has_unit else x
-        if self.max < r <= self.max + 0.5:
+        if self.scale == "pow2":                 # nearest power of two (in units), clamped like the old tool
+            k = 0
+            r = max(1.0, r)
+            while k < self.max and abs((1 << (k + 1)) - r) < abs((1 << k) - r):
+                k += 1
+            return k
+        tol = 0.5                                # raw steps; at least half a displayed (rounded) step
+        if self.has_unit and self.scale != "pow2":
+            tol = max(tol, 0.5 * 10.0 ** (-self.decimals) * self.div / self.mul)
+        if self.max < r <= self.max + tol:
             return self.max
-        if self.min > r >= self.min - 0.5:
+        if self.min > r >= self.min - tol:
             return self.min
         return self._check_display(_round_half_up(r))
 
@@ -190,6 +209,8 @@ class Param(object):
                 if x != int(x):
                     raise ParamError("%s: expected an integer" % self.id)
                 raw = int(x)
+            if legacy_raw and self.type == "signed" and (1 << (self.width - 1)) <= raw < (1 << self.width):
+                raw -= 1 << self.width           # a register dump value such as 0xFC04
             return self.check_raw(raw)
         return self._display_to_raw(float(numtxt))
 
@@ -226,13 +247,15 @@ class Table(object):
         self.presets = data["presets"]
         self.chain_default = list(data["chain_default"])
         self.codec_names = dict((r["name"], r["reg"]) for r in data["codec"]["registers"])
-        count = collections.Counter(p.reg for p in self.params)
+        count = collections.Counter(p.reg for p in self.params if not p.virtual)
         self.shared_regs = set(r for r, n in count.items() if n > 1)
         # legacy names of the old command line
         self.legacy_effect_names = {"OD": "od", "TREM": "trem", "ECHO": "echo", "DIST": "dist",
-                                    "CHORUS": "mod", "MOD": "mod", "REVERB": "reverb", "CAB": "cab"}
+                                    "CHORUS": "mod", "MOD": "mod", "REVERB": "reverb", "CAB": "cab",
+                                    "DYN": "dyn", "EQ": "eq"}
         self.effect_text_names = [("OD", "od"), ("TREM", "trem"), ("ECHO", "echo"), ("DIST", "dist"),
-                                  ("CHORUS", "mod"), ("REVERB", "reverb"), ("CAB", "cab")]
+                                  ("CHORUS", "mod"), ("REVERB", "reverb"), ("CAB", "cab"), ("DYN", "dyn"),
+                                  ("EQ", "eq")]
 
     def param(self, pid):
         try:
@@ -248,7 +271,7 @@ class Table(object):
         if s in self.reg_by_name:
             return self.reg_by_name[s]
         p = self.by_id.get(s)
-        if p is not None and p.reg not in self.shared_regs:
+        if p is not None and not p.virtual and p.reg not in self.shared_regs:
             return p.reg
         try:
             return int(s, 0)
@@ -266,7 +289,7 @@ def load_table():
     return _table
 
 
-def open_device(mock=False, mock_version=0x0205, check=True, state_file=None):
+def open_device(mock=False, mock_version=0x0208, check=True, state_file=None):
     """The DevMem backend on the board, or the Mock; refuses a foreign FPGA image."""
     dev = device.Mock(version=mock_version, state_file=state_file) if mock else device.DevMem()
     if check:
@@ -297,6 +320,7 @@ class Model(object):
         self.lock = threading.RLock()
         self.version = dev.read(REG_VERSION)
         self._cab_slot = None
+        self._eq = None                  # EQ gains when there is no store
 
     @property
     def cab_slot(self):
@@ -336,11 +360,13 @@ class Model(object):
     # ------------------------------------------------------------ parameters
     def get_raw(self, pid):
         p = self._param(pid)
+        if p.virtual:
+            return self._virtual_raw(p)
         return p.extract(self.read(p.reg))
 
     def get(self, pid):
         p = self._param(pid)
-        return p.to_display(p.extract(self.read(p.reg)))
+        return p.to_display(self.get_raw(p.id))
 
     def read_all(self):
         """{id: raw} of all parameters available in this image, one read per register."""
@@ -348,6 +374,9 @@ class Model(object):
             cache = {}
             out = collections.OrderedDict()
             for p in self.params():
+                if p.virtual:
+                    out[p.id] = self._virtual_raw(p)
+                    continue
                 if p.reg not in cache:
                     cache[p.reg] = self.dev.read(p.reg)
                 out[p.id] = p.extract(cache[p.reg])
@@ -355,33 +384,57 @@ class Model(object):
 
     def set_raw(self, values):
         """{id: raw} -> registers (validated first, one write per register, bit fields merged)."""
-        with self.lock:
-            items = []
-            for pid, raw in values.items():
-                p = self._param(pid)
-                items.append((p, p.check_raw(raw)))
-            return self._write_fields(items)
-
-    def _write_fields(self, items):
-        regs = collections.OrderedDict()
-        for p, raw in items:
-            if p.reg not in regs:
-                regs[p.reg] = self.dev.read(p.reg) if p.reg in self.table.shared_regs else 0
-            regs[p.reg] = p.insert(regs[p.reg], raw)
-        for reg, val in regs.items():
-            self.dev.write(reg, val)
-        return dict((p.id, raw) for p, raw in items)
+        items = []
+        for pid, raw in values.items():
+            p = self._param(pid)
+            items.append((p, p.check_raw(raw)))
+        return self._commit(items)
 
     def set(self, values):
         """{id: display value, label, bool or text with unit} -> registers.
         Returns {id: display value after}."""
+        items = []
+        for pid, v in values.items():
+            p = self._param(pid)
+            items.append((p, p.from_display(v)))
+        self._commit(items)
+        return dict((p.id, p.to_display(raw)) for p, raw in items)
+
+    def _commit(self, items):
+        """Write validated (param, raw) items: one write per register (bit fields merged), then the
+        EQ coefficients when an EQ gain changed.  The EQ coefficients are computed before the lock is
+        taken (slow), nothing is written when anything is invalid."""
+        for p, raw in items:
+            self._check_enum_version(p, raw)
+        virt = [(p, raw) for p, raw in items if p.virtual]
+        eq_new = eq_words = None
+        if virt:
+            gains = list(self.eq_gains())
+            for p, raw in virt:
+                gains[EQ_IDS.index(p.id)] = raw / 10.0
+            eq_new = tuple(gains)
+            eq_words = self._eq_compute(eq_new)
         with self.lock:
-            items = []
-            for pid, v in values.items():
-                p = self._param(pid)
-                items.append((p, p.from_display(v)))
-            self._write_fields(items)
-            return dict((p.id, p.to_display(raw)) for p, raw in items)
+            regs = collections.OrderedDict()
+            for p, raw in items:
+                if p.virtual:
+                    continue
+                if p.reg not in regs:
+                    regs[p.reg] = self.dev.read(p.reg) if p.reg in self.table.shared_regs else 0
+                regs[p.reg] = p.insert(regs[p.reg], raw)
+            for reg, val in regs.items():
+                self.dev.write(reg, val)
+            if virt:
+                self._eq_write(eq_words)
+                self._eq_store(eq_new)
+        return dict((p.id, raw) for p, raw in items)
+
+    def _check_enum_version(self, p, raw):
+        if p.type == "enum":
+            for e in p.enum:
+                if e["value"] == raw and e.get("min_version", 0) > self.version:
+                    raise ParamError("%s: '%s' needs FPGA VERSION 0x%04X (this image: 0x%04X)" % (
+                        p.id, e["label"], e["min_version"], self.version))
 
     # --------------------------------------------------------------- effects
     def effects_value(self):
@@ -425,15 +478,26 @@ class Model(object):
             ("version", self.version), ("status", st),
             ("codec_init_done", bool(st & 1)), ("codec_nak", bool(st & 2)), ("pll_locked", bool(st & 4)),
             ("mute", bool(ctl & 2)), ("effects", self.effects_text(word)),
-            ("effects_word", word), ("level_in", li), ("level_out", lo)])
+            ("effects_word", word), ("level_in", li), ("level_out", lo),
+            ("gain_reduction", self.gain_reduction())])
+
+    def gain_reduction(self):
+        """Gain reduction of the dynamics stage in dB (DYN_GR), None when the image has no dynamics."""
+        if self.version < DYN_VERSION:
+            return None
+        with self.lock:
+            v = self.dev.read(REG_DYN_GR)
+        return round(v / Q8_PER_DB, 1)
 
     def levels(self):
         with self.lock:
             li, lo = self.dev.read(REG_LEVEL_IN), self.dev.read(REG_LEVEL_OUT)
+            gr = self.dev.read(REG_DYN_GR) if self.version >= DYN_VERSION else None
 
         def db(x):
             return round(20 * math.log10(x / 32768.0), 1) if x > 0 else None
-        return {"in": li, "out": lo, "in_db": db(li), "out_db": db(lo), "gain_reduction": None}
+        return {"in": li, "out": lo, "in_db": db(li), "out_db": db(lo),
+                "gain_reduction": None if gr is None else round(gr / Q8_PER_DB, 1)}
 
     def state(self):
         with self.lock:
@@ -498,7 +562,8 @@ class Model(object):
         if name in self.table.presets:
             d = self.table.presets[name]
             return {"name": name, "factory": True, "description": d.get("description", ""),
-                    "fx": list(d["fx"]), "params": dict(d["params"]), "chain": None, "cab": None}
+                    "fx": list(d["fx"]), "params": dict(d["params"]), "chain": None, "cab": None,
+                    "keep": list(d.get("keep", []))}
         if self.store is not None and self.store.valid_name(name) and self.store.exists(name):
             d = self.store.load_preset(name)
             d = dict(d)
@@ -507,15 +572,28 @@ class Model(object):
             d.setdefault("params", {})
             d.setdefault("chain", None)
             d.setdefault("cab", None)
+            d.setdefault("keep", [])
             return d
         raise KeyError(name)
 
     def apply_preset(self, preset):
-        """Apply a preset (name or dict).  Every parameter in the preset scope is rewritten:
-        those the preset does not list become 0, like the old tool.  Returns a list of warnings."""
+        """Apply a preset (name or dict).  Every parameter with in_preset true is rewritten: those the
+        preset does not list become 0, like the old tool.  Parameters with in_preset "user" (dynamics,
+        EQ: saved by user presets) are only written when the preset lists them.  The effects in the
+        preset's "keep" list (factory presets: cabinet, dynamics, EQ) keep their current on/off state.
+        Returns a list of warnings."""
         if isinstance(preset, string_types):
             preset = self.get_preset(preset)
         warnings = []
+        eq_new = eq_words = None
+        eq_in = dict((pid, raw) for pid, raw in preset["params"].items() if pid in EQ_IDS)
+        if eq_in and self.eq_available():
+            gains = list(self.eq_gains())
+            for pid, raw in eq_in.items():
+                self.table.param(pid).check_raw(raw)
+                gains[EQ_IDS.index(pid)] = raw / 10.0
+            eq_new = tuple(gains)
+            eq_words = self._eq_compute(eq_new)
         with self.lock:
             for pid, raw in preset["params"].items():
                 p = self.table.by_id.get(pid)
@@ -535,11 +613,23 @@ class Model(object):
                     word |= 1 << e["bit"]
                 else:
                     warnings.append("effect %s not in this FPGA image" % fid)
+            for fid in preset.get("keep") or []:
+                e = self.table.fx_by_id.get(fid)
+                if e is not None and self.version >= e["min_version"]:
+                    word |= self.dev.read(0) & (1 << e["bit"])
             regs = {0: word}
             for p in self._preset_scope():
-                regs[p.reg] = p.insert(0, preset["params"].get(p.id, 0))
+                if p.virtual or (p.in_preset == "user" and p.id not in preset["params"]):
+                    continue
+                base = regs.get(p.reg)
+                if base is None:
+                    base = self.dev.read(p.reg) if p.in_preset == "user" else 0
+                regs[p.reg] = p.insert(base, preset["params"].get(p.id, 0))
             for reg in sorted(regs):             # effects word first, then ascending
                 self.dev.write(reg, regs[reg])
+            if eq_words is not None:
+                self._eq_write(eq_words)
+                self._eq_store(eq_new)
             slot = preset.get("cab")
             if slot is not None and self.version >= CAB_VERSION and self.cab_dir and slot != self.cab_slot:
                 try:
@@ -704,13 +794,15 @@ class Model(object):
             if not os.path.isfile(path):
                 raise CabinetError("cabinet slot %d: %s not found" % (slot, os.path.basename(path)))
             name, shift, coefs = self.read_coef_file(path)
-            ctl = self.dev.read(REG_CAB_CTRL)
+            time.sleep(CAB_SETTLE)                                   # a previous switch must be finished
+            ctl = self.dev.read(REG_CAB_CTRL) & 0x7F
             target = 1 - (ctl & 1)
             self.cab_write_bank(target, coefs)
             sp = self.table.param("cab_shift%d" % target)
             ctl = sp.insert(ctl, shift)
             self.dev.write(REG_CAB_CTRL, ctl)                        # shift of the new bank
             self.dev.write(REG_CAB_CTRL, (ctl & ~1 & 0xFFFF) | target)   # switch
+            time.sleep(CAB_SETTLE)
             self.cab_slot = slot
             if self.store is not None:
                 self.store.update_settings(cab_slot=slot)
@@ -721,3 +813,88 @@ class Model(object):
             raise CabinetError("this FPGA image (VERSION 0x%04X) has no cabinet simulator" % self.version)
         return self.set({"cab_on": bool(on)})
 
+
+    # ------------------------------------------------------------------- EQ
+    # The FPGA takes biquad coefficients (EQ_ADDR / EQ_DATA_LO / EQ_DATA_HI / EQ_APPLY) that cannot be
+    # read back, so the gains in dB are kept here (settings.json) and the coefficients are computed
+    # with eq_coefs (the same code as tools/eq_coefs.py) whenever a gain changes.
+    def eq_available(self):
+        return self.version >= DYN_VERSION
+
+    def eq_gains(self):
+        """(bass, mid, treble) in dB as last set."""
+        if self.store is not None:
+            e = self.store.settings().get("eq")
+        else:
+            e = self._eq
+        e = e or {}
+        return tuple(float(e.get(k, 0.0)) for k in ("bass", "mid", "treble"))
+
+    def _virtual_raw(self, p):
+        return _round_half_up(self.eq_gains()[EQ_IDS.index(p.id)] * 10)
+
+    def _eq_store(self, gains):
+        e = {"bass": gains[0], "mid": gains[1], "treble": gains[2]}
+        self._eq = e
+        if self.store is not None:
+            self.store.update_settings(eq=e)
+
+    @staticmethod
+    def eq_words(bass, mid, treble):
+        """The 16 words for the EQ write port: 15 signed coefficients (18-bit two's complement) and the
+        scale word.  Same result as tools/eq_coefs.py coefficient_set_full for all three gains; each
+        section is computed on its own (they are independent) and cached, so moving one slider only
+        redoes one section."""
+        ints, shifts = [], []
+        for i, g in enumerate((bass, mid, treble)):
+            key = (i, float(g))
+            hit = _EQ_CACHE.get(key)
+            if hit is None:
+                args = [0.0, 0.0, 0.0]
+                args[i] = float(g)
+                full, sh, _clipped = eq_coefs.coefficient_set_full(*args)
+                hit = (full[5 * i:5 * i + 5], sh[i])
+                if len(_EQ_CACHE) > 400:
+                    _EQ_CACHE.clear()
+                _EQ_CACHE[key] = hit
+            ints.extend(hit[0])
+            shifts.append(hit[1])
+        return [eq_coefs.word18(v) for v in ints] + [eq_coefs.scale_word(shifts)]
+
+    def _eq_compute(self, gains):
+        if not self.eq_available():
+            raise ParamError("the EQ needs VERSION 0x%04X or later" % DYN_VERSION)
+        if any(abs(g) > EQ_LIMIT_DB + 1e-9 for g in gains):
+            raise ParamError("EQ gains are limited to -12 .. +12 dB")
+        return self.eq_words(*gains)
+
+    def _eq_write(self, words):
+        """16 words through EQ_ADDR / DATA_LO / DATA_HI (the pointer auto-increments), then EQ_APPLY."""
+        self.dev.write(REG_EQ_ADDR, 0)
+        for w in words:
+            self.dev.write(REG_EQ_DATA_LO, w & 0xFFFF)
+            self.dev.write(REG_EQ_DATA_HI, (w >> 16) & 3)
+        self.dev.write(REG_EQ_APPLY, 1)
+
+    def eq_set(self, bass=None, mid=None, treble=None):
+        """Set EQ gains in dB (None = keep), compute and apply the coefficients.  Does not switch the EQ on."""
+        cur = self.eq_gains()
+        new = tuple(c if g is None else float(g) for c, g in zip(cur, (bass, mid, treble)))
+        words = self._eq_compute(new)
+        with self.lock:
+            self._eq_write(words)
+            self._eq_store(new)
+        return new
+
+    def eq_resync(self):
+        """Write the stored gains to the FPGA (after a restart of the server or a new FPGA image the
+        coefficients are back to transparent).  True when something was written."""
+        if not self.eq_available():
+            return False
+        gains = self.eq_gains()
+        if not any(gains):
+            return False
+        words = self._eq_compute(gains)
+        with self.lock:
+            self._eq_write(words)
+        return True

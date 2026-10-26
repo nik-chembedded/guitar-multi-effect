@@ -4,7 +4,11 @@
 (function () {
   var h = GME.h;
 
-  function toDisplay(p, raw) { return p.unit ? raw * p.mul / p.div : raw; }
+  /* "pow2" scale (compressor attack / release): the register holds k, the value is 2^k samples in ms */
+  function toDisplay(p, raw) {
+    if (!p.unit) return raw;
+    return (p.scale === "pow2" ? Math.pow(2, raw) : raw) * p.mul / p.div;
+  }
 
   /* "320 ms", "6.5 Hz", "62.7 %", "Heavy", "on" */
   GME.format = function (p, raw) {
@@ -43,7 +47,9 @@
     if (p.type === "enum") {
       var sel = h("select", {id: "c-" + p.id, "aria-label": p.name, title: p.help});
       (p.enum || []).forEach(function (e) {
-        if (!e.alias) sel.appendChild(h("option", {value: e.label}, e.label));
+        if (e.alias) return;
+        if (e.min_version && GME.fpgaVersion && e.min_version > GME.fpgaVersion) return;   /* not in this FPGA image */
+        sel.appendChild(h("option", {value: e.label}, e.label));
       });
       sel.addEventListener("change", function () { onChange(p.id, sel.value); });
       sel.addEventListener("focus", function () { ctl.active = true; });
@@ -65,11 +71,13 @@
     var rng = h("input", {type: "range", id: "c-" + p.id, min: lo, max: hi, step: 1, value: lo, "aria-label": p.name, title: p.help});
     function raw() { return parseInt(rng.value, 10); }
     function show() { out.textContent = GME.format(p, raw()); rng.setAttribute("aria-valuetext", out.textContent); }
-    rng.addEventListener("input", function () {
-      show();
+    function send() {
       var v = toDisplay(p, raw());
       onChange(p.id, p.unit ? Number(v.toFixed(6)) : v);
-    });
+    }
+    /* gui_commit "release": the value is sent when the slider is let go (the EQ coefficients take a while to compute) */
+    rng.addEventListener("input", function () { show(); if (p.gui_commit !== "release") send(); });
+    rng.addEventListener("change", function () { if (p.gui_commit === "release") send(); });
     ["pointerdown", "keydown", "focus"].forEach(function (ev) {
       rng.addEventListener(ev, function () { ctl.active = true; });
     });

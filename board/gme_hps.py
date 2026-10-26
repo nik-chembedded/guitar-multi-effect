@@ -16,6 +16,14 @@ The FPGA registers sit behind the HPS lightweight bridge: register n is the
     python gme_hps.py codec 0x00 0x080           (codec register, 9-bit value: mute line in)
     python gme_hps.py dump
     python gme_hps.py meter                      (input/output levels, Ctrl+C to stop)
+    python gme_hps.py cab list                   (cabinets in the cab directory)
+    python gme_hps.py cab 3                      (load cabinet 3 into the idle bank and switch to it)
+    python gme_hps.py cab off                    (cabinet effect off / on; also: effects=...+CAB)
+    python gme_hps.py set   reverb_type=4 reverb_size=60000 reverb_damp=30   (custom reverb: size Q0.16, damp 0..255)
+    python gme_hps.py set   effects=DYN dyn=gate+comp gate_db=-45 comp_db=-20 ratio=4 makeup_db=3 attack_ms=2 release_ms=100
+    python gme_hps.py eq 6 -3 2                  (EQ: bass, mid, treble in dB, -12..+12; switches the EQ on)
+    python gme_hps.py eq off                     (EQ off / on again with the last setting: eq on)
+    python gme_hps.py set   od_db=-3 dist_db=-6  (output level of the overdrive / distortion in dB, -24 .. +12)
     python gme_hps.py selftest                   (no hardware needed)
 
 By parameter id, in display units (a number with its unit; a bare number is the raw
@@ -24,9 +32,18 @@ register value, as in the old command line):
     python gme_hps.py set   echo_time=320ms trem_rate=6.5Hz echo_on=on dist_type=heavy
     python gme_hps.py get   echo_time trem_rate  (no argument: all parameters)
     python gme_hps.py params                     (the parameter table)
-    python gme_hps.py cab   list | N | on | off   (cabinet simulator, FPGA VERSION >= 0x0205)
+    python gme_hps.py cab   list | N | on | off | status   (cabinet simulator, FPGA VERSION >= 0x0205)
     python gme_hps.py chain                      (effect order)
     python gme_hps.py preset list | save NAME | delete NAME
+
+Dynamics (VERSION >= 0x0207, enable bit DYN): dyn=none|gate|comp|gate+comp, gate_db / comp_db = thresholds
+in dBFS, ratio = 1, 2, 4, 8 or inf, attack_ms / release_ms (rounded to the nearest power-of-two number of
+samples), makeup_db; the raw registers gate_thresh, comp_thresh, comp_ratio, comp_attack, comp_release,
+comp_makeup are accepted as well.  `status` shows the gain reduction (DYN_GR).  EQ (enable bit EQ): `eq B M T`
+computes the biquad coefficients (gme/eq_coefs.py), writes them through EQ_ADDR / EQ_DATA_LO / EQ_DATA_HI,
+applies them (EQ_APPLY) and switches the EQ on; the gains are kept in settings.json (eq_bass, eq_mid,
+eq_treble in dB, 0.1 dB steps, also settable with `set`).  Output level (VERSION >= 0x0208): od_db / dist_db or
+the raw od_level / dist_level (signed Q8 log2 units).  Reverb: reverb_type 4 = custom from reverb_size / reverb_damp.
 
 --mock runs against an in-memory register file (no board needed).
 Every command first checks the VERSION register (0x02xx), so nothing is written
@@ -49,10 +66,17 @@ from gme import device as gd                                   # noqa: E402
 from gme.store import Store, StoreError                        # noqa: E402
 
 COMMANDS = ["status", "read", "write", "set", "preset", "codec", "dump", "meter", "selftest",
-            "get", "params", "cab", "chain"]
+            "get", "params", "cab", "chain", "eq"]
 # tremolo free mode (step D1): trem_wave = 8 + shape, rate in trem_rate (0.01 Hz)
 TREM_SHAPES = {"sine": 0, "triangle": 1, "saw": 2, "square": 3}
 PRESET_EXTRA = ("list", "save", "delete")
+DYN_MODES = {"none": 0, "gate": 1, "comp": 2, "gate+comp": 3}
+COMP_RATIOS = {"1": 0, "2": 1, "4": 2, "8": 3, "inf": 4}
+# names of the old command line that are given in display units (dB, ms) instead of raw register values
+DISPLAY_KEYS = {"gate_db": "gate_thresh", "comp_db": "comp_thresh", "makeup_db": "comp_makeup",
+                "od_db": "od_level", "dist_db": "dist_level", "attack_ms": "comp_attack",
+                "release_ms": "comp_release"}
+Q8_PER_DB = gd.Q8_PER_DB
 
 
 def num(s):
@@ -76,9 +100,20 @@ def parse_assignments(m, items):
                 out.append(("param", "trem_wave", 8 + TREM_SHAPES[v]))
             elif k == "trem_hz":
                 out.append(("param", "trem_rate", int(round(float(v) * 100))))
+            elif k == "dyn":
+                if v not in DYN_MODES:
+                    raise SystemExit("dyn: %s" % ", ".join(sorted(DYN_MODES)))
+                out.append(("reg", t.reg_by_name["dyn_ctrl"], DYN_MODES[v]))
+            elif k == "ratio":
+                if v not in COMP_RATIOS:
+                    raise SystemExit("ratio: 1, 2, 4, 8 or inf")
+                out.append(("param", "comp_ratio", COMP_RATIOS[v]))
+            elif k in DISPLAY_KEYS:
+                p = t.by_id[DISPLAY_KEYS[k]]
+                out.append(("param", p.id, p.parse(v)))
             elif k in t.by_id:
                 p = t.by_id[k]
-                out.append(("param", p.id, p.parse(v, legacy_raw=True)))
+                out.append(("param", p.id, p.parse(v, legacy_raw=not p.virtual)))     # eq_*: a bare number is dB
             elif k in t.reg_by_name:
                 out.append(("reg", t.reg_by_name[k], num(v)))
             else:
@@ -98,7 +133,7 @@ def apply_assignments(m, parsed):
 
 
 def selftest():
-    dev = gd.Mock(version=0x0205)
+    dev = gd.Mock(version=0x0208)
     m = gm.Model(dev)
     r = parse_assignments(m, ["effects=DIST+ECHO", "od_gain=4", "echo_time=0x3840"])
     assert r == [("reg", 0, 12), ("param", "od_gain", 4), ("param", "echo_time", 14400)], r
@@ -106,6 +141,13 @@ def selftest():
     assert ((0x02 & 0x7F) << 9) | 0x079 == 0x0479                 # CODEC word for R2 = 0x079
     r = parse_assignments(m, ["trem_shape=square", "trem_hz=6.5"])
     assert r == [("param", "trem_wave", 11), ("param", "trem_rate", 650)], r
+    r = parse_assignments(m, ["dyn=gate+comp", "gate_db=-45", "comp_db=-20", "ratio=4", "makeup_db=3",
+                              "attack_ms=2", "release_ms=100", "od_db=-3", "dist_db=-6"])
+    assert r == [("reg", 0x21, 3), ("param", "gate_thresh", -1913), ("param", "comp_thresh", -850),
+                 ("param", "comp_ratio", 2), ("param", "comp_makeup", 128), ("param", "comp_attack", 6),
+                 ("param", "comp_release", 12), ("param", "od_level", -128), ("param", "dist_level", -255)], r
+    words = gm.Model.eq_words(0, 0, 0)
+    assert len(words) == 16 and words[0] == 65536 and words[5] == 65536 and words[10] == 65536 and words[15] == 0
     t = m.table.param("echo_time")
     assert t.parse("320ms") == 15360 and t.format(15360) == "320 ms"
     for name in m.factory_names():
@@ -127,8 +169,11 @@ def show_params(m):
         else:
             rng = "%s .. %s" % (lo, hi)
         bits = "[%d:%d]" % (p.lsb + p.width - 1, p.lsb) if p.width > 1 else "[%d]" % p.lsb
-        print("%-12s 0x%02X    %-6s %-6s %-22s %04X%s %s" % (
-            p.id, p.reg, bits, p.type, rng[:22], p.min_version, " " if m.available(p) else "!", p.help))
+        reg = "model" if p.virtual else "0x%02X" % p.reg
+        if p.virtual:
+            bits = ""
+        print("%-12s %-7s %-6s %-6s %-22s %04X%s %s" % (
+            p.id, reg, bits, p.type, rng[:22], p.min_version, " " if m.available(p) else "!", p.help))
 
 
 def cmd_get(m, ids):
@@ -148,13 +193,20 @@ def cmd_get(m, ids):
 
 def cmd_cab(m, args):
     sub = args[0] if args else "status"
+    if sub != "status" and not m.cab_available():
+        raise SystemExit("the cabinet needs VERSION 0x0205 or later")
     if sub == "list":
         slots = m.cab_list()
         if not slots:
-            print("no cabinet files in %s" % m.cab_dir)
+            print("no cabNN.coef files in %s (build: python3 tools/cab_coefs.py --build, then scp)" % m.cab_dir)
         for c in slots:
             print("%2d  %-28s shift %s%s" % (c["slot"], c["name"], c["shift"],
                                              "   <- loaded" if c["slot"] == m.cab_slot else ""))
+        if m.cab_available():
+            cs = m.cab_status()
+            ctl = m.read(m.table.reg_by_name["cab_ctrl"])
+            print("cabinet %s, bank %d active, shifts %d / %d" % ("ON" if cs["enabled"] else "off", ctl & 1,
+                                                                  (ctl >> 1) & 7, (ctl >> 4) & 7))
     elif sub in ("on", "off"):
         m.cab_enable(sub == "on")
         print("cabinet %s" % sub)
@@ -172,7 +224,29 @@ def cmd_cab(m, args):
         except ValueError:
             raise SystemExit("cab list | N | on | off | status")
         r = m.cab_load(slot)
-        print("cabinet %d '%s' loaded into bank %d (shift %d)" % (r["slot"], r["name"], r["bank"], r["shift"]))
+        print("cabinet %d '%s' loaded into bank %d (shift %d)%s" % (
+            r["slot"], r["name"], r["bank"], r["shift"],
+            "" if m.cab_status()["enabled"] else "; the cabinet is off: cab on"))
+
+
+def cmd_eq(m, args):
+    if not m.eq_available():
+        raise SystemExit("the EQ needs VERSION 0x0207 or later")
+    usage = "eq BASS MID TREBLE (dB, -12..12) | eq on | eq off"
+    if len(args) == 1 and args[0] in ("on", "off"):
+        m.set({"eq_on": args[0] == "on"})
+    elif len(args) == 3:
+        try:
+            gains = [float(a) for a in args]
+        except ValueError:
+            raise SystemExit(usage)
+        if any(abs(g) > 12.0 for g in gains):
+            raise SystemExit("EQ gains are limited to -12 .. +12 dB")
+        m.eq_set(*gains)
+        m.set({"eq_on": True})
+        print("EQ bass %+g dB, mid %+g dB, treble %+g dB" % tuple(gains))
+    else:
+        raise SystemExit(usage)
 
 
 def cmd_preset(m, args):
@@ -204,7 +278,7 @@ def run(argv, dev=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--no-check", action="store_true", help="skip the VERSION check")
     ap.add_argument("--mock", action="store_true", help="use an in-memory register file instead of /dev/mem")
-    ap.add_argument("--mock-version", type=num, default=0x0205, help="VERSION of the mock (default 0x0205)")
+    ap.add_argument("--mock-version", type=num, default=0x0208, help="VERSION of the mock (default 0x0208)")
     ap.add_argument("--mock-state", default=None, metavar="FILE",
                     help="with --mock: keep the mock registers in this JSON file, shared between calls "
                          "(default ~/.gme_mock_state.json)")
@@ -245,6 +319,8 @@ def dispatch(m, a):
         print("effects %s, mute %s, level in %d, out %d" % (
             m.effects_text(m.read(0)), "on" if m.read(t.reg_by_name["control"]) & 2 else "off",
             m.read(t.reg_by_name["level_in"]), m.read(t.reg_by_name["level_out"])))
+        if m.version >= gd.DYN_VERSION:
+            print("dynamics gain reduction %.1f dB" % (m.read(t.reg_by_name["dyn_gr"]) / Q8_PER_DB))
         if m.cab_available():
             cs = m.cab_status()
             print("cabinet %s, active bank %d, loaded slot %s" % (
@@ -274,6 +350,8 @@ def dispatch(m, a):
         print("order %s" % ("editable" if ch["editable"] else "fixed (FPGA VERSION %04X)" % m.version))
     elif a.cmd == "cab":
         cmd_cab(m, a.args)
+    elif a.cmd == "eq":
+        cmd_eq(m, a.args)
     elif a.cmd == "meter":
         count = num(a.args[0]) if a.args else None
         try:

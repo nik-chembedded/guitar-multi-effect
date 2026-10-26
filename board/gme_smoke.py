@@ -54,7 +54,9 @@ def need(cond, text):
 
 
 def display_of(p, raw):
-    return raw * p["mul"] / p["div"] if p["unit"] else raw
+    if not p["unit"]:
+        return raw
+    return (2 ** raw if p.get("scale") == "pow2" else raw) * p["mul"] / p["div"]
 
 
 def other_value(p, raw):

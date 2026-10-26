@@ -10,7 +10,7 @@ Serves the page in www/ and the JSON API under /api (see docs/web_ui_design.md):
     GET  /api/info                  version, FPGA VERSION, parameter table, effects
     GET  /api/state                 all parameter values (display units + raw), status, chain, cabinet
     POST /api/params                {id: value, ...}  values in display units (number, "320ms", label, bool)
-    GET  /api/levels                input / output level
+    GET  /api/levels                input / output level, dynamics gain reduction in dB
     GET  /api/levels/stream         server-sent events, ~15 Hz (?hz=N, ?max=N events)
     GET  /api/presets               factory + user presets
     GET  /api/presets/<name>        one preset
@@ -124,7 +124,8 @@ class Api(object):
         return 200, {"name": "gme", "software_version": gme.__version__,
                      "fpga_version": m.version, "fpga_version_hex": "0x%04X" % m.version,
                      "mock": bool(getattr(m.dev, "mock", False)),
-                     "capabilities": {"cab": m.cab_available(), "chain_editable": m.chain_editable()},
+                     "capabilities": {"cab": m.cab_available(), "eq": m.eq_available(), "dyn": m.eq_available(),
+                                      "chain_editable": m.chain_editable()},
                      "params": params, "effects": m.table.effects, "chain_default": m.table.chain_default,
                      "registers": m.table.registers, "codec_registers": m.table.data["codec"]["registers"],
                      "span_registers": SPAN_WORDS}
@@ -398,7 +399,7 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--mock", action="store_true", help="in-memory register file instead of /dev/mem")
-    ap.add_argument("--mock-version", type=lambda s: int(s, 0), default=0x0205)
+    ap.add_argument("--mock-version", type=lambda s: int(s, 0), default=0x0208)
     ap.add_argument("--mock-state", default=None, metavar="FILE",
                     help="with --mock: share the mock registers with other processes through this JSON file "
                          "(e.g. the same file as gme_hps.py --mock --mock-state)")
@@ -417,6 +418,11 @@ def main(argv=None):
         raise SystemExit("cannot open /dev/mem (run as root on the board; --mock to test): %s" % e)
     data_dir = a.data_dir or HERE
     model = gm.Model(dev, store=Store(data_dir), cab_dir=a.cab_dir or gm.default_cab_dir(data_dir, a.mock))
+    try:
+        if model.eq_resync():                      # the FPGA forgot the EQ coefficients (they cannot be read back)
+            print("EQ coefficients restored from settings.json")
+    except gm.ParamError as e:
+        print("EQ: %s" % e)
     srv = create_server(model, a.host, a.port, a.www, a.verbose)
     print("gme web UI: http://%s:%d/  (FPGA VERSION 0x%04X%s)" % (
         a.host if a.host != "0.0.0.0" else "<board address>", srv.server_address[1], model.version,

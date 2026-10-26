@@ -25,8 +25,26 @@ REG_CAB_CTRL = 0x1B
 REG_CAB_ADDR = 0x1C
 REG_CAB_DATA_LO = 0x1D
 REG_CAB_DATA_HI = 0x1E
+REG_REVERB_SIZE = 0x1F
+REG_REVERB_DAMP = 0x20
+REG_DYN_CTRL = 0x21
+REG_GATE_THRESH = 0x22
+REG_COMP_THRESH = 0x23
+REG_COMP_RATIO = 0x24
+REG_COMP_MAKEUP = 0x27
+REG_EQ_ADDR = 0x28
+REG_EQ_DATA_LO = 0x29
+REG_EQ_DATA_HI = 0x2A
+REG_EQ_APPLY = 0x2B
+REG_DYN_GR = 0x2C
+REG_OD_LEVEL = 0x2D
+REG_DIST_LEVEL = 0x2E
 
 CAB_VERSION = 0x0205
+DYN_VERSION = 0x0207            # dynamics, EQ, DYN_GR (step D5)
+LEVEL_VERSION = 0x0208          # output level of the overdrive / distortion (step D6)
+Q8_PER_DB = 256 / 6.0206        # Q8 log2 units per dB
+COMP_RATIOS = (1.0, 2.0, 4.0, 8.0, float("inf"))
 
 
 class DeviceError(IOError):
@@ -77,15 +95,24 @@ class Mock(object):
     * Cabinet (VERSION >= 0x0205): CAB_ADDR sets the pointer, CAB_DATA_LO is
       latched, a write to CAB_DATA_HI stores {HI,LO} at the pointer and
       increments it; writes to the active bank are ignored (counted in
-      cab_ignored_writes), the pointer still increments.
-    * Other registers up to 0x3F read back what was written; above read 0.
+      cab_ignored_writes), the pointer still increments (CAB_ADDR reads back
+      the last value written, not the pointer, like the FPGA).
+    * EQ (VERSION >= 0x0207): EQ_ADDR sets the pointer (0..15), EQ_DATA_LO is
+      latched, a write to EQ_DATA_HI stores {HI,LO} (18 bit) in the shadow set
+      at the pointer and increments it (15 wraps to 0); a write to EQ_APPLY copies
+      the shadow set to eq_active (list of 16 words) and counts in eq_applies.
+    * DYN_GR (VERSION >= 0x0207) is read-only and moves with the input level: while
+      the dynamics stage and the compressor are on, it is the compressor reduction
+      (over the threshold, shift ratio, minus make-up) in unsigned Q8 log2 units;
+      else 0.  The gate attenuation is not emulated.
+    * Other registers up to 0x2F read back what was written; above read 0.
     * max_concurrent records the highest number of overlapping calls, so tests
       can verify that access is serialised; write_delay widens the window.
     """
 
     mock = True
 
-    def __init__(self, version=0x0205, clock=None, write_delay=0.0, nak=False, status=0x0005,
+    def __init__(self, version=0x0208, clock=None, write_delay=0.0, nak=False, status=0x0005,
                  state_file=None):
         self.version = version
         self.clock = clock or time.time
@@ -103,6 +130,11 @@ class Mock(object):
         self.cab_ptr = 0
         self.cab_lo = 0
         self.cab_ignored_writes = 0
+        self.eq_ptr = 0
+        self.eq_lo = 0
+        self.eq_shadow = [0] * 16
+        self.eq_active = [0] * 16
+        self.eq_applies = 0
         self.max_concurrent = 0
         self._active = 0
         self._guard = threading.Lock()
@@ -165,13 +197,36 @@ class Mock(object):
     def _has_cab(self):
         return self.version >= CAB_VERSION
 
+    def _has_dyn(self):
+        return self.version >= DYN_VERSION
+
+    def _dyn_gr(self):
+        """Compressor gain reduction (Q8 log2 units) for the current input level."""
+        if not self._has_dyn() or not self.regs[0] & 0x80 or not self.regs[REG_DYN_CTRL] & 2:
+            return 0
+        li = self._levels()[0]
+        if li <= 0:
+            return 0
+        level_db = 20 * math.log10(li / 32768.0)
+        thresh = self.regs[REG_COMP_THRESH]
+        if thresh & 0x8000:
+            thresh -= 0x10000
+        over = max(0.0, level_db - thresh / Q8_PER_DB)
+        ratio = COMP_RATIOS[min(self.regs[REG_COMP_RATIO] & 7, 4)]
+        red = over if ratio == float("inf") else over - over / ratio
+        makeup = self.regs[REG_COMP_MAKEUP]
+        if makeup & 0x8000:
+            makeup -= 0x10000
+        red = max(0.0, red - makeup / Q8_PER_DB)
+        return min(0xFFFF, int(red * Q8_PER_DB))
+
     def _levels(self):
         t = self.clock() - self.t0
         li = int(abs(math.sin(t * 2.7)) * 18000 + abs(math.sin(t * 11.3)) * 6000)
         out = li
         if self.regs[REG_CONTROL] & 2:
             out = 0
-        elif self.regs[0] & 0x7F:
+        elif self.regs[0] & 0x1FF:
             out = min(32767, int(li * 1.3))
         return li, out
 
@@ -198,6 +253,8 @@ class Mock(object):
             return self._levels()[0]
         if reg == REG_LEVEL_OUT:
             return self._levels()[1]
+        if reg == REG_DYN_GR and self._has_dyn():
+            return self._dyn_gr()
         if reg == REG_CODEC:
             v = 0
             if self.codec_busy_reads > 0:
@@ -220,7 +277,8 @@ class Mock(object):
             with self._guard:
                 self._load_state()
                 self._write(reg, value & 0xFFFF)
-                if reg not in (REG_CAB_ADDR, REG_CAB_DATA_LO, REG_CAB_DATA_HI):   # bulk cabinet data: not saved per write
+                if reg not in (REG_CAB_ADDR, REG_CAB_DATA_LO, REG_CAB_DATA_HI,
+                               REG_EQ_ADDR, REG_EQ_DATA_LO, REG_EQ_DATA_HI):   # bulk coefficient data: not saved per write
                     self._save_state()
         finally:
             self._leave()
@@ -229,6 +287,8 @@ class Mock(object):
         if reg < 0 or reg >= NWORDS:
             raise DeviceError("register %d outside the mapped span" % reg)
         if reg in (REG_VERSION, REG_STATUS, REG_LEVEL_IN, REG_LEVEL_OUT) or reg > 0x2F:
+            return
+        if reg == REG_DYN_GR and self._has_dyn():
             return
         self.log.append((reg, value))
         if reg == REG_CONTROL:
@@ -267,7 +327,25 @@ class Mock(object):
                 else:
                     self.cab_mem[bank][tap] = ((value & 3) << 16) | self.cab_lo
                 self.cab_ptr = (bank << 11) | ((tap + 1) & 0x7FF)
-                self.regs[REG_CAB_ADDR] = self.cab_ptr
+                return
+        if self._has_dyn():
+            if reg == REG_EQ_ADDR:
+                self.regs[reg] = value & 0xF
+                self.eq_ptr = value & 0xF
+                return
+            if reg == REG_EQ_DATA_LO:
+                self.regs[reg] = value
+                self.eq_lo = value
+                return
+            if reg == REG_EQ_DATA_HI:
+                self.regs[reg] = value & 3
+                self.eq_shadow[self.eq_ptr] = ((value & 3) << 16) | self.eq_lo
+                self.eq_ptr = (self.eq_ptr + 1) & 0xF
+                return
+            if reg == REG_EQ_APPLY:
+                self.regs[reg] = value
+                self.eq_active = list(self.eq_shadow)
+                self.eq_applies += 1
                 return
         self.regs[reg] = value
 

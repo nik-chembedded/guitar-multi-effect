@@ -67,6 +67,11 @@ select { width: 100%; }
 .ctl.switch input:checked::after { left: 18px; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
 .ctl.switch .ctl-name { display: none; }
 
+.grmeter { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--dim); }
+.grmeter .bar { flex: 1; height: 10px; background: #08090a; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.grmeter .bar div { height: 100%; width: 0; background: var(--accent); transition: width 60ms linear; }
+.grmeter span { width: 60px; text-align: right; font-variant-numeric: tabular-nums; color: var(--accent2); }
+
 .cabbody { display: flex; flex-direction: column; gap: 6px; }
 .btn.slot { text-align: left; } .btn.slot.current { border-color: var(--accent); color: var(--accent2); }
 

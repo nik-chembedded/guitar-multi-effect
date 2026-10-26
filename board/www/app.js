@@ -1,6 +1,6 @@
 /* Guitar multi-effect page.  Everything is built from /api/info (parameter table),
    /api/state and /api/chain: no parameter or effect is named here, except the few
-   special cases marked "special" (cabinet slots, mute button, codec volumes). */
+   special cases marked "special" (cabinet slots, dynamics meter, mute button, codec volumes). */
 "use strict";
 (function () {
   var h = GME.h, api = GME.api, toast = GME.toast;
@@ -89,6 +89,12 @@
       sw.el.title = "Switch " + e.name + " on or off";
       head.appendChild(sw.el);
       S.chainIds.push(enable.id);
+    }
+    if (e.id === "dyn") {                                        /* special: live gain-reduction meter (DYN_GR) */
+      body.appendChild(h("div", {class: "grmeter", title: "How much the dynamics stage turns the signal down (compressor and gate)"},
+        h("label", {}, "Gain reduction"),
+        h("div", {class: "bar"}, h("div", {id: "gr-bar"})),
+        h("span", {id: "gr-text"}, "0.0 dB")));
     }
     if (e.id === "cab") {                                        /* special: cabinet slots */
       body.appendChild(h("div", {id: "cabbody", class: "cabbody"}));
@@ -314,12 +320,19 @@
   }
 
   /* ---------- levels ---------- */
+  var GR_FULL_SCALE_DB = 24;
   function showLevels(e) {
     [["in", e.in, e.in_db], ["out", e.out, e.out_db]].forEach(function (x) {
       var db = x[2] === null ? -60 : Math.max(-60, x[2]);
       document.getElementById("m-" + x[0]).style.width = ((db + 60) / 60 * 100).toFixed(1) + "%";
       document.getElementById("t-" + x[0]).textContent = x[2] === null ? "-inf" : x[2].toFixed(0) + " dB";
     });
+    var grBar = document.getElementById("gr-bar"), grText = document.getElementById("gr-text");   /* only in the dynamics card */
+    if (grBar && grText) {
+      var gr = typeof e.gain_reduction === "number" ? e.gain_reduction : 0;
+      grBar.style.width = (Math.min(gr, GR_FULL_SCALE_DB) / GR_FULL_SCALE_DB * 100).toFixed(1) + "%";
+      grText.textContent = gr.toFixed(1) + " dB";
+    }
   }
   function startLevels() {
     var poll = null;
@@ -363,6 +376,7 @@
     });
     api("GET", "/api/info").then(function (info) {
       S.info = info;
+      GME.fpgaVersion = info.fpga_version;
       info.params.forEach(function (p) { S.params[p.id] = p; });
       if (!S.params.mute || !S.params.mute.available) document.getElementById("mute").hidden = true;
       renderSettings();
