@@ -32,6 +32,17 @@ set_multicycle_path -hold  -end 15 -from $sm   -to $fx
 set_multicycle_path -setup -end 16 -from $fx   -to [get_registers {*|u_i2s|tx_* *|peak_*}]
 set_multicycle_path -hold  -end 15 -from $fx   -to [get_registers {*|u_i2s|tx_* *|peak_*}]
 
+# The strobe-loaded OUTPUT registers of those sequencer blocks (data_out loads only
+# on the block's strobe) are a different case: everything feeding them (the
+# previous stage's strobe registers and crossfades, the cabinet output, the
+# block's own result computed a few clocks after the previous strobe) settles
+# hundreds of clocks before that strobe, so these paths get the multicycle too.
+# Without this, distortion -> cabinet crossfade -> mod_delay mix (three multipliers
+# in one combinational path) was timed as a 1-clock path (+0.58 ns in D4).
+set seqout [get_registers {*|u_fx|CHORUS_left|data_out* *|u_fx|ECHO_left|data_out* *|u_fx|REVERB_left|data_out*}]
+set_multicycle_path -setup -end 16 -to $seqout
+set_multicycle_path -hold  -end 15 -to $seqout
+
 # ---- I/O --------------------------------------------------------------------------
 # Codec audio: BCLK/LRCLK/DACDAT are registered outputs, ADCDAT is sampled 8
 # sys_clk cycles (163 ns) after the BCLK edge that launches it - large margins
