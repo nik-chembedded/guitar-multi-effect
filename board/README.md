@@ -66,10 +66,11 @@ Tremolo, Echo, Reverb (`/api/chain`, the page and `gme_hps.py chain` list it in 
   has 2^k samples, so only 16 values exist). `status`, `/api/levels` and the page show the gain reduction (DYN_GR).
 * **EQ** (VERSION >= 0x0207): the hardware takes biquad coefficients that cannot be read back. The gains
   (`eq_bass`, `eq_mid`, `eq_treble`, -12 .. +12 dB, 0.1 dB steps on the page) are model-level parameters kept in
-  `settings.json`; the library computes the coefficients (`gme/eq_coefs.py`, the same file as `tools/eq_coefs.py`)
-  and writes them through EQ_ADDR / EQ_DATA_LO / EQ_DATA_HI / EQ_APPLY. The server writes the stored gains again at
-  start (a restarted FPGA is transparent). Computing one filter section takes ~0.4 s on a PC (it searches the best
-  quantised coefficients), so the EQ sliders are sent when released, and finished sections are cached.
+  `settings.json` and rounded to 0.1 dB; the library looks the quantised coefficients up in `gme/eq_table.json`
+  (27 kB, made on the PC by `python3 tools/eq_table.py` with the search of `tools/eq_coefs.py`, so the ARM never runs
+  the ~0.4 s-per-section search; `eq_coefs.py` is only a fallback if the table is missing) and writes them through
+  EQ_ADDR / EQ_DATA_LO / EQ_DATA_HI / EQ_APPLY. The server writes the stored gains again at start (a restarted FPGA
+  is transparent). The EQ sliders are sent when released.
 * **Output level** of the overdrive / distortion (VERSION >= 0x0208) and the **custom reverb** (VERSION >= 0x0206,
   Room = Custom, size and damping) are ordinary parameters.
 * Factory presets leave the cabinet, dynamics and EQ on/off state and settings as they are (like `main`); user presets

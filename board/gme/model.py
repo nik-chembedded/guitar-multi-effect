@@ -13,9 +13,9 @@ import os
 import re
 import threading
 import time
+import warnings
 
 from . import device
-from . import eq_coefs
 from .device import (DeviceError, WrongImage, REG_VERSION, REG_STATUS, REG_LEVEL_IN, REG_LEVEL_OUT,
                      REG_CONTROL, REG_CODEC, REG_CAB_CTRL, REG_CAB_ADDR, REG_CAB_DATA_LO,
                      REG_CAB_DATA_HI, REG_EQ_ADDR, REG_EQ_DATA_LO, REG_EQ_DATA_HI, REG_EQ_APPLY,
@@ -38,7 +38,29 @@ CAB_COEF_BITS = 18
 CAB_SETTLE = 0.02               # s: a bank switch (fade out 128 samples, fade in 128) takes 5.4 ms
 EQ_IDS = ("eq_bass", "eq_mid", "eq_treble")
 EQ_LIMIT_DB = 12.0
-_EQ_CACHE = {}                  # (section, gain dB) -> (5 coefficients, shift): the search in eq_coefs is slow
+EQ_TABLE_PATH = os.path.join(HERE, "eq_table.json")
+_EQ_TABLE = []                  # [table or None] once loaded
+_EQ_CACHE = {}                  # fallback only: (section, gain dB) -> (5 coefficients, shift)
+
+
+def eq_table():
+    """The precomputed coefficients (tools/eq_table.py): {"bass": [[b0, b1, b2, a1, a2, shift] per 0.1 dB], ...}
+    or None when the file is missing / unreadable."""
+    if not _EQ_TABLE:
+        try:
+            with open(EQ_TABLE_PATH) as f:
+                t = json.load(f)
+            n = t["max"] - t["min"] + 1
+            assert t["format"] == 1 and all(len(t["sections"][k]) == n for k in ("bass", "mid", "treble"))
+            _EQ_TABLE.append(t)
+        except (IOError, OSError, ValueError, KeyError, AssertionError):
+            _EQ_TABLE.append(None)
+    return _EQ_TABLE[0]
+
+
+def eq_round(g):
+    """A gain in dB rounded to the 0.1 dB grid of the table."""
+    return _round_half_up(float(g) * 10) / 10.0
 
 
 class ParamError(ValueError):
@@ -842,24 +864,32 @@ class Model(object):
     @staticmethod
     def eq_words(bass, mid, treble):
         """The 16 words for the EQ write port: 15 signed coefficients (18-bit two's complement) and the
-        scale word.  Same result as tools/eq_coefs.py coefficient_set_full for all three gains; each
-        section is computed on its own (they are independent) and cached, so moving one slider only
-        redoes one section."""
+        scale word.  The gains are rounded to 0.1 dB and looked up in eq_table.json (made by tools/eq_table.py
+        with the search of eq_coefs, so the words are those of eq_coefs.coefficient_set_full); the search is
+        never run unless the table is missing (then with a warning: slow, ~0.4 s per section on a PC)."""
+        table = eq_table()
         ints, shifts = [], []
-        for i, g in enumerate((bass, mid, treble)):
-            key = (i, float(g))
-            hit = _EQ_CACHE.get(key)
+        for i, (name, g) in enumerate((("bass", bass), ("mid", mid), ("treble", treble))):
+            k = _round_half_up(float(g) * 10)
+            if table is not None:
+                if not table["min"] <= k <= table["max"]:
+                    raise ParamError("EQ gains are limited to -12 .. +12 dB")
+                e = table["sections"][name][k - table["min"]]
+                ints.extend(e[:5])
+                shifts.append(e[5])
+                continue
+            hit = _EQ_CACHE.get((i, k))
             if hit is None:
+                from . import eq_coefs                      # the slow search: fallback only
+                warnings.warn("eq_table.json not found: computing the EQ coefficients (slow)")
                 args = [0.0, 0.0, 0.0]
-                args[i] = float(g)
+                args[i] = k / 10.0
                 full, sh, _clipped = eq_coefs.coefficient_set_full(*args)
                 hit = (full[5 * i:5 * i + 5], sh[i])
-                if len(_EQ_CACHE) > 400:
-                    _EQ_CACHE.clear()
-                _EQ_CACHE[key] = hit
+                _EQ_CACHE[(i, k)] = hit
             ints.extend(hit[0])
             shifts.append(hit[1])
-        return [eq_coefs.word18(v) for v in ints] + [eq_coefs.scale_word(shifts)]
+        return [v & 0x3FFFF for v in ints] + [shifts[0] | (shifts[1] << 2) | (shifts[2] << 4)]
 
     def _eq_compute(self, gains):
         if not self.eq_available():
@@ -877,10 +907,12 @@ class Model(object):
         self.dev.write(REG_EQ_APPLY, 1)
 
     def eq_set(self, bass=None, mid=None, treble=None):
-        """Set EQ gains in dB (None = keep), compute and apply the coefficients.  Does not switch the EQ on."""
+        """Set EQ gains in dB (None = keep, rounded to 0.1 dB), look up and apply the coefficients.
+        Does not switch the EQ on."""
         cur = self.eq_gains()
         new = tuple(c if g is None else float(g) for c, g in zip(cur, (bass, mid, treble)))
         words = self._eq_compute(new)
+        new = tuple(eq_round(g) for g in new)                         # what the table holds
         with self.lock:
             self._eq_write(words)
             self._eq_store(new)

@@ -460,3 +460,88 @@ def test_table_groups_of_the_new_cards():
     assert "od_level" in groups["od"] and "dist_level" in groups["dist"]
     assert groups["od"][-1] == "od_level" or groups["od"].index("od_level") > groups["od"].index("od_gain")
     assert [p.group for p in T.params if p.id in ("reverb_size", "reverb_damp")] == ["reverb", "reverb"]
+
+
+# ---- EQ table (tools/eq_table.py -> gme/eq_table.json): the board never runs the coefficient search --------------------
+
+def _fresh(sec, k):
+    ec = tools_eq()
+    args = [0.0, 0.0, 0.0]
+    args[sec] = k / 10.0
+    ints, shifts, _ = ec.coefficient_set_full(*args)
+    return ints[5 * sec:5 * sec + 5] + [shifts[sec]]
+
+
+def test_eq_table_shape_and_sample_equals_fresh_computation():
+    t = gm.eq_table()
+    assert t["format"] == 1 and (t["min"], t["max"], t["step"]) == (-120, 120, 0.1)
+    assert [len(t["sections"][n]) for n in ("bass", "mid", "treble")] == [241, 241, 241]
+    assert all(len(e) == 6 for n in t["sections"] for e in t["sections"][n])
+    for sec, name in enumerate(("bass", "mid", "treble")):
+        for k in (-120, -91, -37, -1, 0, 1, 26, 60, 77, 119, 120):
+            assert t["sections"][name][k + 120] == _fresh(sec, k), (name, k)
+        assert t["sections"][name][120] == [65536, 0, 0, 0, 0, 0] or t["sections"][name][120][:1] == [65536]
+    size = os.path.getsize(gm.EQ_TABLE_PATH)
+    assert size < 40000, size
+
+
+@pytest.mark.slow
+def test_eq_table_every_entry_equals_fresh_computation():
+    import sys
+    sys.path.insert(0, os.path.join(REPO, "tools"))
+    import eq_table
+    assert json.loads(eq_table.dumps(eq_table.build())) == gm.eq_table()
+    assert open(gm.EQ_TABLE_PATH).read() == eq_table.dumps(gm.eq_table())      # file is in the generator's format
+
+
+def test_eq_lookup_is_fast_and_equals_the_oracle_words():
+    import time
+    ec = tools_eq()
+    t0 = time.time()
+    for i in range(50):
+        gm.Model.eq_words(-12 + i * 0.37, 12 - i * 0.41, 0.1 * i)
+    per = (time.time() - t0) / 50
+    assert per < 0.005, per
+    for g in ((6, -3, 2), (12, 12, 12), (-12, 0, 5.5), (0.3, -0.7, 11.9)):
+        full, shifts, _ = ec.coefficient_set_full(*g)
+        assert gm.Model.eq_words(*g) == [ec.word18(v) for v in full] + [ec.scale_word(shifts)]
+    assert gm.Model.eq_words(2.54, 0, 0) == gm.Model.eq_words(2.5, 0, 0) and gm.Model.eq_words(2.55, 0, 0) == gm.Model.eq_words(2.6, 0, 0)
+
+
+def test_eq_path_never_runs_the_search(tmp_path, cabdir, monkeypatch):
+    import subprocess
+    import sys
+    # a fresh interpreter: importing the library and setting the EQ does not even import the search module
+    code = ("import sys; sys.path.insert(0, %r)\n"
+            "from gme import device, model\n"
+            "m = model.Model(device.Mock())\n"
+            "m.set({'eq_bass': 6, 'eq_treble': -2}); m.eq_set(1, 2, 3)\n"
+            "assert 'gme.eq_coefs' not in sys.modules and 'eq_coefs' not in sys.modules\n"
+            "print('ok')" % BOARD)
+    r = subprocess.run([sys.executable, "-W", "error", "-c", code], capture_output=True, text=True)
+    assert r.stdout.strip() == "ok", r.stderr
+    # and with the search made to fail, the server's EQ path works
+    from gme import eq_coefs
+
+    def boom(*a, **k):
+        raise AssertionError("coefficient search called")
+    monkeypatch.setattr(eq_coefs, "coefficient_set_full", boom)
+    srv, dev, model, cl = start(0x0208, tmp_path, cabdir)
+    try:
+        s, j = cl.post("/api/params", {"eq_bass": 6.3, "eq_mid": -3, "eq_treble": 2, "eq_on": True})
+        assert s == 200 and dev.eq_applies == 1 and dev.eq_active == gm.Model.eq_words(6.3, -3, 2)
+        cl.post("/api/presets/crunch")
+        assert cl.post("/api/presets", {"name": "p"})[0] == 201 and cl.post("/api/presets/p")[0] == 200
+        assert model.eq_resync() is True
+    finally:
+        srv.stop()
+
+
+def test_eq_fallback_when_table_is_missing(monkeypatch):
+    ec = tools_eq()
+    monkeypatch.setattr(gm, "_EQ_TABLE", [None])
+    monkeypatch.setattr(gm, "_EQ_CACHE", {})
+    with pytest.warns(UserWarning, match="eq_table.json not found"):
+        got = gm.Model.eq_words(6, 0, 0)
+    full, shifts, _ = ec.coefficient_set_full(6, 0, 0)
+    assert got == [ec.word18(v) for v in full] + [ec.scale_word(shifts)]

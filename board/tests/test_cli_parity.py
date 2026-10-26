@@ -460,13 +460,18 @@ def test_documented_differences(monkeypatch, capsys, tmp_path, cabdir):
     assert old.regs[0x1F] == 60500 and new.regs[0x1F] == seeded_mock(V5).regs[0x1F]
     gme_hps.run(["--data-dir", str(tmp_path), "preset", "hall"], dev=seeded_mock(V5))
     assert "reverb_size not in this FPGA image" in capsys.readouterr().err
-    # 8. the EQ gains set with `set eq_bass=...` (or the page) have 0.1 dB steps; `eq B M T` takes any number like
-    #    the old tool (the model keeps the exact value, the parameter shows it rounded)
+    # 8. the EQ gains set with `set eq_bass=...` (or the page) have 0.1 dB steps; a bare number there means dB
     new = seeded_mock()
-    run_new(["eq", "2.55", "0", "0"], new, tmp_path, capsys)
+    run_new(["set", "eq_bass=2.55"], new, tmp_path, capsys)
     n, _ = run_new(["get", "eq_bass"], new, tmp_path, capsys)
     assert "2.6 dB (raw 26)" in n
-    assert new.eq_active == legacy.eq_words(2.55, 0, 0)
+    # 10. `eq B M T` looks the coefficients up in eq_table.json (the board must not run the 0.4 s search per section),
+    #     so gains are rounded to 0.1 dB: 2.55 gives the words of 2.6 dB (the old tool computed 2.55 exactly).
+    #     On the 0.1 dB grid the words are identical to the old tool's (test_parity: eq forms, test_eq_words_match_oracle).
+    new = seeded_mock()
+    run_new(["eq", "2.55", "0", "0"], new, tmp_path, capsys)
+    assert new.eq_active == legacy.eq_words(2.6, 0, 0) and new.eq_active != legacy.eq_words(2.55, 0, 0)
+    assert "2.6 dB" in run_new(["get", "eq_bass"], new, tmp_path, capsys)[0]
 
 
 def test_eq_via_set_equals_eq_command(tmp_path, capsys):

@@ -50,3 +50,7 @@ def mock():
 @pytest.fixture
 def model(mock, tmp_path, cabdir):
     return gm.Model(mock, store=Store(str(tmp_path / "data")), cab_dir=str(cabdir))
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: recomputes the whole EQ table (about a minute); deselect with -m 'not slow'")
