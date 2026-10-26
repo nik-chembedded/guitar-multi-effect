@@ -68,8 +68,9 @@ Errors are JSON `{error: text}` with HTTP 4xx. Writes are serialised by one lock
 * **Top bar:** connection state, FPGA version, codec / PLL status, input and output
   meters, mute button.
 * **Signal chain** as a row of effect cards in the order reported by `/api/chain`
-  (today the fixed hardware order: Overdrive → Distortion → Cabinet →
-  Chorus/Flanger/Vibrato → Tremolo → Echo → Reverb, + EQ / dynamics once in the chain).
+  (today the fixed hardware order of step D: Dynamics → Overdrive → Distortion → Cabinet → EQ →
+  Chorus/Flanger/Vibrato → Tremolo → Echo → Reverb).  The Dynamics card has a live gain-reduction
+  meter (DYN_GR); the EQ gains are model-level parameters (the FPGA takes coefficients, see `board/README.md`).
   Each card: on/off switch and its controls (sliders with display units; selects for
   types, waveforms, cabinets). **Step E:** when the chain is editable, cards can be
   dragged to reorder; the order is part of presets. The card layout and the API do not
@@ -115,7 +116,9 @@ Errors are JSON `{error: text}` with HTTP 4xx. Writes are serialised by one lock
 3. **W3:** the page (HTML/CSS/JS) + UI check in the browser with `Mock`.
 4. **W4:** `deploy_board.sh`, init script, smoke test; one board test (yours).
 5. **Merge into `main`** after step D; the parameters added by D3–D6 go into
-   `params.json` as their registers are fixed on `main`.
+   `params.json` as their registers are fixed on `main`.  Done on `web-ui` (main merged at step D6,
+   `e91a733`): reverb size / damping, dynamics, EQ, output levels, 0x0208 mock; the CLI is
+   tested against `main`'s `tools/gme_hps.py` (`board/tests/legacy_gme_hps.py`).
 
 ## Settings
 
