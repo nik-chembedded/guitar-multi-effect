@@ -60,7 +60,7 @@ if [ "${IP_MODELS:-0}" = 1 ]; then   # behavioural IP models instead of altera_m
 else
   compile "$FPGA_DIR"/ip/*.vhd
 fi
-compile "$FPGA_DIR"/rtl/fx_pkg.vhd "$FPGA_DIR"/rtl/overdrive.vhd "$FPGA_DIR"/rtl/distortion.vhd \
+compile "$FPGA_DIR"/rtl/fx_pkg.vhd "$FPGA_DIR"/rtl/level_gain.vhd "$FPGA_DIR"/rtl/overdrive.vhd "$FPGA_DIR"/rtl/distortion.vhd \
         "$FPGA_DIR"/rtl/chorus.vhd "$FPGA_DIR"/rtl/tremolo_v2.vhd "$FPGA_DIR"/rtl/echo.vhd \
         "$FPGA_DIR"/rtl/comb_filter.vhd "$FPGA_DIR"/rtl/allpass_filter.vhd "$FPGA_DIR"/rtl/reverbe.vhd \
         "$FPGA_DIR"/rtl/FX_chain.vhd "$SIM_DIR"/tb/tb_fx_wav.vhd

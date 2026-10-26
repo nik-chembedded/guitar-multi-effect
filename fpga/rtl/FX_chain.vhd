@@ -15,6 +15,7 @@
 -- Dynamics (enable bit 7) and EQ (enable bit 8): zero-latency bypass when off (dyn_stage /
 -- eq_stage, fx_bypass); when on each adds one frame. dyn_ctrl = DYN_CTRL register (bit 0 gate,
 -- bit 1 compressor), eq_cw_* / eq_apply = EQ coefficient port.
+-- D6: od_level / dist_level scale the overdrive / distortion wet path (level_gain.vhd).
 -- Mono: the left input is processed; data_out_right is not driven by effects.
 -- -----------------------------------------------------------------------------
 library IEEE;
@@ -81,6 +82,10 @@ port(
 		comp_makeup       : in std_logic_vector(15 downto 0) := (others => '0');
 		dyn_gr            : out std_logic_vector(15 downto 0);
 
+		-- D6: output level of the overdrive / distortion, signed Q8 log2 units (0 = unity, -1024 .. +512)
+		od_level          : in std_logic_vector(15 downto 0) := (others => '0');
+		dist_level        : in std_logic_vector(15 downto 0) := (others => '0');
+
 		-- D5 EQ: coefficient write port (address 0..14 coefficient, 15 scale word) and apply pulse
 		eq_cw_en          : in std_logic := '0';
 		eq_cw_addr        : in std_logic_vector(3 downto 0) := (others => '0');
@@ -118,14 +123,14 @@ begin
 
   OD_left : entity work.overdrive generic map (DW => DW) port map(
       clk => clk, en_rise => sample_tick, en_fall => half_tick, od_enable => od_en,
-      drive => od_drive, gain => od_gain, data_in => dyn_out, data_out => od_wet);
+      drive => od_drive, gain => od_gain, level => od_level, data_in => dyn_out, data_out => od_wet);
   OD_fade : entity work.fx_xfade generic map (DW => DW, XFADE => XFADE) port map(
       clk => clk, tick => sample_tick, en_rise => sample_tick, enable_in => effects_enable(0),
       enable_eff => od_en, din => dyn_out, wet => od_wet, dout => od_out);
 
   dist_left : entity work.distortion generic map (DW => DW) port map(
       clk => clk, en_rise => sample_tick, en_fall => half_tick, dist_enable => dist_en,
-      mix => dist_mix, d_type => dist_type, data_in => od_out, data_out => dist_wet);
+      mix => dist_mix, d_type => dist_type, level => dist_level, data_in => od_out, data_out => dist_wet);
   dist_fade : entity work.fx_xfade generic map (DW => DW, XFADE => XFADE) port map(
       clk => clk, tick => sample_tick, en_rise => sample_tick, enable_in => effects_enable(3),
       enable_eff => dist_en, din => od_out, wet => dist_wet, dout => dist_out);

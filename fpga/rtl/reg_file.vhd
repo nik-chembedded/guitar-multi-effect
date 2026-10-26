@@ -14,6 +14,7 @@
 --               gain-reduction meter of the dynamics stage, dyn_gr), all reaching the core on the
 --               flat bus ext (register 0x16 + i = ext(16*i+15 downto 16*i)):
 --               0x16 TREM_RATE, 0x18 MOD_BASE, 0x19 MOD_FB, 0x1A MOD_SHAPE, ...
+--               0x2D OD_LEVEL, 0x2E DIST_LEVEL (D6: signed Q8 log2 output level, 0 = unity)
 --               (docs/register_map.md)
 -- Any other address: err = '1' (read and write).
 -- -----------------------------------------------------------------------------
@@ -23,7 +24,7 @@ use ieee.numeric_std.all;
 
 entity reg_file is
   generic (
-    VERSION : std_logic_vector(15 downto 0) := x"0207"
+    VERSION : std_logic_vector(15 downto 0) := x"0208"
   );
   port (
     clk        : in  std_logic;

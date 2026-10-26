@@ -1,6 +1,6 @@
 # v2 step D: better DSP blocks
 
-**Status:** D1 … D5 (generated LFO, modulated delay, cabinet FIR, Freeverb reverb, dynamics, EQ; integrated in the chain, timing met) implemented and verified in simulation; board test at the end of step D.
+**Status:** D1 … D5 (generated LFO, modulated delay, cabinet FIR, Freeverb reverb, dynamics, EQ; integrated in the chain, timing met) and D6 (output level of the overdrive / distortion; 2x oversampling measured, not implemented) implemented and verified in simulation; board test at the end of step D.
 
 ## Overview
 
@@ -14,7 +14,7 @@ models, a WAV demo and a board test (JTAG `.sof`).
 | D3 | FIR cabinet simulation (impulse response, time-multiplexed MAC at 49.152 MHz), **10 cabinet choices** | the guitar-speaker sound; the reason for the 49.152 MHz clock |
 | D4 | Damped reverb (Freeverb, done) | more natural tail than the 4-comb Schroeder |
 | D5 | Noise gate, compressor, EQ (biquads) | new effects |
-| D6 | Distortion / overdrive: level compensation, optional 2× oversampling | even volume, less aliasing |
+| D6 | Distortion / overdrive: level compensation (done), optional 2× oversampling (data only, not implemented) | even volume, less aliasing |
 
 ## D1: generated LFO
 
@@ -436,3 +436,133 @@ Quartus Prime Lite 18.1: 0 errors, critical warnings only 169085 / 174073 (HPS p
 smallest over all corners); the HPS SDRAM clock is met (setup +1.73, hold +0.08 … +0.16).
 
 Full regression (`sim/run_all.sh`): **63 passed** in 41 min (the 43 of D4 plus 17 unit simulations of dynamics / EQ, `test_dyn_eq_xfade`, `test_timing_invariance`; `test_system_dyneq`, `test_refv2` with 35 presets).
+
+## D6: output level and oversampling decision data (2026-10-26)
+
+### Level compensation (implemented)
+
+The overdrive and the distortion are much louder than the clean signal; switching them on jumps the level by 4 … 12 dB. Two new
+registers, **0x2D OD_LEVEL** and **0x2E DIST_LEVEL**, give each effect an output level in **Q8 log2 units** (signed 16 bit, 1 unit =
+1/256 of a factor 2 = 0.0235 dB, the unit of the dynamics thresholds; −1024 … +512 = −24 … +12 dB, **0 = exactly unity**, out-of-range values are
+clamped). VERSION 0x0208.
+
+* **Gain stage (`level_gain.vhd`):** L is clamped to −1024 … +512, n = L ≫ 8 (floor, −4 … +2), f = L & 255; the gain is
+  mant(f) × 2^n / 2^16 with mant(f) = round(2^(f/256) × 65536), a 256-entry constant table (65536 … 130718, 17 bit; mant(0) = 65536, so
+  L = 0 gives sh = 16 and `x × 65536 ≫ 16 = x` exactly). Outputs: `mant` and the right shift `sh = 16 − n` (14 … 20). The module is purely
+  combinational; the Python model is `golden.level_gain` / `golden.apply_level` (`(v × mant) ≫ sh`, floor).
+* **Overdrive:** `od_lvl = mul_shr(od_out, mant_r, sh_r)` between the gain multiplication and `sat(…, DW)` (the old `od_out` was `new_out × gain`):
+  one multiplier of (DW + 19) × 17 bit (the product is exact, so the saturation clamps the exact value). **Distortion:** on the magnitude of
+  the ROM value (16 × 17 bit multiplier, one DSP), shifted by 2^(DW − 16) and by sh, limited to 2^(DW−1) − 1 (the wet value could not exceed the
+  sample range before), then the sign is restored and the dry/wet mix follows. So the level acts on the wet path only: with mix < 255 the dry
+  part stays at unity. With the effect off nothing changes (`data_out <= data_in`), and the click-free fade of `fx_xfade` is unchanged.
+* **Smoothing:** in `gme_core` both levels go through `param_smooth` in offset binary (like `MOD_FB`, so the signed value glides without a
+  sign problem), K = 7 (time constant 128 frames), 8 extra fraction bits: a change glides linearly in dB and settles exactly in about 1600 frames.
+  `param_smooth` got a generic `INIT` (default 0 = old behaviour) so the two level smoothers start at the offset-binary unity value after reset
+  (without it the effect would fade in from −24 dB for 35 ms after every reset).
+* **Timing / constraints:** `mant` / `sh` (the output of `level_gain`) are registered on the effect's strobe together with the sample they
+  belong to (`lv_mant_r`, `lv_sh_r`: next to `new_out` in the overdrive, next to the table address in the distortion); the multiplier, the shift and the
+  saturation behind them are combinational between strobe-loaded registers, i.e. the usual 16-cycle `fx` multicycle paths. The first version without
+  these two registers failed (−0.87 ns setup, 20.3 ns single-cycle relationship): the path smoother `y` → `level_gain` table → multiplier → `data_out` was
+  timed as one clock, because the multicycle for `$sm` (`get_registers {*|u_sm_*|y*}`) matches nothing (the instance path reads
+  `param_smooth:\smooth_on:u_sm_dlvl|y`, there is no `|u_sm_`). With the registers the only single-cycle part is smoother → table → register (~5 ns).
+  **Nothing was added to `seqblk` or `seqout`** in `top_v2.sdc`: there is no per-clock pipeline (the two registers load on the strobe the block already uses).
+  `test_timing_invariance` (now with non-zero levels, changed at frame 300) passes.
+* **Strobe alignment:** because the level is registered with its sample, the level that applies to the sample of frame n is the one valid at the strobe at which
+  the sample enters the stage: the overdrive uses `levels[n]` for x[n], the distortion (behind the bypassed but registered overdrive) `levels[n+1]`
+  (`test_level` sweeps one level per frame and checks exactly this).
+* **`tools/level_presets.py`** (numpy, PC): loudness of `sim/audio/the_lick_e_minor.wav` (mono, 48 kHz, 24-bit scale, peak −17.6 dBFS as
+  recorded) through the preset's overdrive / distortion with the bit-exact models (`golden.py` equivalents vectorised, checked against `golden.py`
+  on every run), measured as the RMS in the 100 Hz … 5 kHz band (ideal FFT band-pass over the whole clip; removes rumble and the fizz above
+  5 kHz that a guitar speaker does not play) — `--weighting a` uses the A-weighting curve instead and both are always printed. The OD level is
+  searched first (OD output = input loudness), then the distortion level (final output = input loudness), over all integer levels. The dry part of
+  the mix is not scaled, so the gain is found by search, not by formula.
+
+  | preset | uses | clean (dB) | no level | levelled | diff band / A | OD_LEVEL | DIST_LEVEL |
+  |---|---|---|---|---|---|---|---|
+  | crunch | DIST (medium, mix 160) | −28.92 | −25.09 | −28.91 | +0.01 / −0.02 dB | 0 | **−233** (−5.5 dB) |
+  | lead | DIST (hard, mix 220) | −28.92 | −17.10 | −28.93 | −0.01 / −0.08 dB | 0 | **−544** (−12.8 dB) |
+  | (od example, not a preset: drive 3000, gain 4) | OD | −28.92 | −16.92 | −28.91 | +0.01 / −0.01 dB | −510 (−12.0 dB) | 0 |
+
+  No factory preset uses the overdrive, hence the extra example row. The values are within ±0.1 dB of the target. Sensitivity to the input level
+  (`--peak-dbfs`): the needed distortion level changes by about ±1.5 dB for ±12 dB of input level (crunch −180 / −233 / −248 at peaks of −6 / −17.6 / −30 dBFS),
+  so the presets are a good starting point, not a guarantee for every pickup. The presets in `tools/gme_hps.py` carry `dist_level=-233` (crunch) and
+  `dist_level=-544` (lead); `gme_hps.py set od_db=-3 dist_db=-6` sets a level in dB. `preset` writes the two levels only when VERSION ≥ 0x0208.
+
+### Verification (D6)
+
+| Test | Result |
+|------|--------|
+| `test_fx_chain::test_level` (16 and 24 bit chain) | level 0 equals the pre-D6 formulas (written out in the test); all levels −1100 … +600 (1701 values, one per frame, incl. the clamps) bit-exact to `golden.py` for the overdrive (2 settings, with and without clipping / saturation) and the 3 curves (mix 255 and 100); +6.02 dB (256) = exactly 2x and −6.02 dB = exactly x/2 below saturation; −24 dB (level −1020): 23.988 dB (overdrive and distortion, limit 24 ± 0.05); level −5000 = clamp −1024 = 24.082 dB; +12 dB saturates at the sample limits and never wraps |
+| `test_refv2` | 36 presets: the 35 earlier ones bit-exact (level 0), new `level_od_dist` (OD −5 dB, distortion +4 dB, changed to +3 / −9 dB at frame 3000) recorded with `GME_REF_ONLY=level_od_dist`; `test_golden24`: 8 levels (−4000 … +4000) bit-exact for OD and the hard curve with full-scale 24-bit input |
+| `test_avmm::test_level_regs` | 0x2D / 0x2E read/write, sign kept, reset 0, own ext-bus slices, write events, VERSION 0x0208 |
+| `test_system_level` (`test_system::test_level_via_hps`, 16-tap cabinet, real 1024-clock frames, 4700 frames) | OD_LEVEL over the bridge: level 0 exactly unity from reset on, 256 → exactly 2x (+6.02 dB), −256 → exactly x/2; the glide has no sample step larger than the steady states' |
+| `test_timing_invariance` | identical output at 16 and 1024 clocks per frame with non-zero levels (changed at frame 300) |
+
+Quartus Prime Lite 18.1 (D6 RTL): 0 errors. **4,802 ALMs (15 %), 4,764 registers, 268 M10K (68 %), 72 DSP blocks (83 %; +3 for the two level multipliers: the overdrive's
+(DW + 19) × 17 bit and the distortion's 16 × 17 bit; a pre-clamp of the overdrive product to DW + 5 bits would be exact and might save one)**. `sys_clk`: setup +1.773 ns worst (slow 0 °C; 85 °C +1.936), hold +0.068 ns
+(fast 0 °C; the smallest over all corners and clocks, incl. the HPS SDRAM clocks: setup ≥ +1.7, hold ≥ +0.077). The first compile (without the
+registered `mant` / `sh`) was −0.869 ns setup / −0.026 ns hold, see "Timing / constraints" above.
+
+### D6: oversampling decision data
+
+Question: should the distortion run at 2x the sample rate to reduce aliasing? **Measured and simulated only, nothing implemented.**
+`tools/dist_aliasing.py` (numpy; run `python tools/dist_aliasing.py`) uses the bit-exact `golden.distortion` model (24 bit, mix 255 = wet only) on
+sines of exactly coherent frequency (2 s, 96000 samples, 4-term Blackman-Harris window, 96000-point FFT).
+
+*What is measured.* "inharm" = the level of the strongest spectral line that is not a multiple of the fundamental (baseband harmonics excluded),
+dB re the fundamental. At 1 kHz every alias lands on a harmonic bin (48 kHz / 1 kHz is an integer), so there is no inharmonic line; the
+second column "error" avoids that: the strongest line of `y − y_ideal`, where `y_ideal` is the same waveshaper evaluated at 8x the rate and band-limited
+to 24 kHz (exactly the harmonics below 24 kHz, no alias). 1.1 kHz is added to show what 1 kHz hides. 2x = zero-stuff, half-band Kaiser FIR
+(23 or 31 taps, gain 2), the same table at 96 kHz (address |x| ≫ 8 of the interpolated sample), the same half-band FIR, every second sample (floating-point
+filters, output rounded to 24 bit).
+
+Amplitude −3 dBFS (the table end is reached for part of every period: the curve is driven hard), dB re the fundamental:
+
+| f0 | curve | current: inharm / error | 2x, 23 taps: inharm / error | 2x, 31 taps: inharm / error |
+|----|-------|--------------------|--------------------|--------------------|
+| 1 kHz | soft | n/a / −56.2 | n/a / −72.6 | n/a / −72.6 |
+| 1 kHz | medium | n/a / −58.7 | n/a / −72.6 | n/a / −72.9 |
+| 1 kHz | hard | n/a / −58.2 | n/a / −61.8 | n/a / −62.4 |
+| 1.1 kHz | soft | −57.4 / −57.4 | −66.2 / −65.3 | −67.2 / −65.9 |
+| 1.1 kHz | medium | −61.4 / −61.5 | −72.5 / −68.5 | −73.5 / −71.6 |
+| 1.1 kHz | hard | −59.1 / −59.1 | −70.8 / −65.8 | −71.7 / −66.8 |
+| 2.5 kHz | soft | −43.0 / −43.1 | −57.6 / −51.5 | −60.8 / −52.6 |
+| 2.5 kHz | medium | −43.1 / −43.1 | −57.9 / −50.6 | −61.3 / −51.7 |
+| 2.5 kHz | hard | −38.7 / −38.7 | −54.0 / −44.0 | −57.7 / −45.1 |
+| 5 kHz | soft | −36.2 / −36.2 | −44.1 / −44.2 | −44.7 / −44.8 |
+| 5 kHz | medium | −34.8 / −34.8 | −43.0 / −43.0 | −43.7 / −43.7 |
+| 5 kHz | hard | **−22.4 / −22.4** | −30.5 / −30.5 | −31.2 / −31.2 |
+
+At −12 dBFS every value is 10 … 30 dB lower (hard curve, current: 1 kHz −76, 2.5 kHz −54 (inharm), 5 kHz −33; 2x with 31 taps: −78, −73, −42);
+the full table is the script output. The half-band filters: 23 taps = 13 non-zero taps, 6 distinct multipliers, −1.3 dB at 20 kHz, −17 dB at 28 kHz,
+−42 dB at 32 kHz, ≥ 76 dB beyond 40 kHz; 31 taps = 17 non-zero taps, 8 distinct multipliers, −0.7 dB at 20 kHz, −22 dB at 28 kHz, −73 dB at 32 kHz,
+≥ 88 dB beyond 40 kHz.
+
+*Reading.* 2x improves the strongest alias by 8 … 19 dB (inharmonic lines; 4 … 16 dB by the error measure) for 23 or 31 taps, far less than the 40 … 60 dB one would like. The reason is the short
+half-band filter: its transition band (20 … 32 kHz) leaves everything the shaper creates between 24 and 32 kHz unfiltered, and those components fold back to
+16 … 24 kHz. At fundamentals up to ~1.3 kHz (a guitar's highest fret) the present aliasing is already 56 … 61 dB below the fundamental at −3 dBFS and
+74 … 92 dB at −12 dBFS (1 / 1.1 kHz rows); it becomes significant only for fundamentals above ~2.5 kHz (−39 … −43 dB) which a guitar does not play, and for strong
+harmonic content that the cabinet FIR (after the distortion in the chain) removes. A longer filter (47 … 63 taps) would be needed for a 20 dB further gain.
+
+*Hardware cost (31 taps; 23 taps in brackets).* Interpolator: the even output phase is the (delayed) input itself, the odd phase needs the 16 odd
+taps; with the symmetry (pre-add two samples) 8 [6] multiplications per 48 kHz input sample. Decimator: 8 [6] more. So **16 [12] multiplications per
+sample** (24 × 18 bit, one DSP block each if parallel), 2 shaper table reads per sample (the M10K ROMs are single-read; two reads in sequence),
+two delay lines of 16 [12] samples × 24 bit (registers / MLABs, no M10K), the dry path delayed by the filter delay for the mix (15 [11] samples = 0.31 [0.23] ms
+for interpolator + decimator), 8 [6] coefficient constants.
+
+| Option | DSP blocks (now 69/87) | clocks per sample | fits 16-clock simulation frames? |
+|--------|--------------|-------------------|----------------------------|
+| fully parallel (the style of the current datapath) | +16 [12] → 85 [81] of 87 | 3 (combinational, multicycle) | yes, but leaves 2 [6] DSP blocks free: not sensible |
+| one time-multiplexed MAC (like `cab_fir`) | +1 → 70 | 16 [12] MAC clocks + ROM / pipeline ≈ 24 [20] | no: needs > 16 clocks; fine for the board's 1024 |
+| 4 MAC lanes (`LANES` generic as in `cab_fir`) | +4 → 73 | 4 [3] MAC clocks + ≈ 8 ≈ 12 [11] | yes (16 - clock frames need the result a few clocks before the next strobe) |
+
+Any variant needs a sequencer in `seqblk`/`seqout` (per-clock pipeline) and the two strobes of the distortion would change (latency +1 frame, the
+timing-invariance test must prove it), plus a new unit model and test (bit-exact filters with an integer implementation).
+
+**Recommendation: do not implement 2x oversampling now.** The gain is 4 … 19 dB on aliases that are already 56 … 92 dB down for realistic guitar notes
+(fundamentals ≤ 1.3 kHz) and the cabinet filters what is left; the cost is 1 … 4 DSP blocks, a new sequenced block with its tests and constraint changes,
+~0.3 ms extra latency and a delayed dry path. If a listening test on the board finds audible aliasing at high gain and high notes, the cheapest
+step is the 23-tap variant with 4 MAC lanes (73 DSP blocks, 12 clocks), or better a longer half-band (47 taps, ~12 multipliers per direction) on one MAC
+(board frames only; the simulation twin would need the lanes). Decide after the board test of step D.
+
+Full regression (`sim/run_all.sh`, D6 RTL): **64 passed** in 50 min (the 63 of D5 plus `test_system_level`; `test_fx_chain` / `test_fx_chain_24` include `test_level`, `test_refv2` has 36 presets).

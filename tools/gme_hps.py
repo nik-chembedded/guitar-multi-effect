@@ -23,6 +23,7 @@ The FPGA registers sit behind the HPS lightweight bridge: register n is the
     python gme_hps.py set   effects=DYN dyn=gate+comp gate_db=-45 comp_db=-20 ratio=4 makeup_db=3 attack_ms=2 release_ms=100
     python gme_hps.py eq 6 -3 2                  (EQ: bass, mid, treble in dB, -12..+12; switches the EQ on)
     python gme_hps.py eq off                     (EQ off / on again with the last setting: eq on)
+    python gme_hps.py set   od_db=-3 dist_db=-6  (output level of the overdrive / distortion in dB, -24 .. +12)
     python gme_hps.py selftest                   (no hardware needed)
 
 Dynamics (step D5, enable bit 7 DYN): noise gate and compressor, first stage of the chain. Settings of `set`:
@@ -35,6 +36,11 @@ EQ (step D5, enable bit 8 EQ): `eq B M T` computes the coefficients of three biq
 mid 800 Hz Q 0.9, high shelf 3.5 kHz; tools/eq_coefs.py, must be next to this script or in ../tools), writes
 them through EQ_ADDR / EQ_DATA_LO / EQ_DATA_HI (16 words, the last is the scale word), applies them (EQ_APPLY:
 all at once at one sample boundary) and switches the EQ on.
+
+Output level (step D6, VERSION 0x0208): od_level / dist_level (registers 0x2D / 0x2E) scale the wet path of the
+overdrive / distortion, signed Q8 log2 units like the dynamics thresholds (0 = exactly unity, -1020 = -24 dB, 512 = +12 dB,
+clamped to -1024 .. +512); od_db / dist_db = the same in dB. The factory presets carry levels that make them as loud
+as the clean signal (tools/level_presets.py computes them).
 
 Reverb (step D4, Freeverb): reverb_type 0..3 = rooms very light / light / medium / heavy
 (size 0.70 / 0.80 / 0.88 / 0.94, damp 100 / 80 / 60 / 40), 4 = custom from reverb_size
@@ -80,6 +86,9 @@ REGS = {
     "comp_release": 0x26, "comp_makeup": 0x27,
     "eq_addr": 0x28, "eq_data_lo": 0x29, "eq_data_hi": 0x2A, "eq_apply": 0x2B,
     "dyn_gr": 0x2C,                      # read-only gain-reduction meter (Q8 log2 units, positive)
+    # step D6: output level of the overdrive / distortion wet path, signed Q8 log2 units (0 = unity,
+    # -1024 .. +512 = -24 .. +12 dB), smoothed in the FPGA
+    "od_level": 0x2D, "dist_level": 0x2E,
 }
 REVERB_ROOMS = ((45875, 100), (52429, 80), (57672, 60), (61604, 40))     # reverb_type 0..3
 CAB_TAPS = 2048
@@ -99,10 +108,10 @@ TREM_SHAPES = {"sine": 0, "triangle": 1, "saw": 2, "square": 3}
 
 PRESETS = {
     "clean":  dict(effects_enable=0),
-    "crunch": dict(effects_enable=EFFECT_BITS["DIST"] | EFFECT_BITS["REVERB"], dist_type=1, dist_mix=160,
+    "crunch": dict(effects_enable=EFFECT_BITS["DIST"] | EFFECT_BITS["REVERB"], dist_type=1, dist_mix=160, dist_level=-233,
                    reverb_type=1, reverb_mix=60),
     "lead":   dict(effects_enable=EFFECT_BITS["DIST"] | EFFECT_BITS["ECHO"] | EFFECT_BITS["REVERB"],
-                   dist_type=2, dist_mix=220, echo_time=18000, echo_level=20000, echo_repeat=90,
+                   dist_type=2, dist_mix=220, dist_level=-544, echo_time=18000, echo_level=20000, echo_repeat=90,
                    reverb_type=2, reverb_mix=80),
     "ambient": dict(effects_enable=EFFECT_BITS["CHORUS"] | EFFECT_BITS["ECHO"] | EFFECT_BITS["REVERB"],
                     chorus_level=110, chorus_depth=144, chorus_rate=60, mod_base=720,
@@ -245,6 +254,10 @@ def parse_assignments(items):
             regs["comp_thresh"] = db_to_q8(v)
         elif k == "makeup_db":
             regs["comp_makeup"] = db_to_q8(v)
+        elif k == "od_db":
+            regs["od_level"] = db_to_q8(v)
+        elif k == "dist_db":
+            regs["dist_level"] = db_to_q8(v)
         elif k == "ratio":
             if v not in COMP_RATIOS:
                 raise SystemExit("ratio: 1, 2, 4, 8 or inf")
@@ -389,7 +402,12 @@ def selftest():
     assert parse_assignments(["trem_shape=square", "trem_hz=6.5"]) == {"trem_wave": 11, "trem_rate": 650}
     for p in PRESETS.values():
         assert set(p) <= set(EFFECT_REGS) | {"trem_rate", "mod_base", "mod_fb", "mod_shape",
-                                                  "reverb_size", "reverb_damp"}
+                                                  "reverb_size", "reverb_damp", "od_level", "dist_level"}
+    # D6 output levels: dB -> Q8 units, signed register values, presets carry compensation levels
+    assert parse_assignments(["od_db=-3", "dist_db=-6"]) == {"od_level": -128, "dist_level": -255}
+    assert (db_to_q8(-24) & 0xFFFF) == 0xFC04 and db_to_q8(12) == 510 and REGS["od_level"] == 0x2D and REGS["dist_level"] == 0x2E
+    for n in ("crunch", "lead"):
+        assert -1024 <= PRESETS[n]["dist_level"] <= 512
     assert PRESETS["hall"]["reverb_type"] == 4 and REVERB_ROOMS[3] == (61604, 40)
     assert parse_assignments(["reverb_type=4", "reverb_size=60000", "reverb_damp=30"]) ==         {"reverb_type": 4, "reverb_size": 60000, "reverb_damp": 30}
     # dynamics settings
@@ -458,8 +476,10 @@ def main():
         if not a.args or a.args[0] not in PRESETS:
             raise SystemExit("presets: %s" % ", ".join(PRESETS))
         keys = EFFECT_REGS + ["trem_rate", "mod_base", "mod_fb", "mod_shape", "reverb_size", "reverb_damp"]
+        if b.read(REGS["version"]) >= 0x0208:
+            keys = keys + ["od_level", "dist_level"]
         regs = dict((k, 0) for k in keys)
-        regs.update(PRESETS[a.args[0]])
+        regs.update(dict((k, v) for k, v in PRESETS[a.args[0]].items() if k in regs))
         regs["effects_enable"] |= b.read(REGS["effects_enable"]) & KEEP_BITS    # cabinet, dynamics, EQ stay as they are
         for k in keys:
             b.write(REGS[k], regs[k])

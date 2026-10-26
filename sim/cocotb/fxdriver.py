@@ -34,7 +34,8 @@ PARAMS = ("effects_enable", "od_drive", "od_gain", "trem_depth", "trem_wave",
           "echo_time", "echo_level", "echo_repeat", "chorus_rate", "chorus_level",
           "chorus_depth", "dist_mix", "dist_type", "reverb_size", "reverb_damp", "reverb_mix", "trem_rate",
           "mod_base", "mod_fb", "mod_shape", "echo_frac", "cab_ctrl",
-          "dyn_ctrl", "gate_thresh", "comp_thresh", "comp_ratio", "comp_attack", "comp_release", "comp_makeup")
+          "dyn_ctrl", "gate_thresh", "comp_thresh", "comp_ratio", "comp_attack", "comp_release", "comp_makeup",
+          "od_level", "dist_level")        # D6: output levels, signed Q8 log2 units
 
 
 def to_s16(v):

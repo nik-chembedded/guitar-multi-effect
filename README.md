@@ -22,8 +22,8 @@ lightweight HPS-to-FPGA bridge. There is no soft CPU.
 
 | Effect     | Implementation                                                          | Parameters |
 |------------|-------------------------------------------------------------------------|------------|
-| Overdrive  | Hard clipping at a threshold, then gain (saturating)                    | drive, gain |
-| Distortion | Waveshaping with ROM transfer curves (soft / medium / heavy)            | type, mix |
+| Overdrive  | Hard clipping at a threshold, then gain (saturating), output level (step D6) | drive, gain, level (-24 … +12 dB) |
+| Distortion | Waveshaping with ROM transfer curves (soft / medium / heavy), output level on the wet path (step D6) | type, mix, level (-24 … +12 dB) |
 | Cabinet    | 2048-tap FIR (42.7 ms) with two coefficient banks: 10 selectable cabinet impulse responses (step D3) | cabinet 0 … 9 |
 | Dynamics   | Noise gate + compressor with one level detector and a log-domain gain glide (step D5) | gate / compressor on, thresholds, ratio, attack, release, make-up |
 | EQ         | 3-band EQ: low shelf, peaking mid, high shelf, three biquads with error feedback (step D5) | bass, mid, treble (-12 … +12 dB) |
@@ -186,7 +186,10 @@ and the equivalence proof of the IP models (`sim/models/run_equiv.sh`).
   0x20 REVERB_DAMP); **D5 dynamics + EQ integrated** (`dynamics`, `eq3`/`biquad` as chain stages with zero-latency
   bypass, enable bits 7 / 8, registers 0x21–0x2C, `gme_hps.py eq`, VERSION 0x0207): verified in simulation incl. a
   test that the chain gives identical samples with 16-clock and 1024-clock frames, timing met in
-  Quartus (see [docs/v2_stepD_design.md](docs/v2_stepD_design.md)); next D6. Board test at the end of step D.
+  Quartus (see [docs/v2_stepD_design.md](docs/v2_stepD_design.md)); **D6 output level of the overdrive / distortion**
+  (registers 0x2D OD_LEVEL / 0x2E DIST_LEVEL, signed Q8 log2 units, 0 = unity, smoothed; `tools/level_presets.py`
+  computes the loudness-matched preset levels; VERSION 0x0208) integrated; D6 also has measured data on 2x
+  oversampling of the distortion (not implemented, `tools/dist_aliasing.py`). Board test at the end of step D.
 
 ## Third-party code
 

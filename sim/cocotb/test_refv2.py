@@ -17,6 +17,8 @@ Step D5 (dynamics, EQ) added dyn_gate, dyn_comp, eq_3band and combo_d5 at the en
 recorded only them; the 31 earlier presets stayed bit-exact (dynamics and EQ are off in them: zero
 latency bypass). A preset key "eq" = (bass, mid, treble) dB writes that EQ set (tools/eq_coefs.py)
 through the chain's write port before the run (flat for the other presets).
+Step D6 (output level of the overdrive / distortion) added level_od_dist at the end of PRESETS and
+recorded only it (GME_REF_ONLY=level_od_dist); the 35 earlier presets stayed bit-exact (level 0 = unity).
 
 All presets run in one simulation from power-up, in a fixed order, with
 deterministic 24-bit stimuli (the state carried between presets, delay lines and
@@ -107,12 +109,17 @@ PRESETS = {
                            trem_rate=500, trem_depth=100, echo_time=1500, echo_level=18000, echo_repeat=90,
                            reverb_type=1, reverb_mix=70, **CHORUS_REGS),
                       dict(effects_enable=(ALL | CAB) & ~DIST, eq=(-6, 5, -4), comp_ratio=4)),
+    # ---- step D6: recorded with GME_REF_ONLY (the 35 presets above are unchanged, level 0 = unity) ----
+    "level_od_dist": (dict(effects_enable=OD | DIST | ECHO, od_drive=5000, od_gain=3, od_level=q8(-5),
+                           dist_type=1, dist_mix=200, dist_level=q8(4), echo_time=700, echo_level=15000,
+                           echo_repeat=80),
+                      dict(od_level=q8(3), dist_level=q8(-9), od_drive=9000)),
 }
 ZERO = {k: 0 for k in ("effects_enable", "od_drive", "od_gain", "trem_depth", "trem_wave", "trem_rate",
                        "echo_time", "echo_frac", "echo_level", "echo_repeat", "chorus_rate", "chorus_level",
                        "chorus_depth", "mod_base", "mod_fb", "mod_shape", "dist_mix", "dist_type",
                        "reverb_type", "reverb_mix", "dyn_ctrl", "gate_thresh", "comp_thresh", "comp_ratio",
-                       "comp_attack", "comp_release", "comp_makeup", "cab_ctrl")}
+                       "comp_attack", "comp_release", "comp_makeup", "cab_ctrl", "od_level", "dist_level")}
 
 
 async def set_regs(fx, regs):
@@ -195,3 +202,13 @@ async def test_golden24(dut):
             y = await fx.run(x, tail=4, raw=True)
             check("distortion %s/%d" % (name, mix), golden.distortion(x, curve, mix, dw=24), y)
     dut._log.info("24-bit bypass / overdrive / 3 distortion curves x 2 mixes bit-exact")
+    # D6: output levels (constant per run), full-scale 24-bit input, saturating and not
+    for lv in (-1020, -300, 1, 256, 400, 512, -4000, 4000):
+        fx.set(**{**ZERO, **dict(effects_enable=OD, od_drive=12345, od_gain=3, od_level=lv)})
+        y = await fx.run(x, tail=4, raw=True)
+        check("overdrive level %d" % lv, golden.overdrive(x, 12345, 3, dw=24, level=lv), y)
+        curve = golden.load_mif(IP / "distortion_hard.mif")
+        fx.set(**{**ZERO, **dict(effects_enable=DIST, dist_type=2, dist_mix=200, dist_level=lv)})
+        y = await fx.run(x, tail=4, raw=True)
+        check("distortion level %d" % lv, golden.distortion(x, curve, 200, dw=24, level=lv), y)
+    dut._log.info("24-bit overdrive / distortion with 8 output levels bit-exact")

@@ -23,7 +23,7 @@ entity gme_core is
     XFADE          : boolean  := true;             -- click-free effect on/off
     CAB_TAPS       : positive := 2048;             -- cabinet FIR length (D3)
     CAB_INIT       : string   := "cab_default.mif"; -- its power-up coefficients
-    VERSION        : std_logic_vector(15 downto 0) := x"0207"
+    VERSION        : std_logic_vector(15 downto 0) := x"0208"
   );
   port (
     clk        : in  std_logic;
@@ -74,6 +74,9 @@ architecture rtl of gme_core is
   signal ext_rsize, ext_rdamp   : std_logic_vector(15 downto 0);   -- registers 0x1F, 0x20
   signal fb_ofs, s_fb_ofs       : std_logic_vector(15 downto 0);            -- feedback, offset binary
   signal s_echo_frac            : std_logic_vector(7 downto 0);
+  -- D6 output levels (registers 0x2D / 0x2E, signed Q8 log2 units), smoothed in offset binary
+  signal od_level, dist_level, s_od_level, s_dist_level : std_logic_vector(15 downto 0);
+  signal od_lvl_ofs, dist_lvl_ofs, s_od_lvl_ofs, s_dist_lvl_ofs : std_logic_vector(15 downto 0);
 
   -- extension register 0x16 + i
   function ext_reg(e : std_logic_vector; r : natural) return std_logic_vector is
@@ -159,6 +162,7 @@ begin
   u_fx : entity work.FX_chain
     generic map (DW => 24, XFADE => XFADE, CAB_TAPS => CAB_TAPS, CAB_INIT => CAB_INIT)
     port map (
+      od_level => s_od_level, dist_level => s_dist_level,
       dyn_ctrl => ext_reg(ext, 16#21#), gate_thresh => ext_reg(ext, 16#22#),
       comp_thresh => ext_reg(ext, 16#23#), comp_ratio => ext_reg(ext, 16#24#),
       comp_attack => ext_reg(ext, 16#25#), comp_release => ext_reg(ext, 16#26#),
@@ -248,6 +252,12 @@ begin
   -- glide, step D2). Not smoothed: gain (integer factor), selectors, enables
   -- (crossfaded in FX_chain). The signed feedback is smoothed in offset binary.
   fb_ofs   <= (not mod_fb(15)) & mod_fb(14 downto 0);
+  od_level     <= ext_reg(ext, 16#2D#);
+  dist_level   <= ext_reg(ext, 16#2E#);
+  od_lvl_ofs   <= (not od_level(15)) & od_level(14 downto 0);
+  dist_lvl_ofs <= (not dist_level(15)) & dist_level(14 downto 0);
+  s_od_level   <= (not s_od_lvl_ofs(15)) & s_od_lvl_ofs(14 downto 0);
+  s_dist_level <= (not s_dist_lvl_ofs(15)) & s_dist_lvl_ofs(14 downto 0);
   s_mod_fb <= (not s_fb_ofs(15)) & s_fb_ofs(14 downto 0);
   smooth_on : if SMOOTH generate
     u_sm_drive  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => od_drive,     value => s_od_drive);
@@ -264,6 +274,9 @@ begin
     u_sm_crate  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => chorus_rate,  value => s_chorus_rate);
     u_sm_mbase  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => mod_base,     value => s_mod_base);
     u_sm_mfb    : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => fb_ofs,       value => s_fb_ofs);
+    -- level 0 (unity) = offset binary 0x8000 after reset: no fade-in from -24 dB at power-up
+    u_sm_odlvl  : entity work.param_smooth generic map (INIT => 32768) port map (clk => clk, rst => rst, tick => sample_tick, target => od_lvl_ofs,   value => s_od_lvl_ofs);
+    u_sm_dlvl   : entity work.param_smooth generic map (INIT => 32768) port map (clk => clk, rst => rst, tick => sample_tick, target => dist_lvl_ofs, value => s_dist_lvl_ofs);
     u_sm_etime  : entity work.param_smooth port map (clk => clk, rst => rst, tick => sample_tick, target => echo_time,    value => s_echo_time,
                                                      value_frac => s_echo_frac);
   end generate;
@@ -273,6 +286,7 @@ begin
     s_reverb_mix <= reverb_mix;   s_trem_rate <= trem_rate;     s_chorus_depth <= chorus_depth;
     s_chorus_rate <= chorus_rate; s_mod_base <= mod_base;       s_fb_ofs <= fb_ofs;
     s_echo_time <= echo_time;     s_echo_frac <= (others => '0');
+    s_od_level <= od_level;       s_dist_level <= dist_level;
     s_rev_size <= rev_size;       s_rev_damp <= rev_damp;
   end generate;
 

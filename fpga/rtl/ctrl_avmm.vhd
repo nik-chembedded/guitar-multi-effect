@@ -32,7 +32,7 @@ use ieee.numeric_std.all;
 
 entity ctrl_avmm is
   generic (
-    VERSION : std_logic_vector(15 downto 0) := x"0207"
+    VERSION : std_logic_vector(15 downto 0) := x"0208"
   );
   port (
     clk        : in  std_logic;

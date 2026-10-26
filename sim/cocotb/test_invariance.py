@@ -9,6 +9,7 @@ result changes between the strobes of its consumers differently in the two timin
 Configuration: dynamics (gate + compressor), overdrive, distortion, cabinet (16-tap test .mif), EQ
 (non-flat), modulated delay, tremolo, echo, reverb, XFADE on (the fades run in the middle of the
 test); at frame 120 dynamics and EQ are switched off, at frame 250 on again (both are then fading).
+D6: overdrive and distortion have non-zero output levels (+3 dB / -4 dB), changed at frame 300.
 """
 import math
 import os
@@ -43,7 +44,7 @@ async def test_run(dut):
     fx.set(effects_enable=ALL,
            dyn_ctrl=3, gate_thresh=q8(-60), comp_thresh=q8(-18), comp_ratio=2, comp_attack=3,
            comp_release=6, comp_makeup=q8(4),
-           od_drive=6000, od_gain=2, dist_type=1, dist_mix=128,
+           od_drive=6000, od_gain=2, dist_type=1, dist_mix=128, od_level=q8(3), dist_level=q8(-4),
            cab_ctrl=(3 << 4) | (2 << 1),
            chorus_level=128, chorus_depth=40, chorus_rate=900, mod_base=100,
            trem_wave=8 + 1, trem_rate=2200, trem_depth=120,
@@ -58,6 +59,8 @@ async def test_run(dut):
             fx.set(effects_enable=ALL & ~(DYN | EQ))
         elif n == 250:
             fx.set(effects_enable=ALL)
+        elif n == 300:
+            fx.set(od_level=q8(-6), dist_level=q8(5))
 
     y = await fx.run(x, on_frame=on_frame, raw=True)
     assert all(v is not None for v in y), "X/U in the output"

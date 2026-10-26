@@ -3,6 +3,9 @@
 -- Waveshaping with ROM transfer curves (|f(|x|)| for |x| = 0..16383), sign
 -- restored, dry/wet mix. DW-bit samples (step C): the table is addressed with
 -- |x| / 2^(DW-16) and its value scaled by 2^(DW-16). DW = 16 is bit-exact to v1.
+-- D6: the shaped value (the wet path, before the dry/wet mix) is multiplied by the output
+-- level (level_gain.vhd, Q8 log2 units, 0 = exactly unity) and saturated at +-(2^(DW-1)-1);
+-- the sign is restored afterwards, so the level stage is symmetric.
 -- -----------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
@@ -23,6 +26,7 @@ port(
 		--drive     : in std_logic_vector(15 downto 0); 
 		mix      : in std_logic_vector(15 downto 0);
 		d_type   : in std_logic_vector(15 downto 0); 
+		level    : in std_logic_vector(15 downto 0) := (others => '0');   -- D6: output level, signed Q8 log2 units
 		
       data_in       : in std_logic_vector(DW - 1 downto 0);
       
@@ -83,6 +87,14 @@ END COMPONENT;
 	signal neg_d   : boolean := false;                      -- sign of the sample in the ROM
 	signal dry_d   : signed(DW - 1 downto 0) := (others => '0');   -- dry sample aligned with the ROM output
 	signal wet     : signed(DW - 1 downto 0);
+	signal wet_mag : signed(DW - 1 downto 0);               -- |wet| after the level stage
+	signal lv_mant : unsigned(16 downto 0);                  -- level_gain output (combinational)
+	signal lv_sh   : natural range 14 to 20;
+	signal lv_mant_r : unsigned(16 downto 0) := to_unsigned(65536, 17);   -- ... registered with the address (same strobe)
+	signal lv_sh_r   : natural range 14 to 20 := 16;
+	signal lv_p    : unsigned(32 downto 0);                  -- table value * mantissa
+	signal lv_s    : unsigned(32 + S downto 0);              -- ... * 2^S
+	signal lv_m    : unsigned(32 + S downto 0);              -- ... / 2^sh
 	signal out_dat : signed(DW - 1 downto 0);
 
 	signal soft_en : std_logic;
@@ -113,6 +125,8 @@ begin
 					end if;
 					neg_d <= signed(data_in) < 0;
 					dry_d <= signed(data_in);
+					lv_mant_r <= lv_mant;       -- the level belongs to the sample it is registered with (and keeps
+					lv_sh_r   <= lv_sh;         -- the smoother -> table path off the multiplier path)
 			 end if;
 			end process;
 			
@@ -186,8 +200,14 @@ ROM_hard : dist_ROM_hard port map(
 --										temp_data_sign <= std_logic_vector(to_signed(int_sign, temp_data_sign'length));
 								
 			-- restore the sign of the waveshaped sample (the ROM holds |f(|x|)|)
-			wet <= -shift_left(resize(signed(data_temp), DW), S) when neg_d
-			       else shift_left(resize(signed(data_temp), DW), S);
+			-- D6 level stage on the magnitude (one 16 x 17 multiplier, combinational: data_out loads only on the strobe)
+			u_lvl : entity work.level_gain port map (level => level, mant => lv_mant, sh => lv_sh);
+			lv_p    <= unsigned(data_temp) * lv_mant_r;
+			lv_s    <= shift_left(resize(lv_p, 33 + S), S);
+			lv_m    <= shift_right(lv_s, lv_sh_r);
+			wet_mag <= to_signed(2 ** (DW - 1) - 1, DW) when lv_m > 2 ** (DW - 1) - 1
+			           else signed(resize(lv_m, DW));
+			wet     <= -wet_mag when neg_d else wet_mag;
 
 			out_dat <= mix8(dry_d, wet, unsigned(mix(7 downto 0)));
 

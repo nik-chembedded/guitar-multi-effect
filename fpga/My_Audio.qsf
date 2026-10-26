@@ -32,6 +32,7 @@ set_global_assignment -name VHDL_FILE rtl/fx_xfade.vhd
 set_global_assignment -name VHDL_FILE rtl/param_smooth.vhd
 set_global_assignment -name VHDL_FILE rtl/lfo_sine_pkg.vhd
 set_global_assignment -name VHDL_FILE rtl/nco_lfo.vhd
+set_global_assignment -name VHDL_FILE rtl/level_gain.vhd
 set_global_assignment -name VHDL_FILE rtl/overdrive.vhd
 set_global_assignment -name VHDL_FILE rtl/distortion.vhd
 set_global_assignment -name VHDL_FILE rtl/mod_delay.vhd

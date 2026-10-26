@@ -39,7 +39,7 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 12  | Mod Rate        | W   | `[15:0]`  | Modulation LFO rate            | 0.01 Hz (step D2; v1: clock divider). Smoothed. |
 | 13  | Reverb Mix      | W   | `[7:0]`   | Reverb Mixed Signal Value     | Dry/wet mix, 0 = dry (exactly the input) … 255 = wet. Smoothed. |
 | 14  | Reverb Type     | W   | `[3:0]`   | Reverb Type Selection         | Room preset 0 … 3, or 4 = custom size / damp (registers 0x1F / 0x20), see [(4)](#4-reverb-type-selection). Changes glide (size and damp are smoothed). |
-| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0207` = step D5 (dynamics, EQ: bits 7 / 8, registers 0x21 … 0x2C); `0x0206` = step D4 (Freeverb reverb, REVERB_SIZE / REVERB_DAMP); `0x0205` = step D3 (cabinet FIR, CAB registers); `0x0204` = step D2 (modulated delay, fractional echo); `0x0203` = D1 (generated LFO); `0x0202` = step C (24-bit); `0x0201` = HPS control, 16-bit |
+| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0208` = step D6 (output level of the overdrive / distortion, registers 0x2D / 0x2E); `0x0207` = step D5 (dynamics, EQ: bits 7 / 8, registers 0x21 … 0x2C); `0x0206` = step D4 (Freeverb reverb, REVERB_SIZE / REVERB_DAMP); `0x0205` = step D3 (cabinet FIR, CAB registers); `0x0204` = step D2 (modulated delay, fractional echo); `0x0203` = D1 (generated LFO); `0x0202` = step C (24-bit); `0x0201` = HPS control, 16-bit |
 | 0x11 | STATUS         | R   | `[2:0]`   | | bit0 codec init done, bit1 codec NAK (init), bit2 PLL locked |
 | 0x12 | LEVEL_IN       | R   | `[15:0]`  | | input peak level (left, 16-bit magnitude, decays ~1/256 per sample) |
 | 0x13 | LEVEL_OUT      | R   | `[15:0]`  | | output peak level |
@@ -67,7 +67,9 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 0x2A | EQ_DATA_HI     | R/W | `[1:0]`   | | coefficient bits 17..16; **writing it stores {HI, LO} at the pointer and increments the pointer** (15 wraps to 0) |
 | 0x2B | EQ_APPLY       | W   | –         | | **any write** applies the written set: all three EQ sections change at the next half-frame strobe (reads back what was written) |
 | 0x2C | DYN_GR         | R   | `[15:0]`  | | **read-only** gain-reduction meter of the dynamics stage, unsigned Q8 log2 units (÷ 42.52 = dB); 0 while the stage is off. Writes are ignored |
-| 0x16 … 0x2F | (extension) | R/W | | | registers of step D; unused ones (0x17, 0x2D … 0x2F) read back what was written |
+| 0x2D | OD_LEVEL       | R/W | `[15:0]`  | | overdrive output level, **signed**, Q8 log2 units (1 unit = 0.0235 dB, register = dB × 42.52): −1024 … +512 = −24 … +12 dB, **0 = exactly unity** (reset value; the output is then bit-identical to VERSION ≤ 0x0207); values outside the range are clamped. Smoothed (glides), see [(10)](#10-output-level-of-the-overdrive-and-distortion-step-d6) |
+| 0x2E | DIST_LEVEL     | R/W | `[15:0]`  | | distortion output level, same format, applies to the shaped (wet) signal before the dry/wet mix |
+| 0x16 … 0x2F | (extension) | R/W | | | registers of step D; unused ones (0x17, 0x2F) read back what was written |
 
 ## Field encodings
 
@@ -258,3 +260,20 @@ To load a set: write `EQ_ADDR` = 0; for each of the 16 words write `EQ_DATA_LO` 
 the next half-frame strobe, so a half-written set is never used and the three sections never change at different samples. Like all
 registers with side effects, the writes must contain byte 1 (32-bit or halfword stores). The pointer wraps from 15 to 0.
 Board tool: `gme_hps.py eq BASS MID TREBLE` (dB), `gme_hps.py eq off`.
+
+### (10) Output level of the overdrive and distortion (step D6)
+
+`OD_LEVEL` (0x2D) and `DIST_LEVEL` (0x2E) set the loudness of the effect's wet path, in the same **Q8 log2 units** as the dynamics
+registers: a signed 16-bit value *L* means a gain of 2^(*L*/256) (dB = *L* × 6.0206 / 256; −1020 = −24.0 dB, −256 = −6.02 dB, 0 = 0 dB,
++256 = +6.02 dB, +512 = +12.04 dB; the range −1024 … +512 is enforced by clamping). **0 is exactly unity**: the output is bit-identical
+to the one without the stage (all older references stay bit-exact).
+
+* **Where:** overdrive: after the clipping and the `OD_GAIN` multiplication, before the saturation to the sample width
+  (`y = sat(floor(clipped × gain × G))`). Distortion: on the magnitude of the shaped value (table output), before the sign is restored
+  and before the dry/wet mix, limited to ±(2^(DW−1) − 1) (`golden.py`). With the effect off (or in its fade) nothing changes.
+* **Gain:** *G* = mantissa × 2^*n* / 2^16, *n* = *L* ≫ 8, mantissa = round(2^(frac/256) × 65536) from a 256-entry table
+  (`level_gain.vhd`, accuracy: the table rounding, < 0.0001 dB; the gain step per register unit is 0.0235 dB). One multiplier per effect.
+* **Smoothing:** each level goes through `param_smooth` in offset binary like `MOD_FB` (time constant 128 frames, exact after about
+  1600), so a change glides linearly in dB and never clicks. The smoothers start at unity (not at −24 dB) after reset.
+* **Presets:** `gme_hps.py` presets carry the levels that make them as loud as the clean signal (`tools/level_presets.py`).
+  Board tool: `gme_hps.py set od_db=-3 dist_db=-6` (dB) or `od_level=… dist_level=…` (raw values).

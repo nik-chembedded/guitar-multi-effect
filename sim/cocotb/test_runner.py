@@ -25,7 +25,7 @@ BUILD = Path(os.environ.get("GME_BUILD", HERE / "sim_build"))
 IP_MODELS = [MODELS / "sim_rom.vhd", MODELS / "sim_dpram.vhd", MODELS / "fx_dpram.vhd",
              MODELS / "cab_coef_ram.vhd", *sorted((MODELS / "ip").glob("*.vhd"))]
 FX_RTL = [RTL / f for f in ("fx_pkg.vhd", "fx_xfade.vhd", "lfo_sine_pkg.vhd", "nco_lfo.vhd",
-                            "overdrive.vhd", "distortion.vhd", "mod_delay.vhd",
+                            "level_gain.vhd", "overdrive.vhd", "distortion.vhd", "mod_delay.vhd",
                             "tremolo_v2.vhd", "echo.vhd", "fv_comb.vhd",
                             "fv_allpass.vhd", "reverb_fv.vhd", "cab_fir.vhd", "cab_stage.vhd",
                             "dynamics.vhd", "biquad.vhd", "eq3.vhd", "fx_bypass.vhd",
@@ -252,6 +252,13 @@ def test_system_dyneq():
     1024-clock frames (test_system.test_dynamics_eq)."""
     run("gme_core", "test_system", SYS_RTL, testcase="test_dynamics_eq",
         parameters={"INIT_WAIT_CLKS": 2000, **CAB16}, extra_env={"GME_SYS_DYNEQ": "1"}, tag="_dyneq")
+
+
+def test_system_level():
+    """gme_core with a 16-tap cabinet (the cabinet is off): OD_LEVEL over the Avalon registers on real
+    1024-clock frames, exact gains and glide (test_system.test_level_via_hps, 4700 frames)."""
+    run("gme_core", "test_system", SYS_RTL, testcase="test_level_via_hps",
+        parameters={"INIT_WAIT_CLKS": 2000, **CAB16}, extra_env={"GME_SYS_LEVEL": "1"}, tag="_level")
 
 
 def test_refv2():

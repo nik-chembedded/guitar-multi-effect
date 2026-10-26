@@ -16,7 +16,7 @@ from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge
 EFFECT_REGS = ["effects_enable", "od_drive", "od_gain", "trem_wave", "trem_depth", "echo_time",
                "echo_repeat", "echo_level", "dist_mix", "dist_type", "chorus_level",
                "chorus_depth", "chorus_rate", "reverb_mix", "reverb_type"]
-VERSION = 0x0207
+VERSION = 0x0208
 DYN_GR_VALUE = 0x0ABC            # driven on the dyn_gr input (register 0x2C, read-only)
 CODEC = 0x15
 
@@ -181,8 +181,37 @@ async def test_dynamics_eq_regs(dut):
     assert await h.read(0x2C) == 0x1357, "DYN_GR is read-only"
     assert int(dut.ext.value) == int(bus) and [await h.read(r) for r in vals] == list(vals.values()),         "a write to 0x2C changed another register"
     assert all(e[0] == 0x2C for e in events[n:]), "write events %s" % events[n:]
-    assert await h.read(0x10) == VERSION == 0x0207
+    assert await h.read(0x10) == VERSION
     dut._log.info("DYN/EQ registers 0x21..0x2B read/write with write events, 0x2C live and read-only, VERSION 0x%04X", VERSION)
+
+
+@cocotb.test()
+async def test_level_regs(dut):
+    """Output levels (D6): 0x2D OD_LEVEL and 0x2E DIST_LEVEL are ordinary 16-bit read/write registers (signed
+    Q8 log2 units, the sign is kept: -1020 reads back 0xFC04), reset to 0 (unity), each in its own slice of the
+    ext bus (neighbours 0x2C DYN_GR and 0x2F untouched), one write event each; VERSION 0x0208."""
+    h = await setup(dut)
+    events = []
+
+    async def monitor():
+        while True:
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            if int(dut.ext_we.value):
+                events.append((int(dut.ext_wa.value), int(dut.ext_wd.value)))
+
+    cocotb.start_soon(monitor())
+    assert await h.read(0x2D) == 0 and await h.read(0x2E) == 0, "levels reset to 0 (unity)"
+    ext = lambda r: (int(dut.ext.value) >> (16 * (r - 0x16))) & 0xFFFF       # noqa: E731
+    for od, di in ((-1020 & 0xFFFF, 512), (256, -256 & 0xFFFF), (0x8000, 0x7FFF)):
+        await h.write(0x2D, 0xBEEF0000 | od)
+        await h.write(0x2E, 0xBEEF0000 | di)
+        assert await h.read(0x2D) == od and await h.read(0x2E) == di
+        assert ext(0x2D) == od and ext(0x2E) == di and ext(0x2C) == 0 and ext(0x2F) == 0
+    assert await h.read(0x2D) == 0x8000 and await h.read(0x2E) == 0x7FFF
+    assert [e[0] for e in events] == [0x2D, 0x2E] * 3 and events[0][1] == (-1020 & 0xFFFF) and events[1][1] == 512, events
+    assert await h.read(0x10) == VERSION == 0x0208
+    dut._log.info("OD_LEVEL (0x2D) / DIST_LEVEL (0x2E) read/write with write events, reset 0, VERSION 0x%04X", VERSION)
 
 
 @cocotb.test()

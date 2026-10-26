@@ -113,6 +113,60 @@ async def test_overdrive_via_hps(dut):
 
 
 @cocotb.test()
+async def test_level_via_hps(dut):
+    """Output level (D6) through the whole design: OD_LEVEL (0x2D) written over the bridge scales the overdrive
+    output by the expected amount. A 1 kHz sine (2^19) through the overdrive (no clipping, gain 1) comes out
+    unchanged at level 0 (also straight after reset: the level smoother starts at unity), exactly 2x (+6.02 dB)
+    after OD_LEVEL = 256 and exactly x/2 after OD_LEVEL = -256, measured over whole periods; the level glides
+    (smoothed, time constant 128 frames): no step in the whole run is larger than the steady states' own.
+    (Run by the runner entry test_system_level with a 16-tap cabinet - GME_SYS_LEVEL=1 - because the full
+    2048-tap cabinet makes 4700 real 1024-clock frames take 36 minutes; the cabinet is off here.)"""
+    import math
+    if os.environ.get("GME_SYS_LEVEL") != "1":
+        dut._log.info("skipped: runs in test_system_level (16-tap cabinet)")
+        return
+    amp, n_tot = 1 << 19, 4700
+    x = [round(amp * math.sin(2 * math.pi * 1000 * n / 48000)) for n in range(n_tot)]
+    words = [(v & 0xFFFFFF, 0) for v in x]
+    i2c, codec, host = await boot(dut, words)
+    await wait_init(dut, host)
+    for addr, val in ((1, 65535), (2, 1), (0, 0x0001)):         # drive (no clipping), gain 1, enable OD
+        await host.write(addr, val)
+    assert await host.read(0x2D) == 0 and await host.read(0x2E) == 0
+    await ClockCycles(dut.clk, 400 * 1024)                       # OD fade-in (256 frames)
+    codec.adc, codec.dac, codec.frames_sent = words, [], 0
+    await ClockCycles(dut.clk, 500 * 1024)
+    await host.write(0x2D, 256)                                  # +6.02 dB
+    await ClockCycles(dut.clk, 2000 * 1024)
+    await host.write(0x2D, (-256) & 0xFFFF)                      # -6.02 dB
+    await ClockCycles(dut.clk, (n_tot - 2500 + 8) * 1024)
+    y = [s24(l) for l, _ in codec.dac]
+    assert len(y) >= n_tot - 4, "only %d frames captured" % len(y)
+
+    def rms(v):
+        return math.sqrt(sum(t * t for t in v) / len(v))
+
+    lat = next(l for l in range(1, 16)
+               if all(y[n + l] == x[n] for n in range(250, 490)))
+    win = lambda a, b: (x[a:b], y[a + lat:b + lat])                     # noqa: E731
+    xa, ya = win(250, 490)
+    xb, yb = win(2250, 2490)
+    xc, yc = win(4350, 4590)
+    assert ya == xa, "level 0 must be exactly unity"
+    assert yb == [2 * v for v in xb], "OD_LEVEL = 256 must double the output exactly"
+    assert yc == [v >> 1 for v in xc], "OD_LEVEL = -256 must halve the output exactly"
+    db_b, db_c = 20 * math.log10(rms(yb) / rms(ya)), 20 * math.log10(rms(yc) / rms(ya))
+    assert abs(db_b - 6.02) < 0.05 and abs(db_c + 6.02) < 0.05, "gains %.3f / %.3f dB" % (db_b, db_c)
+    # glide: the largest sample step over the whole run (level changes included) vs the steady states'
+    step = lambda v: max(abs(v[i] - v[i - 1]) for i in range(1, len(v)))   # noqa: E731
+    ref = max(step(ya), step(yb), step(yc))
+    got = step(y[lat + 300:n_tot - 8])
+    assert got <= 1.25 * ref, "max step %d during the level changes, steady states' %d" % (got, ref)
+    dut._log.info("OD_LEVEL over the bridge: 0 -> exact unity, +256 -> %.3f dB (exactly 2x), -256 -> %.3f dB "
+                  "(exactly x/2); max step %d vs steady-state %d (glide)", db_b, db_c, got, ref)
+
+
+@cocotb.test()
 async def test_mute_and_codec_write(dut):
     """CONTROL mute silences the output; a host CODEC write reaches the I2C bus."""
     words = audio_words(N_FRAMES, 3)

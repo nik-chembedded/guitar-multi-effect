@@ -323,6 +323,137 @@ async def test_distortion(dut):
     dut._log.info("distortion: 3 curves x 2 mixes bit-exact")
 
 
+def rand_raw(n, seed, dw, amp_bits=None):
+    """Random dw-bit samples, full scale or (amp_bits) smaller."""
+    rnd = random.Random(seed)
+    m = 1 << ((amp_bits or dw) - 1)
+    return [rnd.randint(-m, m - 1) for _ in range(n)]
+
+
+def rms(v):
+    return math.sqrt(sum(t * t for t in v) / len(v))
+
+
+@cocotb.test()
+async def test_level(dut):
+    """Output level of the overdrive / distortion (D6, od_level / dist_level = registers OD_LEVEL /
+    DIST_LEVEL, signed Q8 log2 units, 0 = unity):
+      * level 0 is exactly the old behaviour (checked against the old formulas written out here);
+      * every level -1100 .. +600 (incl. the clamps beyond -1024 / +512) bit-exact to golden.py, one level
+        per frame, random full-scale input, with and without saturation, OD and the three curves;
+      * +6.02 dB (256) doubles exactly below saturation, -24 dB (-1020) attenuates by 24 +- 0.05 dB;
+      * saturation reaches the limits and never wraps."""
+    fx = FxChain(dut)
+    dw = fx.dw
+    hi, lo = (1 << (dw - 1)) - 1, -(1 << (dw - 1))
+    await fx.start()
+    x = rand_raw(1701, 5, dw)
+
+    # --- level 0 = the old formulas ------------------------------------------------------
+    t = 12345 << (dw - 16)
+    old_od = [max(lo, min(hi, 3 * (t if s >= t else (-t if s <= -t else s)))) for s in x]
+    assert golden.overdrive(x, 12345, 3, dw=dw) == old_od
+    fx.set(effects_enable=OD, od_drive=12345, od_gain=3, od_level=0)
+    y = await fx.run(x, tail=4, raw=True)
+    assert_bit_exact("overdrive level 0", old_od, y, find_latency(old_od, y))
+    sh = dw - 16
+    for dtype, name in ((0, "soft"), (1, "medium"), (2, "hard")):
+        curve = golden.load_mif(IP / ("distortion_%s.mif" % name))
+        old = []
+        for s in x:
+            c = curve[min(abs(s) >> sh, 16383)] << sh
+            old.append((77 * (-c if s < 0 else c) + 178 * s) >> 8)
+        assert golden.distortion(x, curve, 77, dw=dw) == old
+        fx.set(effects_enable=DIST, dist_type=dtype, dist_mix=77, dist_level=0)
+        y = await fx.run(x, tail=4, raw=True)
+        assert_bit_exact("distortion %s level 0" % name, old, y, find_latency(old, y), start=64)
+    dut._log.info("level 0: overdrive and 3 distortion curves equal the pre-D6 formulas")
+
+    # --- every level, one per frame -------------------------------------------------------
+    # (the level is registered together with the sample it belongs to: the overdrive uses the level valid at
+    # the strobe of frame n for x[n]; the distortion sits behind the (bypassed, but registered) overdrive, so
+    # it sees x[n] one strobe later and uses levels[n+1])
+    levels = list(range(-1100, 601))
+    assert len(levels) == len(x)
+    for drive, gain, label in ((12345, 3, "clipping, saturating"), (20000, 1, "gain 1")):
+        fx.set(effects_enable=OD, od_drive=drive, od_gain=gain, od_level=0)
+        exp = [golden.overdrive([s], drive, gain, dw=dw, level=lv)[0] for s, lv in zip(x, levels)]
+        y = []
+        for s, lv in zip(x, levels):
+            fx.set(od_level=lv)
+            y.append(await fx.frame(s, raw=True))
+        y += await fx.run([0] * 4, raw=True)
+        lat = find_latency(exp, y, start=300, length=300)
+        assert_bit_exact("overdrive all levels (%s)" % label, exp, y, lat, start=2)
+    fx.set(od_level=0)
+    for dtype, name, mix in ((0, "soft", 255), (1, "medium", 255), (2, "hard", 255), (2, "hard", 100)):
+        curve = golden.load_mif(IP / ("distortion_%s.mif" % name))
+        fx.set(effects_enable=DIST, dist_type=dtype, dist_mix=mix, dist_level=0)
+        exp = [golden.distortion([s], curve, mix, dw=dw, level=lv)[0] for s, lv in zip(x, levels[1:])]
+        y = []
+        for s, lv in zip(x, levels):
+            fx.set(dist_level=lv)
+            y.append(await fx.frame(s, raw=True))
+        y += await fx.run([0] * 4, raw=True)
+        lat = find_latency(exp, y, start=300, length=300)
+        assert_bit_exact("distortion %s/%d all levels" % (name, mix), exp, y, lat, start=2)
+    fx.set(dist_level=0)
+    dut._log.info("levels -1100 .. +600 (1701 values, 1 per frame): overdrive (2 settings) and distortion "
+                  "(3 curves, mix 255 / 100) bit-exact to golden.py, incl. the clamps")
+
+    # --- gains in dB -------------------------------------------------------------------------
+    small = rand_raw(600, 6, dw, amp_bits=dw - 3)                      # |x| < 2^(dw-4): +12 dB stays in range
+    sine_x = [round(0.4 * hi * math.sin(2 * math.pi * 997 * i / 48000)) for i in range(1200)]
+    fx.set(effects_enable=OD, od_drive=65535, od_gain=1, od_level=0)
+    y0 = await fx.run(small, tail=4, raw=True)
+    lat = find_latency(small, y0)
+    assert_bit_exact("overdrive unity", small, y0, lat)
+    fx.set(od_level=256)
+    y1 = await fx.run(small, tail=4, raw=True)
+    assert_bit_exact("overdrive +6.02 dB", [2 * s for s in small], y1, lat)
+    fx.set(od_level=-256)
+    y1 = await fx.run(small, tail=4, raw=True)
+    assert_bit_exact("overdrive -6.02 dB", [s >> 1 for s in small], y1, lat)
+    fx.set(od_level=0)
+    ref = await fx.run(sine_x, tail=4, raw=True)
+    fx.set(od_level=-1020)
+    att = await fx.run(sine_x, tail=4, raw=True)
+    db_od = 20 * math.log10(rms(ref[300:1100]) / rms(att[300:1100]))
+    assert abs(db_od - 24.0) < 0.05, "overdrive -24 dB: %.4f dB" % db_od
+    fx.set(od_level=-5000)                                             # clamped to -1024 (-24.08 dB)
+    clamp = await fx.run(sine_x, tail=4, raw=True)
+    db_cl = 20 * math.log10(rms(ref[300:1100]) / rms(clamp[300:1100]))
+    assert abs(db_cl - 24.0824) < 0.05, "clamp at -1024: %.4f dB" % db_cl
+    # distortion: the wet path doubles / is 24 dB down (mix 255 = wet only)
+    fx.set(effects_enable=DIST, od_level=0, dist_type=0, dist_mix=255, dist_level=0)
+    d0 = await fx.run(sine_x, tail=4, raw=True)
+    fx.set(dist_level=256)
+    d1 = await fx.run(sine_x, tail=4, raw=True)
+    # (the wet value doubles exactly; only the floor of the 255/256 mix weight can differ by 1 LSB at 16 bit)
+    n_bad = [i for i in range(200, 1100) if abs(d1[i] - 2 * d0[i]) > 1]
+    assert not n_bad, "distortion +6.02 dB: %d samples differ from 2x, first at %d" % (len(n_bad), n_bad[0])
+    fx.set(dist_level=-1020)
+    d2 = await fx.run(sine_x, tail=4, raw=True)
+    db_d = 20 * math.log10(rms(d0[300:1100]) / rms(d2[300:1100]))
+    assert abs(db_d - 24.0) < 0.05, "distortion -24 dB: %.4f dB" % db_d
+    dut._log.info("overdrive +6.02 dB = 2x and -6.02 dB = x/2 exactly; -24 dB (level -1020): overdrive %.4f dB, "
+                  "distortion %.4f dB; level -5000 = clamp -1024: %.4f dB", db_od, db_d, db_cl)
+
+    # --- saturation, no wrap ---------------------------------------------------------------------
+    loud = [round(0.9 * hi * math.sin(2 * math.pi * 441 * i / 48000)) for i in range(600)]
+    fx.set(effects_enable=OD, od_drive=65535, od_gain=1, od_level=512, dist_level=0)
+    s0 = await fx.run(loud, tail=4, raw=True)
+    assert max(s0) == hi and min(s0) == lo, "overdrive +12 dB must saturate at the limits: %d .. %d" % (min(s0), max(s0))
+    assert_no_wrap("overdrive +12 dB saturation", s0, limit=(1 << dw) * 3 // 4)
+    fx.set(effects_enable=DIST, dist_type=2, dist_mix=255, dist_level=512)
+    s1 = await fx.run([hi, -hi] * 50, tail=4, raw=True)
+    assert max(s1) == (255 * hi) >> 8 and min(s1) == (255 * -hi) >> 8,         "hard curve at full scale +12 dB: %d .. %d (limit: the wet sample saturated at +-%d, mix 255/256)" % (min(s1), max(s1), hi)
+    s1 = await fx.run(sine_x, tail=4, raw=True)
+    assert_no_wrap("distortion +12 dB", s1, limit=(1 << dw) * 3 // 4)
+    dut._log.info("saturation: +12 dB overdrive reaches %d / %d and does not wrap; hard curve +12 dB -> +-%d",
+                  max(s0), min(s0), hi)
+
+
 @cocotb.test()
 async def test_tremolo(dut):
     """5 Hz sine LFO at full depth: envelope modulated, no clicks (saw too)."""
