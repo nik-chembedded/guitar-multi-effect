@@ -278,6 +278,28 @@ def test_chain_editable_when_routing_exists(model, monkeypatch):
     assert saved["chain"] == new
 
 
+def test_chain_members_and_presets(model):
+    assert model.chain()["members"] == []                        # nothing saved, nothing on
+    model.set({"dist_on": True, "reverb_on": True})
+    assert model.chain()["members"] == ["dist", "reverb"]
+    model.set_members(["dist", "reverb", "echo"])                # echo in the chain, bypassed
+    ch = model.chain()
+    assert ch["members"] == ["dist", "echo", "reverb"]                 # in chain order
+    assert [e["id"] for e in ch["effects"] if e["member"] and not e["on"]] == ["echo"]
+    model.save_preset("Bypassed")
+    assert model.store.load_preset("Bypassed")["members"] == ["dist", "echo", "reverb"]
+    model.set_members(["dist"])                                  # reverb out: switched off
+    assert model.enabled_effects() == ["dist"]
+    model.apply_preset(model.get_preset("Bypassed"))
+    assert model.chain()["members"] == ["dist", "echo", "reverb"] and model.enabled_effects() == ["dist", "reverb"]
+    name = [n for n in model.table.presets][0]                   # a factory preset: the chain = its effects
+    model.apply_preset(model.get_preset(name))
+    assert model.chain()["members"] == [i for i in model.chain()["order"] if i in model.enabled_effects()]
+    for bad in (["zz"], ["od", "od"], "od"):
+        with pytest.raises(gm.ParamError):
+            model.set_members(bad)
+
+
 # ---- store --------------------------------------------------------------------------------
 
 def test_store_files(tmp_path):

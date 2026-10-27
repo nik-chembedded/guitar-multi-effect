@@ -84,12 +84,19 @@ main { padding: 16px 20px 60px; max-width: 1700px; margin: 0 auto; }
   background: none; padding: 14px 4px 8px; font-weight: 700; font-size: 14px; letter-spacing: .04em; }
 .tile-btn:hover:not(:disabled) { background: rgba(255,255,255,.04); }
 .tile-btn .ico { width: 36px; height: 36px; }
-.tslot { position: absolute; top: 4px; right: 7px; font-size: 11px; font-weight: 400; color: var(--dim); pointer-events: none; }
-.tile-rm { position: absolute; top: 2px; left: 3px; width: 20px; height: 20px; padding: 0; border: 0; background: none;
+.tslot { position: absolute; bottom: 3px; right: 7px; font-size: 11px; font-weight: 400; color: var(--dim); pointer-events: none; }
+.tile-rm { position: absolute; top: 2px; right: 3px; width: 20px; height: 20px; padding: 0; border: 0; background: none;
   color: var(--dim); font-size: 16px; line-height: 1; opacity: 0; }
 .tile:hover .tile-rm, .tile-rm:focus-visible { opacity: 1; }
 .tile-rm:hover:not(:disabled) { color: var(--bad); }
-.tile-btn:focus-visible, .tile-rm:focus-visible, .lib-btn:focus-visible, .lib-add:focus-visible { outline: 2px solid var(--accent2); outline-offset: 1px; }
+/* LED = on / bypass; a bypassed pedal stays in its place, dimmed */
+.led { position: absolute; top: 7px; left: 7px; z-index: 1; width: 13px; height: 13px; padding: 0; border-radius: 50%;
+  background: var(--led-off); border: 1px solid #000; }
+.tile.on .led { background: var(--k, var(--accent)); box-shadow: 0 0 8px var(--k, var(--accent)); }
+.led:hover:not(:disabled) { border-color: var(--accent2); }
+.tile:not(.on) .tile-btn .ico, .tile:not(.on) .tname { opacity: .4; }
+.tile:not(.on) { border-top-style: dashed; }
+.tile-btn:focus-visible, .tile-rm:focus-visible, .led:focus-visible, .lib-btn:focus-visible, .lib-add:focus-visible { outline: 2px solid var(--accent2); outline-offset: 1px; }
 .chainmeta { display: flex; align-items: center; gap: 12px; }
 .chainmeta .hint { flex: 1; }
 

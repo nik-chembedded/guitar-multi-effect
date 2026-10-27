@@ -68,9 +68,10 @@
 
   /* ---------- effect chain: list of the unused effects, the chain of the used ones, editor ----------
      The FPGA always runs every effect, in the order of /api/chain; an effect that is off is bypassed in its
-     place.  So the page shows the effects that are on as "the chain" (in their order) and the others in the
-     list beside it: putting an effect into the chain switches it on at that spot, taking it out switches it
-     off (its place in the full order then does not matter and is left alone, so that costs no fade). */
+     place.  The page shows the chain "members" (/api/chain members: the effects the user put in, on or
+     bypassed) in their order, and the others in the list beside it.  Putting an effect into the chain switches
+     it on at that spot; its LED bypasses it there; taking it out switches it off (its place in the full order
+     then does not matter and is left alone, so that costs no fade).  An effect that is on is always a member. */
   var SEL_KEY = "gme.selected";
   function paramsOf(group, skipId) {
     return S.info.params.filter(function (p) { return p.group === group && p.id !== skipId && p.available; });
@@ -84,8 +85,8 @@
   function shortName(e) { return fxInfo(e.id).short || e.name; }
   function icon(e) { return GME.icon(fxInfo(e.id).icon); }
   function kind(e) { return fxInfo(e.id).kind ? " k-" + fxInfo(e.id).kind : ""; }
-  function active() {                                            /* the chain: ids of the effects that are on, in order */
-    return S.chain.effects.filter(function (e) { return e.on; }).map(function (e) { return e.id; });
+  function active() {                                            /* the chain: ids of the members, in order */
+    return S.chain.effects.filter(function (e) { return e.member; }).map(function (e) { return e.id; });
   }
   function markDirty() { S.dirty = true; showDirty(); }
   function showDirty() {
@@ -111,8 +112,8 @@
     renderEditor(false);
   }
 
-  /* Chain and list are rebuilt when the order or the on/off set changes; the selection only patches them
-     (keeps the focus where it is). */
+  /* Chain and list are rebuilt when the order or the members change; on / off and the selection only patch
+     them (keeps the focus where it is). */
   function renderBoard() {
     var ch = S.chain, act = active();
     var sig = ch.order.join(",") + "|" + act.join(",") + "|" + ch.editable;
@@ -127,16 +128,22 @@
       }
     }
     Array.prototype.forEach.call(document.querySelectorAll("#tab-board [data-id]"), function (el) {
-      var sel = el.getAttribute("data-id") === S.sel;
+      var id = el.getAttribute("data-id"), sel = id === S.sel, e = effectOf(id);
       el.classList.toggle("sel", sel);
       var b = el.querySelector("[data-fx]");
       if (b) b.setAttribute("aria-pressed", sel ? "true" : "false");
+      var led = el.querySelector(".led");
+      if (led && e) {
+        el.classList.toggle("on", !!e.on);
+        led.setAttribute("aria-checked", e.on ? "true" : "false");
+        led.title = (e.on ? "Bypass " : "Switch on ") + e.name;
+      }
     });
     var def = defaultOrder().filter(function (id) { return act.indexOf(id) >= 0; });
     document.getElementById("order-default").disabled = !ch.editable || def.join(",") === act.join(",");
-    document.getElementById("orderhint").textContent = ch.editable
-      ? "Drag an effect from the list into the chain, or back out to switch it off. In the chain: drag or Alt+←/→ to move, Delete to take out. Changes apply at once (short fade)."
-      : "Fixed order in this FPGA (VERSION " + S.info.fpga_version_hex + "): an effect you add goes to its fixed place.";
+    document.getElementById("orderhint").textContent = (ch.editable
+      ? "Drag an effect from the list into the chain, or back out to remove it. In the chain: the LED switches it on / off, drag or Alt+←/→ moves it, Delete takes it out. Changes apply at once (short fade)."
+      : "Fixed order in this FPGA (VERSION " + S.info.fpga_version_hex + "): an effect you add goes to its fixed place. The LED switches an effect on / off.");
   }
 
   function renderStrip(act) {
@@ -149,7 +156,7 @@
     });
     if (!act.length) {
       box.appendChild(h("span", {class: "conn first", "aria-hidden": "true"}));
-      box.appendChild(h("div", {class: "strip-empty"}, "Every effect is off: drag effects here from the list"));
+      box.appendChild(h("div", {class: "strip-empty"}, "The chain is empty: drag effects here from the list"));
     }
     box.appendChild(h("span", {class: "conn last", "aria-hidden": "true"}));
     box.appendChild(h("span", {class: "io", title: "Output"}, "OUT"));
@@ -161,9 +168,11 @@
                            onclick: function () { select(e.id); },
                            onkeydown: function (ev) { tileKey(ev, e.id); }},
       icon(e), h("span", {class: "tname"}, shortName(e)), h("span", {class: "tslot"}, String(i + 1)));
-    var rm = h("button", {type: "button", class: "tile-rm", title: "Take " + e.name + " out of the chain (switches it off)",
-                          "aria-label": "Take " + e.name + " out", onclick: function (ev) { ev.stopPropagation(); setEnable(e.id, false); }}, "×");
-    var t = h("div", {class: "tile" + kind(e), "data-id": e.id, draggable: "true"}, btn, rm);
+    var led = h("button", {type: "button", class: "led", role: "switch", "aria-label": e.name + " on",
+                           onclick: function (ev) { ev.stopPropagation(); setEnable(e.id, !effectOf(e.id).on); }});
+    var rm = h("button", {type: "button", class: "tile-rm", title: "Take " + e.name + " out of the chain",
+                          "aria-label": "Take " + e.name + " out", onclick: function (ev) { ev.stopPropagation(); removeFromChain(e.id); }}, "×");
+    var t = h("div", {class: "tile" + kind(e), "data-id": e.id, draggable: "true"}, btn, led, rm);
     dragSource(t, e.id, "chain");
     dropOnTile(t, e.id);
     return t;
@@ -181,7 +190,7 @@
         h("button", {type: "button", class: "lib-btn", "data-fx": id, title: "Show the settings of " + e.name,
                      onclick: function () { select(id); }}, icon(e), h("span", {class: "lib-name"}, e.name)),
         h("button", {type: "button", class: "lib-add", title: "Put " + e.name + " at the end of the chain",
-                     "aria-label": "Add " + e.name, onclick: function () { addAt(id, active().length); }}, "+"));
+                     "aria-label": "Add " + e.name, onclick: function () { addAt(id, active().length, true); }}, "+"));
       dragSource(row, id, "lib");
       box.appendChild(row);
     });
@@ -192,29 +201,47 @@
     return S.info.chain_default.filter(function (id) { return S.chain.order.indexOf(id) >= 0; });
   }
 
-  /* on/off of one effect (= into / out of the chain), optimistic */
+  /* on / off (bypass) of one effect, optimistic; switching on an effect outside the chain puts it in */
   function setEnable(id, on) {
     var e = effectOf(id), p = e && S.params[e.enable];
-    if (p && p.available) onChange(e.enable, on);
+    if (!(p && p.available)) return;
+    if (S.controls[e.enable]) S.controls[e.enable].update(on, on ? 1 : 0);   /* the editor switch, when shown */
+    onChange(e.enable, on);
   }
   function enableChanged(paramId, on) {
-    S.chain.effects.forEach(function (e) { if (e.enable === paramId) e.on = !!on; });
+    var joined = false;
+    S.chain.effects.forEach(function (e) {
+      if (e.enable !== paramId) return;
+      e.on = !!on;
+      if (on && !e.member) { e.member = true; joined = true; }
+    });
+    if (joined) postChain(null, active());                       /* stays in the chain when it is bypassed later */
     renderBoard();
     renderEditor(false);
   }
+  function removeFromChain(id) {                                 /* out of the chain = off (the server switches it off) */
+    var e = effectOf(id);
+    e.member = false;
+    e.on = false;
+    postChain(null, active());
+  }
 
-  /* Put effect id at position k of the chain and switch it on.  The full order only changes if it has to:
-     the effect goes just before the effect that will follow it in the chain (or after the one before it). */
-  function addAt(id, k) {
+  /* Put effect id at position k of the chain (a member from then on); on = switch it on too (from the list).
+     The full order only changes if it has to: the effect goes just before the effect that will follow it in
+     the chain (or after the one before it). */
+  function addAt(id, k, on) {
     var act = active().filter(function (x) { return x !== id; }), order = S.chain.order;
     if (S.chain.editable && act.length) {
       order = order.filter(function (x) { return x !== id; });
       order.splice(k < act.length ? order.indexOf(act[k]) : order.indexOf(act[act.length - 1]) + 1, 0, id);
     }
-    function on() { if (!effectOf(id).on) setEnable(id, true); }
+    var joins = !effectOf(id).member;
+    function switchOn() { if (on && !effectOf(id).on) setEnable(id, true); }
     S.sel = id;
-    if (order.join(",") === S.chain.order.join(",")) return on();
-    moveTo(order).then(function (ok) { if (ok) on(); });
+    var newOrder = order.join(",") !== S.chain.order.join(",") ? order : null;
+    if (!newOrder && !joins) return switchOn();
+    effectOf(id).member = true;
+    postChain(newOrder, joins ? active() : null).then(function (ok) { if (ok) switchOn(); });
   }
 
   function tileKey(ev, id) {
@@ -222,7 +249,7 @@
     if (k === "Delete" || k === "Backspace") {
       ev.preventDefault();
       var next = act[i + 1] || act[i - 1];
-      setEnable(id, false);
+      removeFromChain(id);
       if (next) document.querySelector('#chain [data-fx="' + next + '"]').focus();
       return;
     }
@@ -230,7 +257,7 @@
     var d = k === "ArrowLeft" ? -1 : 1;
     if (ev.altKey) {
       ev.preventDefault();                                       /* Alt+arrow is "back" in browsers */
-      if (S.chain.editable && i + d >= 0 && i + d < act.length) addAt(id, i + d);
+      if (S.chain.editable && i + d >= 0 && i + d < act.length) addAt(id, i + d, false);
     } else if (!ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
       ev.preventDefault();
       var to = act[i + d];
@@ -240,18 +267,23 @@
     }
   }
 
-  /* New full order: shown at once, POSTed at once; resolves true when the FPGA took it.  On an error the
-     chain snaps back to the real order. */
-  function moveTo(order) {
-    if (order.join(",") === S.chain.order.join(",")) return Promise.resolve(true);
-    var byId = {};
-    S.chain.effects.forEach(function (e) { byId[e.id] = e; });
-    S.chain.order = order;
-    S.chain.effects = order.map(function (id) { return byId[id]; });
+  /* New full order and / or members (null = unchanged): shown at once, POSTed at once; resolves true when
+     the board took it.  On an error the chain snaps back to the real state. */
+  function postChain(order, members) {
+    var body = {};
+    if (order) {
+      var byId = {};
+      S.chain.effects.forEach(function (e) { byId[e.id] = e; });
+      S.chain.order = order;
+      S.chain.effects = order.map(function (id) { return byId[id]; });
+      body.order = order;
+    }
+    if (members) body.members = members;
+    if (!order && !members) return Promise.resolve(true);
     S.chainBusy++;
     renderBoard();
     renderEditor(false);
-    return api("POST", "/api/chain", {order: order}).then(function (r) {
+    return api("POST", "/api/chain", body).then(function (r) {
       markDirty();
       if (--S.chainBusy === 0) renderChain(r);
       return true;
@@ -262,6 +294,7 @@
       return false;
     });
   }
+  function moveTo(order) { return postChain(order.join(",") === S.chain.order.join(",") ? null : order, null); }
 
   /* ---------- drag and drop: list -> chain (switch on there), chain -> chain (move), chain -> list (off) ---------- */
   function dragSource(el, id, from) {
@@ -304,7 +337,7 @@
       endDrag();
       if (!d || d.id === id) return;
       var act = active().filter(function (x) { return x !== d.id; });
-      addAt(d.id, act.indexOf(id) + (after(ev) ? 1 : 0));
+      addAt(d.id, act.indexOf(id) + (after(ev) ? 1 : 0), d.from === "lib");
     });
   }
   function initDropZones() {
@@ -319,7 +352,7 @@
       var d = S.drag;
       ev.preventDefault();
       endDrag();
-      if (d) addAt(d.id, active().filter(function (x) { return x !== d.id; }).length);
+      if (d) addAt(d.id, active().filter(function (x) { return x !== d.id; }).length, d.from === "lib");
     });
     lib.addEventListener("dragover", function (ev) {
       if (!S.drag || S.drag.from !== "chain") return;
@@ -331,7 +364,7 @@
       var d = S.drag;
       ev.preventDefault();
       endDrag();
-      if (d && d.from === "chain") setEnable(d.id, false);
+      if (d && d.from === "chain") removeFromChain(d.id);
     });
   }
 
@@ -340,8 +373,8 @@
     var box = document.getElementById("editor"), e = S.sel && effectOf(S.sel);
     if (!e) { GME.clear(box); S.editorSel = null; return; }
     var act = active(), pos = act.indexOf(e.id);
-    var where = pos >= 0 ? "slot " + (pos + 1) + " of " + act.length : "not in the chain (off)";
-    var inout = e.on ? "Take out of the chain" : "Add to the chain";
+    var where = pos < 0 ? "not in the chain (off)" : "slot " + (pos + 1) + " of " + act.length + (e.on ? "" : " · bypassed");
+    var inout = e.member ? "Take out of the chain" : "Add to the chain";
     if (S.editorSel === S.sel && !force) {
       S.slotEl.textContent = where;
       S.inoutEl.textContent = inout;
@@ -355,9 +388,17 @@
     S.slotEl = h("span", {class: "ed-slot"}, where);
     S.inoutEl = h("button", {class: "btn", disabled: !(enable && enable.available), onclick: function () {
       var x = effectOf(S.sel);
-      if (x.on) setEnable(x.id, false); else addAt(x.id, active().length);
+      if (x.member) removeFromChain(x.id); else addAt(x.id, active().length, true);
     }}, inout);
-    var head = h("div", {class: "ed-head"}, icon(e), h("h2", {class: "ed-name"}, e.name), S.slotEl, S.inoutEl);
+    var head = h("div", {class: "ed-head"}, icon(e), h("h2", {class: "ed-name"}, e.name), S.slotEl);
+    if (enable && enable.available) {                            /* on / bypass, the same as the LED of the pedal */
+      var sw = makeControl(enable);
+      sw.el.className = "ctl switch";
+      sw.el.title = "Switch " + e.name + " on or off (bypass)";
+      head.appendChild(sw.el);
+      S.editorIds.push(enable.id);
+    }
+    head.appendChild(S.inoutEl);
     var body = h("div", {class: "ed-body"});
     if (e.id === "dyn") {                                        /* special: live gain-reduction meter (DYN_GR) */
       body.appendChild(h("div", {class: "grmeter wide", title: "How much the dynamics stage turns the signal down (compressor and gate)"},

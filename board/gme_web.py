@@ -20,7 +20,8 @@ Serves the page in www/ and the JSON API under /api (see docs/web_ui_design.md):
     GET  /api/cab                   cabinet slots, active bank
     POST /api/cab                   {slot: n} load cabinet n / {enabled: bool}
     GET/POST /api/codec             {reg|name, value}  WM8731 register write
-    GET/POST /api/chain             {order: [ids], editable}  409 while the order is fixed
+    GET/POST /api/chain             {order: [ids], members: [ids], editable}  order: 409 while it is fixed;
+                                    members: the effects in the chain (on or bypassed), the others are switched off
     GET/POST /api/raw[/<reg>]       raw register access {value}
 
 Errors are JSON {"error": text} with a 4xx status (502 when the hardware fails).
@@ -228,10 +229,18 @@ class Api(object):
             return 200, m.chain()
         self._methods(method, ("GET", "POST"))
         need_dict(body)
-        order = body.get("order")
-        if not isinstance(order, list):
+        order, members = body.get("order"), body.get("members")
+        if order is None and members is None:
+            raise HttpError(400, "order and / or members: list of effect ids required")
+        if order is not None and not isinstance(order, list):
             raise HttpError(400, "order: list of effect ids required")
-        return 200, m.set_chain(order)
+        if members is not None and not isinstance(members, list):
+            raise HttpError(400, "members: list of effect ids required")
+        with m.lock:                                   # a refused order (409 / 400) changes no members either
+            ch = m.set_chain(order) if order is not None else None
+            if members is not None:
+                ch = m.set_members(members)
+        return 200, ch
 
     # ------------------------------------------------------------------ raw
     def ep_raw(self, method, rest, query, body):

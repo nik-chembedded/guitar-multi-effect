@@ -55,7 +55,7 @@ first, tested in the PC browser; phone layout is a later nice-to-have.
 | POST | `/api/params` | `{id: value, ...}` set one or more parameters |
 | GET | `/api/levels` (SSE: `/api/levels/stream`) | input/output level, gain reduction, ~15 Hz |
 | GET / POST / DELETE | `/api/presets[/name]` | factory presets (read-only) + user presets (saved JSON, incl. chain order) |
-| GET / POST | `/api/chain` | effect order: `{order: [ids], editable: bool}`; `editable` only when the FPGA VERSION supports routing (step E); until then POST returns 409 |
+| GET / POST | `/api/chain` | `{order: [ids], members: [ids], editable: bool, effects: [{id, name, enable, on, member}]}`. POST `order` and / or `members`. `order` only when `editable` (FPGA VERSION with routing, step E), else 409. `members` (any image): the effects in the chain, on or bypassed; an effect left out is switched off, one that is on always counts as a member. Saved in `settings.json` (`chain_members`) and in user presets (`members`; older and factory presets: the effects that are on) |
 | POST | `/api/cab` | `{slot: n}` load cabinet n (inactive bank, switch) |
 | POST | `/api/codec` | WM8731 register write (volumes, input select) |
 | GET / POST | `/api/raw/<reg>` | raw register access (expert, parity with the CLI) |
@@ -67,21 +67,23 @@ Errors are JSON `{error: text}` with HTTP 4xx. Writes are serialised by one lock
 
 * **Top bar:** connection state, FPGA version, codec / PLL status, input and output
   meters, mute button.
-* **Effects list + signal chain** (revised 2026-10-28 for step E): **in the chain = on.** The FPGA always
-  runs all effects in the `/api/chain` order and bypasses the ones that are off, so the chain row
-  `IN → pedals → OUT` shows only the effects that are on, in their order; the list on the left (above it
-  below 1250 px) holds the others. Each effect has an icon (`icon` in `params.json` effects, drawn in
+* **Effects list + signal chain** (revised 2026-10-28 for step E): **the chain = your pedal set, each pedal
+  on or bypassed.** The FPGA always runs all effects in the `/api/chain` order and bypasses the ones that are
+  off; the chain row `IN → pedals → OUT` shows the chain `members` in their order, the list on the left (above
+  it below 1250 px) holds the others. A pedal's LED (or the editor switch) turns it on / off in place: a
+  bypassed pedal stays in the chain, dimmed. Switching on an effect from the list puts it in the chain. Each effect has an icon (`icon` in `params.json` effects, drawn in
   `www/icons.js`), a colour by kind (`kind`: drive / tone / mod / time) and a short name (`short`).
   Drag from the list into the chain (left / right half of a pedal = before / after it, empty strip = end)
   or click `+` (end): the effect goes there and is switched on. Drag back to the list, `×`, Delete, or the
-  editor button: switched off, its place in the full order is left alone (no fade). **Reorder** (when
+  editor button: out of the chain and switched off, its place in the full order is left alone (no fade).
+  Moving a bypassed pedal keeps it bypassed. **Reorder** (when
   `editable`, VERSION ≥ 0x0209): drag inside the chain or Alt+←/→; plain ←/→ moves the selection. The full
   order only changes when it has to (the effect goes just before its new neighbour); each change is POSTed
   at once (the FPGA applies it with its ≈ 5 ms fade, no staged Apply), then the effect is switched on; on an
   error the chain snaps back. "Default order" puts the chain in `chain_default` order. Not editable: an added
   effect goes to its fixed place. The order is part of presets.
-* **Editor** below the chain: the controls of the selected effect (in the chain or the list), its slot and an
-  add / take-out button. The selection is remembered in the browser. Controls (`www/controls.js`, all from the table):
+* **Editor** below the chain: the controls of the selected effect (in the chain or the list), its slot
+  (and "bypassed"), the on / off switch and an add / take-out button. The selection is remembered in the browser. Controls (`www/controls.js`, all from the table):
   * int / signed → **knob** (270°, coloured arc by kind, from the centre for ranges across 0). Turned with the
     mouse around its centre, grabbed anywhere, no jump (Shift = ¼ turn rate); wheel, arrows, Page Up / Down,
     Home / End; double-click = default; click the value to type one in the shown unit. `gui_taper: "log"`

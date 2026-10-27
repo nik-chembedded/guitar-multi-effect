@@ -118,7 +118,7 @@ def test_info_has_what_the_page_needs(api):
     assert set(ch["order"]) <= set(effects)
     assert [x["id"] for x in ch["effects"]] == ch["order"]
     for x in ch["effects"]:
-        assert set(x) == {"id", "name", "enable", "on"}
+        assert set(x) == {"id", "name", "enable", "on", "member"}
     s, st = api.get("/api/state")
     avail = [p["id"] for p in info["params"] if p["available"]]
     assert sorted(st["values"]) == sorted(avail) == sorted(st["raw"])

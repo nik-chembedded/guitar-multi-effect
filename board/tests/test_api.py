@@ -292,8 +292,8 @@ def test_chain_fixed(api):
     s, j = api.get("/api/chain")
     assert s == 200 and j["editable"] is False
     assert j["order"] == ["dyn", "od", "dist", "cab", "eq", "mod", "trem", "echo", "reverb"]
-    assert j["effects"][0] == {"id": "dyn", "name": "Dynamics", "enable": "dyn_on", "on": False}
-    assert j["effects"][1] == {"id": "od", "name": "Overdrive", "enable": "od_on", "on": False}
+    assert j["effects"][0] == {"id": "dyn", "name": "Dynamics", "enable": "dyn_on", "on": False, "member": False}
+    assert j["effects"][1] == {"id": "od", "name": "Overdrive", "enable": "od_on", "on": False, "member": False}
     err(api.post("/api/chain", {"order": j["order"]}), 409)
     err(api.post("/api/chain", {}), 400)
     err(api.post("/api/chain", {"order": "od"}), 400)
@@ -308,6 +308,25 @@ def test_chain_editable(api, monkeypatch):
     assert api.get("/api/chain")[1]["order"] == new
     assert api.get("/api/state")[1]["chain"]["order"] == new
     err(api.post("/api/chain", {"order": new[:-1]}), 400)
+
+
+def test_chain_members(api):
+    """members work with every FPGA image: a bypassed effect stays in the chain, one left out is off"""
+    api.post("/api/params", {"echo_on": True})
+    s, j = api.post("/api/chain", {"members": ["echo", "reverb"]})
+    assert s == 200 and j["members"] == ["echo", "reverb"]
+    api.post("/api/params", {"echo_on": False})
+    j = api.get("/api/chain")[1]
+    assert j["members"] == ["echo", "reverb"] and not [e for e in j["effects"] if e["on"]]
+    api.post("/api/params", {"od_on": True})                     # on = in the chain, even if not listed
+    assert api.get("/api/chain")[1]["members"] == ["od", "echo", "reverb"]
+    s, j = api.post("/api/chain", {"members": ["echo"]})         # od and reverb out: od is switched off
+    assert j["members"] == ["echo"] and api.get("/api/state")[1]["values"]["od_on"] is False
+    err(api.post("/api/chain", {"members": ["echo", "echo"]}), 400)
+    err(api.post("/api/chain", {"members": ["zz"]}), 400)
+    err(api.post("/api/chain", {"members": "echo"}), 400)
+    err(api.post("/api/chain", {"order": ["od"], "members": []}), 409)   # fixed order: nothing changes
+    assert api.get("/api/chain")[1]["members"] == ["echo"]
 
 
 # ---- raw -------------------------------------------------------------------------------------------------------

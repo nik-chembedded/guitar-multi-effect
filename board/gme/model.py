@@ -584,7 +584,7 @@ class Model(object):
         if name in self.table.presets:
             d = self.table.presets[name]
             return {"name": name, "factory": True, "description": d.get("description", ""),
-                    "fx": list(d["fx"]), "params": dict(d["params"]), "chain": None, "cab": None,
+                    "fx": list(d["fx"]), "params": dict(d["params"]), "chain": None, "members": None, "cab": None,
                     "keep": list(d.get("keep", []))}
         if self.store is not None and self.store.valid_name(name) and self.store.exists(name):
             d = self.store.load_preset(name)
@@ -593,6 +593,7 @@ class Model(object):
             d.setdefault("fx", [])
             d.setdefault("params", {})
             d.setdefault("chain", None)
+            d.setdefault("members", None)
             d.setdefault("cab", None)
             d.setdefault("keep", [])
             return d
@@ -664,14 +665,21 @@ class Model(object):
                     self.set_chain(order)
                 except (NotEditable, ParamError) as e:
                     warnings.append("chain: %s" % e)
+            members = preset.get("members")            # older presets and factory ones: the effects that are on
+            try:
+                self.set_members([m for m in members if m in self.table.fx_by_id] if isinstance(members, list)
+                                 else self.enabled_effects())
+            except ParamError as e:
+                warnings.append("chain members: %s" % e)
         return warnings
 
     def capture_preset(self):
         with self.lock:
             raw = self.read_all()
+            ch = self.chain()
             return {"fx": self.enabled_effects(),
                     "params": collections.OrderedDict((p.id, raw[p.id]) for p in self._preset_scope()),
-                    "chain": self.chain()["order"], "cab": self.cab_slot}
+                    "chain": ch["order"], "members": ch["members"], "cab": self.cab_slot}
 
     def save_preset(self, name, overwrite=False, data=None):
         if self.store is None:
@@ -708,12 +716,32 @@ class Model(object):
                     order = list(saved)
             if order is None:
                 order = [i for i in self.table.chain_default if i in avail]
-            effects = []
+            # members: the effects the user put into the chain (on or bypassed); one that is on always is one
+            saved = self.store.settings().get("chain_members") if self.store is not None else None
+            effects, members = [], []
             for fid in order:
                 e = self.table.fx_by_id[fid]
-                effects.append({"id": fid, "name": e["name"], "enable": e["enable"],
-                                "on": bool(word & (1 << e["bit"]))})
-            return {"order": order, "editable": self.chain_editable(), "effects": effects}
+                on = bool(word & (1 << e["bit"]))
+                member = on or (isinstance(saved, list) and fid in saved)
+                if member:
+                    members.append(fid)
+                effects.append({"id": fid, "name": e["name"], "enable": e["enable"], "on": on, "member": member})
+            return {"order": order, "editable": self.chain_editable(), "effects": effects, "members": members}
+
+    def set_members(self, members):
+        """Which effects are in the chain (the FPGA runs all of them; this is the user's pedal set).
+        An effect left out is switched off.  Works with every FPGA image (no routing needed)."""
+        with self.lock:
+            avail = [e["id"] for e in self.table.effects if self.version >= e["min_version"]]
+            if not isinstance(members, list) or len(set(members)) != len(members) or \
+                    any(m not in avail for m in members):
+                raise ParamError("members must list effect ids, each at most once: %s" % ", ".join(avail))
+            off = [fid for fid in self.enabled_effects() if fid not in members]
+            if off:
+                self.set(dict((self.table.fx_by_id[fid]["enable"], False) for fid in off))
+            if self.store is not None:
+                self.store.update_settings(chain_members=list(members))
+            return self.chain()
 
     def set_chain(self, order):
         with self.lock:
