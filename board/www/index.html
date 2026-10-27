@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guitar multi-effect</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">GME <small>guitar multi-effect</small></div>
+  <div class="chips">
+    <span class="chip" id="conn"><i class="dot"></i><span>connecting</span></span>
+    <span class="chip" id="fpga">FPGA -</span>
+    <span class="chip" id="codec">codec -</span>
+    <span class="chip" id="pll">PLL -</span>
+  </div>
+  <div class="meters">
+    <div class="meter"><label>IN</label><div class="bar"><div id="m-in"></div></div><span id="t-in">-</span></div>
+    <div class="meter"><label>OUT</label><div class="bar"><div id="m-out"></div></div><span id="t-out">-</span></div>
+  </div>
+  <button id="mute" class="btn" title="Mute the output">Mute</button>
+  <nav id="tabs">
+    <button data-tab="board" class="active">Board</button>
+    <button data-tab="settings">Settings</button>
+    <button data-tab="expert">Expert</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-board" class="tab">
+    <div id="presetbar" class="bar-row"></div>
+    <div id="orderhint" class="hint"></div>
+    <div id="chain" class="chain"></div>
+  </section>
+  <section id="tab-settings" class="tab" hidden></section>
+  <section id="tab-expert" class="tab" hidden></section>
+</main>
+<div id="toasts"></div>
+
+<script src="util.js"></script>
+<script src="controls.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

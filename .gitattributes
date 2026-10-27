@@ -1,8 +1,4 @@
-* text=auto
-*.sh            text eol=lf
-create-this-*   text eol=lf
-*.png           binary
-*.jpg           binary
-*.ico           binary
-*.npy           binary
-run_all.cmd     text eol=crlf
+# shell and board files must keep LF endings (they run on Linux)
+*.sh text eol=lf
+board/** text eol=lf
+tools/*.py text eol=lf

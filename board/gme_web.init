@@ -1,0 +1,98 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          gme_web
+# Required-Start:    $local_fs $network
+# Required-Stop:     $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: guitar multi-effect web UI (gme_web.py)
+### END INIT INFO
+#
+# gme_web.init start|stop|restart|status
+#
+# Starts  python /home/root/gme/gme_web.py --port 8080  as the current user (root: /dev/mem),
+# logs to /var/log/gme_web.log.  gme_web.py itself refuses to run unless the FPGA VERSION reads
+# 0x02xx; this script never restarts it by itself, so a wrong FPGA image cannot cause a loop:
+# `start` just reports the failure and returns 1.
+#
+# Overrides (used by the tests): GME_DIR GME_PORT GME_PIDFILE GME_LOG GME_PY GME_ARGS
+
+DIR=${GME_DIR:-/home/root/gme}
+PORT=${GME_PORT:-8080}
+PIDFILE=${GME_PIDFILE:-/var/run/gme_web.pid}
+LOG=${GME_LOG:-/var/log/gme_web.log}
+ARGS=${GME_ARGS:-}
+
+pick_python() {
+    if [ -n "$GME_PY" ]; then echo "$GME_PY"; return 0; fi
+    for p in python python3 python2; do
+        if command -v $p >/dev/null 2>&1; then echo $p; return 0; fi
+    done
+    return 1
+}
+
+is_running() {
+    [ -f "$PIDFILE" ] || return 1
+    PID=$(cat "$PIDFILE" 2>/dev/null)
+    [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null
+}
+
+do_start() {
+    if is_running; then
+        echo "gme_web already running (pid $PID)"
+        return 0
+    fi
+    PY=$(pick_python) || { echo "gme_web: no python found" >&2; return 1; }
+    [ -f "$DIR/gme_web.py" ] || { echo "gme_web: $DIR/gme_web.py not found" >&2; return 1; }
+    echo "=== $(date) starting gme_web.py --port $PORT $ARGS" >> "$LOG" 2>/dev/null || LOG=/dev/null
+    # shellcheck disable=SC2086  # ARGS is a list of words
+    ( cd "$DIR" && exec $PY gme_web.py --port "$PORT" $ARGS >> "$LOG" 2>&1 < /dev/null ) &
+    echo $! > "$PIDFILE"
+    # a wrong FPGA image (or any startup error) ends the process within a second or two
+    i=0
+    while [ $i -lt 3 ]; do
+        sleep 1
+        if ! is_running; then
+            rm -f "$PIDFILE"
+            echo "gme_web: the server exited at start-up (wrong FPGA image? see $LOG):" >&2
+            tail -n 5 "$LOG" >&2
+            return 1
+        fi
+        i=$((i + 1))
+    done
+    echo "gme_web started (pid $PID), port $PORT, log $LOG"
+}
+
+do_stop() {
+    if ! is_running; then
+        rm -f "$PIDFILE"
+        echo "gme_web not running"
+        return 0
+    fi
+    kill "$PID" 2>/dev/null
+    i=0
+    while [ $i -lt 5 ] && kill -0 "$PID" 2>/dev/null; do
+        sleep 1
+        i=$((i + 1))
+    done
+    kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null
+    rm -f "$PIDFILE"
+    echo "gme_web stopped"
+}
+
+do_status() {
+    if is_running; then
+        echo "gme_web running (pid $PID), port $PORT"
+        return 0
+    fi
+    echo "gme_web not running"
+    return 3
+}
+
+case "$1" in
+    start) do_start ;;
+    stop) do_stop ;;
+    restart|force-reload) do_stop; do_start ;;
+    status) do_status ;;
+    *) echo "usage: $0 start|stop|restart|status" >&2; exit 2 ;;
+esac
