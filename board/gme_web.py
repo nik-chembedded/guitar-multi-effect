@@ -423,6 +423,12 @@ def main(argv=None):
             print("EQ coefficients restored from settings.json")
     except gm.ParamError as e:
         print("EQ: %s" % e)
+    try:
+        r = model.cab_resync()                     # a new FPGA image plays the built-in default cabinet
+        if r:
+            print("cabinet slot %d (%s) loaded again from settings.json" % (r["slot"], r["name"]))
+    except gm.CabinetError as e:
+        print("cabinet: %s" % e)
     srv = create_server(model, a.host, a.port, a.www, a.verbose)
     print("gme web UI: http://%s:%d/  (FPGA VERSION 0x%04X%s)" % (
         a.host if a.host != "0.0.0.0" else "<board address>", srv.server_address[1], model.version,

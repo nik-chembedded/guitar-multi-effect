@@ -44,6 +44,7 @@ Guitar into LINE IN, LINE OUT to the amp / headphones. Write what you hear in th
 | 7a | Cabinet files | `python gme_hps.py cab list` | 10 slots, names as in `ir/manifest.json` (Default, 1x12 American ... FB-212 Vet30) | |
 | 7b | Cabinet load path (null test) | distortion on, `cab on` right after programming (built-in default, bank 0); then `cab 0` | **no audible change**: `cab00.coef` is bit-identical to the built-in default (`cab_default.mif`, shift 3), but `cab 0` loads it over the bridge into bank 1 and switches. Any change in sound = a load-path bug (byte lanes, bit order, shift) | |
 | 7c | Cabinets 1..9 | `cab 1` ... `cab 9` while playing (or the page's cabinet card) | each clearly different (1x12 brighter, 4x12 fuller, Metal tighter); switching is click-free; `cab off` = no cabinet colour | |
+| 7d | Cabinet after re-programming | `cab 5`, re-program the `.sof`, `sh gme_web.init restart`, `tail /var/log/gme_web.log` | log says "cabinet slot 5 (4x10 American) loaded again", and 4x10 plays, not the default | |
 | 8 | EQ | `eq 6 -3 2`, then `eq off` / `eq on`; page sliders | clear bass / mid / treble change; on/off click-free | |
 | 9 | Chorus / flanger / vibrato | page Modulation card: rate, depth, mix, feedback, shape | smooth sweep, flanger feedback audible, no zipper noise | |
 | 10 | Tremolo | 4 shapes (sine, triangle, square, saw), rate knob | rate follows the knob, square/saw without clicks | |

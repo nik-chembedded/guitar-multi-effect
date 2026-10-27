@@ -349,6 +349,36 @@ def test_unknown_and_static(api):
     assert api.call("POST", "/index.html", {})[0] == 405
 
 
+def run_main_once(monkeypatch, argv):
+    """gme_web.main(argv) up to serve_forever, which returns at once; the model the server got."""
+    got = {}
+    real = gme_web.create_server
+
+    def create(model, *a):
+        srv = real(model, *a)
+        monkeypatch.setattr(srv, "serve_forever", lambda: None)
+        got["model"] = model
+        return srv
+    monkeypatch.setattr(gme_web, "create_server", create)
+    gme_web.main(argv)
+    return got["model"]
+
+
+def test_server_start_loads_the_stored_cabinet(monkeypatch, capsys, tmp_path, cabdir):
+    import os
+    data = tmp_path / "data"
+    Store(str(data)).update_settings(cab_slot=1)
+    model = run_main_once(monkeypatch, ["--mock", "--port", "0", "--data-dir", str(data), "--cab-dir", str(cabdir)])
+    assert "cabinet slot 1 (Marshall 4x12) loaded again" in capsys.readouterr().out
+    bank = model.dev.read(0x1B) & 1
+    assert bank == 1 and [model.dev.cab_coef(bank, i) for i in range(2048)] == make_coefs(2)
+    # a missing file is reported and the server still starts
+    os.remove(str(cabdir / "cab01.coef"))
+    run_main_once(monkeypatch, ["--mock", "--port", "0", "--data-dir", str(data), "--cab-dir", str(cabdir)])
+    out = capsys.readouterr().out
+    assert "cabinet: cabinet slot 1: cab01.coef not found" in out and "gme web UI" in out
+
+
 def test_wrong_image_refused_by_server():
     with pytest.raises(SystemExit) as e:
         gme_web.main(["--mock", "--mock-version", "0x0100", "--port", "0"])

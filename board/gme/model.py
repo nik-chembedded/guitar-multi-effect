@@ -830,6 +830,15 @@ class Model(object):
                 self.store.update_settings(cab_slot=slot)
             return {"slot": slot, "name": name, "shift": shift, "bank": target}
 
+    def cab_resync(self):
+        """Load the stored cabinet slot again (a new FPGA image starts with the built-in default in bank 0 and
+        the coefficients cannot be read back, so the stored slot may not be what plays).  Harmless when it
+        already plays: the same coefficients go into the other bank.  The result of cab_load, or None when
+        there is nothing to restore."""
+        if not self.cab_available() or self.cab_slot is None:
+            return None
+        return self.cab_load(self.cab_slot)
+
     def cab_enable(self, on):
         if not self.cab_available():
             raise CabinetError("this FPGA image (VERSION 0x%04X) has no cabinet simulator" % self.version)

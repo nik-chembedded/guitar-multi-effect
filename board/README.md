@@ -81,6 +81,9 @@ Tremolo, Echo, Reverb (`/api/chain`, the page and `gme_hps.py chain` list it in 
 `cabNN.coef`, text, written by `tools/cab_coefs.py --build`: line 1 the name, line 2 the shift (0..7),
 then 2048 signed integers (18-bit coefficients), one per line. The library loads one into the inactive
 bank, sets that bank's shift and switches the active bank. Needs FPGA VERSION >= 0x0205.
+The loaded slot is kept in `settings.json`; the server loads it again at start (a new FPGA image plays the
+built-in default, and the coefficients cannot be read back). After programming the `.sof` by hand:
+`gme_web.init restart`, or `gme_hps.py cab <slot>`.
 
 ## Troubleshooting
 

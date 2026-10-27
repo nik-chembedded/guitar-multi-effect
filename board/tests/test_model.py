@@ -120,6 +120,28 @@ def test_cab_load_register_sequence(model, mock, cabdir):
     assert model.store.settings()["cab_slot"] == 1
 
 
+def test_cab_resync_after_new_image(model, mock, cabdir, tmp_path):
+    model.cab_load(1)
+    # a new FPGA image: registers and coefficient banks back to power-up, settings.json still says slot 1
+    fresh = gd.Mock(version=0x0208)
+    m2 = gm.Model(fresh, store=Store(str(tmp_path / "data")), cab_dir=str(cabdir))
+    assert m2.cab_slot == 1 and fresh.read(0x1B) & 1 == 0 and fresh.cab_coef(1, 0) == 0
+    r = m2.cab_resync()
+    assert r == {"slot": 1, "name": "Marshall 4x12", "shift": 5, "bank": 1}
+    assert [fresh.cab_coef(1, i) for i in range(2048)] == make_coefs(2)
+    assert m2.get_raw("cab_bank") == 1 and m2.get_raw("cab_shift1") == 5 and fresh.cab_ignored_writes == 0
+    # already playing (server restart, same image): loaded into the other bank, the sound stays the same
+    assert m2.cab_resync()["bank"] == 0 and [fresh.cab_coef(0, i) for i in range(2048)] == make_coefs(2)
+    # nothing stored, or an image without the cabinet: no writes
+    for m in (gm.Model(gd.Mock(version=0x0208), store=Store(str(tmp_path / "other")), cab_dir=str(cabdir)),
+              gm.Model(gd.Mock(version=0x0204), store=Store(str(tmp_path / "data")), cab_dir=str(cabdir))):
+        assert m.cab_resync() is None and m.dev.log == []
+    # the stored slot's file is gone
+    os.remove(str(cabdir / "cab01.coef"))
+    with pytest.raises(gm.CabinetError):
+        m2.cab_resync()
+
+
 def test_cab_refuses_active_bank(model, mock):
     mock.write(0x1B, 1)                                  # bank 1 active
     n = len(mock.log)
