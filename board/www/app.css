@@ -38,15 +38,45 @@ main { padding: 16px 20px 60px; max-width: 1700px; margin: 0 auto; }
 .bar-row .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 6px; }
 .hint, .note { color: var(--dim); font-size: 13px; margin: 8px 2px; }
 
-.chain { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; margin-top: 10px; }
+#presetbar select { width: auto; min-width: 220px; }
+.dirty { color: var(--accent); font-weight: 700; font-size: 18px; line-height: 1; cursor: help; }
+
+/* signal chain: IN, one tile per effect, OUT - always one row */
+.strip { display: flex; align-items: stretch; flex-wrap: nowrap; margin-top: 10px; padding: 12px 12px; overflow-x: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.io { align-self: center; flex: none; padding: 0 4px; color: var(--dim); font-weight: 700; font-size: 13px; letter-spacing: .08em; }
+.conn { flex: 0 0 14px; align-self: center; height: 2px; background: var(--dim); position: relative; margin-right: 4px; }
+.conn::after { content: ""; position: absolute; right: -4px; top: -4px; border: 5px solid transparent; border-left: 7px solid var(--dim); border-right: 0; }
+.tile { flex: 1 1 0; min-width: 62px; position: relative; display: flex; border: 2px solid var(--line); border-radius: 8px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel)); box-shadow: 0 3px 8px rgba(0,0,0,.4); }
+.tile[draggable=true] { cursor: grab; }
+.tile.sel { border-color: var(--accent); }
+.tile.drag { opacity: .4; }
+.tile.ins-before { box-shadow: -5px 0 0 -1px var(--accent2), 0 3px 8px rgba(0,0,0,.4); }
+.tile.ins-after { box-shadow: 5px 0 0 -1px var(--accent2), 0 3px 8px rgba(0,0,0,.4); }
+.tile-btn { flex: 1; min-width: 0; min-height: 68px; border: 0; border-radius: 6px; background: none; padding: 26px 4px 8px;
+  font-weight: 700; font-size: 15px; letter-spacing: .04em; }
+.tile-btn:hover:not(:disabled) { background: rgba(255,255,255,.04); }
+.tile.on .tname { color: var(--text); }
+.tile:not(.on) .tname { color: var(--dim); opacity: .6; }
+.tslot { position: absolute; top: 6px; right: 8px; font-size: 12px; font-weight: 400; color: var(--dim); pointer-events: none; }
+.led { position: absolute; top: 7px; left: 8px; z-index: 1; width: 14px; height: 14px; padding: 0; border-radius: 50%;
+  background: var(--led-off); border: 1px solid #000; }
+.tile.on .led { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.led:hover:not(:disabled) { border-color: var(--accent2); }
+.tile-btn:focus-visible, .led:focus-visible { outline: 2px solid var(--accent2); outline-offset: 1px; }
+.chainmeta { display: flex; align-items: center; gap: 12px; }
+.chainmeta .hint { flex: 1; }
+
+/* editor of the selected effect */
+.editor { margin-top: 12px; }
 .card { background: linear-gradient(180deg, var(--panel2), var(--panel)); border: 1px solid var(--line);
   border-radius: 8px; padding: 0 0 10px; box-shadow: 0 3px 8px rgba(0,0,0,.4); }
-.card.drag { opacity: .4; } .card.over { outline: 2px dashed var(--accent); }
-.card-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
-.card-name { font-weight: 600; font-size: 16px; flex: 1; }
-.grip { color: var(--dim); cursor: default; user-select: none; width: 14px; }
-[draggable=true] .grip, .grip[title^="Drag"] { cursor: grab; }
-.card-body { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
+.ed-head { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+.ed-name { margin: 0; font-size: 18px; font-weight: 600; }
+.ed-slot { flex: 1; color: var(--dim); font-size: 13px; }
+.ed-body { padding: 12px 14px 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px 20px; }
+.ed-body .wide { grid-column: 1 / -1; }
 
 .ctl { display: flex; flex-direction: column; gap: 2px; }
 .ctl-head { display: flex; align-items: baseline; gap: 6px; }
@@ -91,5 +121,5 @@ table.regs tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 
 @media (max-width: 1100px) {
   .meter .bar { width: 90px; }
-  .chain { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+  .tile-btn { font-size: 14px; }
 }

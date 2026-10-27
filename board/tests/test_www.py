@@ -73,7 +73,7 @@ def test_ids_used_by_js_exist_in_html(api):
     for m in re.finditer(r'getElementById\("([\w-]+)"\)', js):
         i = m.group(1)
         # ids created by the script itself
-        if i in ("cabbody", "preset-sel", "preset-name", "raw-reg", "raw-val", "gr-bar", "gr-text"):
+        if i in ("cabbody", "preset-sel", "preset-name", "raw-reg", "raw-val", "gr-bar", "gr-text", "preset-dirty"):
             continue
         assert i in p.ids, i
     for t in ("board", "settings", "expert"):
@@ -103,8 +103,9 @@ def test_info_has_what_the_page_needs(api):
             assert p["min"] <= p["gui_min"] < p["gui_max"] <= p["max"]
         assert p["group"] in effects or p["group"] == "system", p["id"]
     for e in info["effects"]:
-        for f in ("id", "name", "enable", "min_version"):
+        for f in ("id", "name", "short", "enable", "min_version"):
             assert f in e
+        assert e["short"].strip() and len(e["short"]) <= 5      # the tile in the signal chain strip
         en = [p for p in info["params"] if p["id"] == e["enable"]][0]
         assert en["type"] == "bool" and en["group"] == e["id"]
     s, ch = api.get("/api/chain")

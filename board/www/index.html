@@ -30,8 +30,12 @@
 <main>
   <section id="tab-board" class="tab">
     <div id="presetbar" class="bar-row"></div>
-    <div id="orderhint" class="hint"></div>
-    <div id="chain" class="chain"></div>
+    <div id="chain" class="strip" aria-label="Signal chain"></div>
+    <div class="chainmeta">
+      <span id="orderhint" class="hint"></span>
+      <button id="order-default" class="btn" title="Put the effects back in the factory order" disabled>Default order</button>
+    </div>
+    <div id="editor" class="editor"></div>
   </section>
   <section id="tab-settings" class="tab" hidden></section>
   <section id="tab-expert" class="tab" hidden></section>
