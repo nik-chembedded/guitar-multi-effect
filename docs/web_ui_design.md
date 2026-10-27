@@ -67,16 +67,20 @@ Errors are JSON `{error: text}` with HTTP 4xx. Writes are serialised by one lock
 
 * **Top bar:** connection state, FPGA version, codec / PLL status, input and output
   meters, mute button.
-* **Signal chain** as a row of effect cards in the order reported by `/api/chain`
-  (today the fixed hardware order of step D: Dynamics → Overdrive → Distortion → Cabinet → EQ →
-  Chorus/Flanger/Vibrato → Tremolo → Echo → Reverb).  The Dynamics card has a live gain-reduction
-  meter (DYN_GR); the EQ gains are model-level parameters (the FPGA takes coefficients, see `board/README.md`).
-  Each card: on/off switch and its controls (sliders with display units; selects for
-  types, waveforms, cabinets). **Step E:** when the chain is editable, cards can be
-  dragged to reorder; the order is part of presets. The card layout and the API do not
-  assume a fixed order, so step E needs no UI rework.
-* **Preset bar:** factory and user presets, save as / overwrite / delete.
-* **Cabinet card:** the 10 slots by name, load progress, active bank.
+* **Signal chain strip** (revised 2026-10-27 for step E): one row `IN → pedals → OUT` in the order
+  reported by `/api/chain` (default Dynamics → Overdrive → Distortion → Cabinet → EQ →
+  Chorus/Flanger/Vibrato → Tremolo → Echo → Reverb). Each pedal tile shows its short name (`short` in
+  `params.json` effects), its slot number and an LED that switches the effect on or off. Off effects keep
+  their place, dimmed. **Reorder** (when `editable`, VERSION ≥ 0x0209): drag a tile (left / right half of
+  the target = before / after), or Alt+←/→ on the focused tile; plain ←/→ moves the selection. Each move is
+  POSTed at once (the FPGA applies it with its ≈ 5 ms fade, no staged Apply); on an error the strip snaps
+  back. "Default order" restores `chain_default`. The order is part of presets.
+* **Editor** below the strip: the controls of the selected pedal only (sliders with display units; selects
+  for types, waveforms), its slot and on/off switch. Specials: Dynamics gain-reduction meter (DYN_GR),
+  cabinet slots (the 10 slots by name, load progress, active bank); the EQ gains are model-level parameters
+  (the FPGA takes coefficients, see `board/README.md`). The selection is remembered in the browser.
+* **Preset bar:** one row: select (selecting loads), `*` when anything was changed since the last load /
+  save, Save (overwrites a user preset; Save as for a factory one), Save as, Delete.
 * **Settings:** codec headphone / line volume, input gain; network info.
 * **Expert page:** all registers raw (read / write) for debugging.
 * Moving a slider sends at most ~20 updates/s (throttled); the FPGA smooths the
