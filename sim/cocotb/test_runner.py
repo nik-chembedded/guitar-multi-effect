@@ -137,6 +137,34 @@ def test_lfo_vs_v1():
     test_lfo_v1.check_all()
 
 
+ROUTE_SRCS = [RTL / "fx_route.vhd", HERE / "hdl" / "route_wrap.vhd"]
+
+
+@pytest.mark.parametrize("dw", [16, 24])
+def test_route(dw):
+    """Effect-order block fx_route (v2 step E1) with 9 stub effects (combinational and registered): power-up,
+    200 random orders, invalid lists, atomic apply, exact order fade, apply during the fade; bit-exact to the
+    model every frame, latency identical for every order."""
+    run("route_wrap", "test_route", ROUTE_SRCS, parameters={"DW": dw}, extra_env={"GME_DW": str(dw)},
+        tag="_%d" % dw)
+
+
+def test_route_invariance():
+    """fx_route gives identical output with 16-clock and 1024-clock frames (order changes, rejects, applies
+    during the fade; GME_HALF = 8 and 512), two simulations."""
+    import numpy as np
+    outs = {}
+    for half in (8, 512):
+        f = BUILD / ("route_inv_%d.npy" % half)
+        run("route_wrap", "test_route", ROUTE_SRCS, testcase="test_powerup,test_invariance", parameters={"DW": 24},
+            extra_env={"GME_DW": "24", "GME_HALF": str(half), "GME_ROUTE_OUT": str(f)}, tag="_inv%d" % half)
+        outs[half] = np.load(f)
+    a, b = outs[8], outs[512]
+    assert a.shape == b.shape and len(a) > 1000
+    assert np.array_equal(a, b), "output differs between 16-clock and 1024-clock frames, first at %d" % np.nonzero(a != b)[0][0]
+    print("route invariance: %d frames identical at 16 and 1024 clocks per frame" % len(a))
+
+
 def test_moddelay():
     """Modulated delay (chorus / flanger / vibrato, v2 step D2) bit-exact to its model."""
     srcs = [MODELS / "sim_dpram.vhd", MODELS / "fx_dpram.vhd",
