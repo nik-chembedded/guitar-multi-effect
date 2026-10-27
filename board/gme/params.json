@@ -2,15 +2,15 @@
  "format": 1,
  "chain_default": ["dyn", "od", "dist", "cab", "eq", "mod", "trem", "echo", "reverb"],
  "effects": [
-  {"id": "dyn", "name": "Dynamics", "short": "DYN", "enable": "dyn_on", "bit": 7, "min_version": 519},
-  {"id": "od", "name": "Overdrive", "short": "OD", "enable": "od_on", "bit": 0, "min_version": 513},
-  {"id": "dist", "name": "Distortion", "short": "DIST", "enable": "dist_on", "bit": 3, "min_version": 513},
-  {"id": "cab", "name": "Cabinet", "short": "CAB", "enable": "cab_on", "bit": 6, "min_version": 517},
-  {"id": "eq", "name": "EQ", "short": "EQ", "enable": "eq_on", "bit": 8, "min_version": 519},
-  {"id": "mod", "name": "Chorus / Flanger / Vibrato", "short": "MOD", "enable": "mod_on", "bit": 4, "min_version": 513},
-  {"id": "trem", "name": "Tremolo", "short": "TREM", "enable": "trem_on", "bit": 1, "min_version": 513},
-  {"id": "echo", "name": "Echo", "short": "ECHO", "enable": "echo_on", "bit": 2, "min_version": 513},
-  {"id": "reverb", "name": "Reverb", "short": "VERB", "enable": "reverb_on", "bit": 5, "min_version": 513}
+  {"id": "dyn", "name": "Dynamics", "short": "DYN", "icon": "compressor", "kind": "tone", "enable": "dyn_on", "bit": 7, "min_version": 519},
+  {"id": "od", "name": "Overdrive", "short": "OD", "icon": "overdrive", "kind": "drive", "enable": "od_on", "bit": 0, "min_version": 513},
+  {"id": "dist", "name": "Distortion", "short": "DIST", "icon": "distortion", "kind": "drive", "enable": "dist_on", "bit": 3, "min_version": 513},
+  {"id": "cab", "name": "Cabinet", "short": "CAB", "icon": "cabinet", "kind": "tone", "enable": "cab_on", "bit": 6, "min_version": 517},
+  {"id": "eq", "name": "EQ", "short": "EQ", "icon": "eq", "kind": "tone", "enable": "eq_on", "bit": 8, "min_version": 519},
+  {"id": "mod", "name": "Chorus / Flanger / Vibrato", "short": "MOD", "icon": "chorus", "kind": "mod", "enable": "mod_on", "bit": 4, "min_version": 513},
+  {"id": "trem", "name": "Tremolo", "short": "TREM", "icon": "tremolo", "kind": "mod", "enable": "trem_on", "bit": 1, "min_version": 513},
+  {"id": "echo", "name": "Echo", "short": "ECHO", "icon": "echo", "kind": "time", "enable": "echo_on", "bit": 2, "min_version": 513},
+  {"id": "reverb", "name": "Reverb", "short": "VERB", "icon": "reverb", "kind": "time", "enable": "reverb_on", "bit": 5, "min_version": 513}
  ],
  "registers": [
   {"reg": 0, "name": "effects_enable", "rw": "W", "bits": "[8:0]", "min_version": 513, "desc": "one enable bit per effect"},

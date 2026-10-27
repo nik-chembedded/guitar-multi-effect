@@ -34,7 +34,7 @@ def test_page_files_served_and_local(api):
     p = Refs()
     p.feed(body.decode("utf-8"))
     files = [r for t, r in p.refs if t in ("script", "link")]
-    assert {"app.js", "app.css"} <= set(files)
+    assert {"app.js", "icons.js", "app.css"} <= set(files)
     for tag, ref in p.refs:
         assert not re.match(r"^(\w+:)?//|^\w+:", ref), "external reference %s" % ref
         assert not ref.startswith("/") or ref.startswith("/api/"), ref
@@ -44,7 +44,7 @@ def test_page_files_served_and_local(api):
         assert data == open(os.path.join(WWW, f), "rb").read()
 
 
-@pytest.mark.parametrize("name", ["index.html", "app.js", "util.js", "controls.js", "app.css"])
+@pytest.mark.parametrize("name", ["index.html", "app.js", "util.js", "controls.js", "icons.js", "app.css"])
 def test_no_external_resources(name):
     text = open(os.path.join(WWW, name), encoding="utf-8").read()
     assert not re.search(r"https?://", text), name
@@ -54,7 +54,7 @@ def test_no_external_resources(name):
 
 
 def test_js_files_referenced_exist_and_balanced():
-    for name in ("util.js", "controls.js", "app.js"):
+    for name in ("util.js", "controls.js", "icons.js", "app.js"):
         t = open(os.path.join(WWW, name), encoding="utf-8").read()
         # cheap structural check without a JS engine: brackets balance outside strings/comments
         t = re.sub(r"/\*.*?\*/", "", t, flags=re.S)
@@ -78,6 +78,10 @@ def test_ids_used_by_js_exist_in_html(api):
         assert i in p.ids, i
     for t in ("board", "settings", "expert"):
         assert "tab-" + t in p.ids
+
+
+ICONS = re.findall(r"^    (\w+): '", open(os.path.join(WWW, "icons.js"), encoding="utf-8").read(), re.M)
+KINDS = re.findall(r"\.k-(\w+) \{", open(os.path.join(WWW, "app.css"), encoding="utf-8").read())
 
 
 PARAM_FIELDS = ["id", "name", "group", "reg", "lsb", "width", "type", "min", "max", "default", "unit",
@@ -106,6 +110,8 @@ def test_info_has_what_the_page_needs(api):
         for f in ("id", "name", "short", "enable", "min_version"):
             assert f in e
         assert e["short"].strip() and len(e["short"]) <= 5      # the tile in the signal chain strip
+        assert e["icon"] in ICONS, e["id"]                       # drawn in icons.js
+        assert e["kind"] in KINDS, e["id"]                       # colour class .k-<kind> in app.css
         en = [p for p in info["params"] if p["id"] == e["enable"]][0]
         assert en["type"] == "bool" and en["group"] == e["id"]
     s, ch = api.get("/api/chain")

@@ -61,7 +61,11 @@
     el.className = "chip " + (ok ? "ok" : "bad");
   }
 
-  /* ---------- effect chain: strip of pedals + editor of the selected one ---------- */
+  /* ---------- effect chain: list of the unused effects, the chain of the used ones, editor ----------
+     The FPGA always runs every effect, in the order of /api/chain; an effect that is off is bypassed in its
+     place.  So the page shows the effects that are on as "the chain" (in their order) and the others in the
+     list beside it: putting an effect into the chain switches it on at that spot, taking it out switches it
+     off (its place in the full order then does not matter and is left alone, so that costs no fade). */
   var SEL_KEY = "gme.selected";
   function paramsOf(group, skipId) {
     return S.info.params.filter(function (p) { return p.group === group && p.id !== skipId && p.available; });
@@ -69,9 +73,14 @@
   function effectOf(id) {
     return S.chain.effects.filter(function (e) { return e.id === id; })[0];
   }
-  function shortName(e) {
-    var info = S.info.effects.filter(function (x) { return x.id === e.id; })[0];
-    return (info && info.short) || e.name;
+  function fxInfo(id) {
+    return S.info.effects.filter(function (x) { return x.id === id; })[0] || {};
+  }
+  function shortName(e) { return fxInfo(e.id).short || e.name; }
+  function icon(e) { return GME.icon(fxInfo(e.id).icon); }
+  function kind(e) { return fxInfo(e.id).kind ? " k-" + fxInfo(e.id).kind : ""; }
+  function active() {                                            /* the chain: ids of the effects that are on, in order */
+    return S.chain.effects.filter(function (e) { return e.on; }).map(function (e) { return e.id; });
   }
   function markDirty() { S.dirty = true; showDirty(); }
   function showDirty() {
@@ -81,205 +90,270 @@
 
   function renderChain(ch) {
     S.chain = ch;
-    var ids = ch.order;
-    if (ids.indexOf(S.sel) < 0) {
+    if (ch.order.indexOf(S.sel) < 0) {
       var saved = null;
       try { saved = localStorage.getItem(SEL_KEY); } catch (e) { /* storage not available */ }
-      S.sel = ids.indexOf(saved) >= 0 ? saved : (ids[0] || null);
+      S.sel = ch.order.indexOf(saved) >= 0 ? saved : (active()[0] || ch.order[0] || null);
     }
-    renderStrip();
+    renderBoard();
     renderEditor(false);
   }
 
   function select(id) {
     S.sel = id;
     try { localStorage.setItem(SEL_KEY, id); } catch (e) { /* storage not available */ }
-    renderStrip();
+    renderBoard();
     renderEditor(false);
   }
 
-  /* The strip is rebuilt when the order changes; on/off and selection only patch the tiles
+  /* Chain and list are rebuilt when the order or the on/off set changes; the selection only patches them
      (keeps the focus where it is). */
-  function renderStrip() {
-    var ch = S.chain, box = document.getElementById("chain");
-    var sig = ch.order.join(",") + "|" + ch.editable;
+  function renderBoard() {
+    var ch = S.chain, act = active();
+    var sig = ch.order.join(",") + "|" + act.join(",") + "|" + ch.editable;
     if (sig !== S.chainSig) {
       S.chainSig = sig;
-      var f = document.activeElement, keep = null;
-      if (box.contains(f) && f.getAttribute("data-fx")) keep = {id: f.getAttribute("data-fx"), role: f.getAttribute("data-role")};
-      GME.clear(box);
-      box.appendChild(h("span", {class: "io", title: "Guitar input"}, "IN"));
-      ch.effects.forEach(function (e) {
-        box.appendChild(h("span", {class: "conn", "aria-hidden": "true"}));
-        box.appendChild(tile(e, ch.editable));
-      });
-      box.appendChild(h("span", {class: "conn", "aria-hidden": "true"}));
-      box.appendChild(h("span", {class: "io", title: "Output"}, "OUT"));
+      var f = document.activeElement, keep = f && f.getAttribute ? f.getAttribute("data-fx") : null;
+      renderStrip(act);
+      renderLib(act);
       if (keep) {
-        var t = box.querySelector('[data-fx="' + keep.id + '"][data-role="' + keep.role + '"]');
+        var t = document.querySelector('[data-fx="' + keep + '"]');
         if (t) t.focus();
       }
     }
-    updateTiles();
+    Array.prototype.forEach.call(document.querySelectorAll("#tab-board [data-id]"), function (el) {
+      var sel = el.getAttribute("data-id") === S.sel;
+      el.classList.toggle("sel", sel);
+      var b = el.querySelector("[data-fx]");
+      if (b) b.setAttribute("aria-pressed", sel ? "true" : "false");
+    });
+    var def = defaultOrder().filter(function (id) { return act.indexOf(id) >= 0; });
+    document.getElementById("order-default").disabled = !ch.editable || def.join(",") === act.join(",");
+    document.getElementById("orderhint").textContent = ch.editable
+      ? "Drag an effect from the list into the chain, or back out to switch it off. In the chain: drag or Alt+←/→ to move, Delete to take out. Changes apply at once (short fade)."
+      : "Fixed order in this FPGA (VERSION " + S.info.fpga_version_hex + "): an effect you add goes to its fixed place.";
   }
 
-  function updateTiles() {
-    var ch = S.chain, n = ch.order.length;
-    ch.effects.forEach(function (e, i) {
-      var t = document.querySelector('#chain .tile[data-id="' + e.id + '"]');
-      if (!t) return;
-      var sel = e.id === S.sel;
-      t.classList.toggle("on", !!e.on);
-      t.classList.toggle("sel", sel);
-      var led = t.querySelector(".led"), btn = t.querySelector(".tile-btn");
-      led.setAttribute("aria-checked", e.on ? "true" : "false");
-      led.title = "Switch " + e.name + (e.on ? " off" : " on");
-      led.setAttribute("aria-label", e.name + " " + (e.on ? "on" : "off"));
-      btn.setAttribute("aria-pressed", sel ? "true" : "false");
-      btn.setAttribute("aria-label", e.name + ", slot " + (i + 1) + " of " + n + ", " + (e.on ? "on" : "off"));
-      t.querySelector(".tslot").textContent = String(i + 1);
+  function renderStrip(act) {
+    var box = document.getElementById("chain");
+    GME.clear(box);
+    box.appendChild(h("span", {class: "io", title: "Guitar input"}, "IN"));
+    act.forEach(function (id, i) {
+      box.appendChild(h("span", {class: "conn", "aria-hidden": "true"}));
+      box.appendChild(tile(effectOf(id), i, act.length));
     });
-    document.getElementById("order-default").disabled = !ch.editable || defaultOrder().join(",") === ch.order.join(",");
-    document.getElementById("orderhint").textContent = ch.editable
-      ? "Drag a pedal, or Alt+←/→, to move it. Changes apply immediately (short fade)."
-      : "Fixed order in this FPGA (VERSION " + S.info.fpga_version_hex + ").";
+    if (!act.length) {
+      box.appendChild(h("span", {class: "conn", "aria-hidden": "true"}));
+      box.appendChild(h("div", {class: "strip-empty"}, "Every effect is off: drag effects here from the list"));
+    }
+    box.appendChild(h("span", {class: "conn last", "aria-hidden": "true"}));
+    box.appendChild(h("span", {class: "io", title: "Output"}, "OUT"));
+  }
+
+  function tile(e, i, n) {
+    var btn = h("button", {type: "button", class: "tile-btn", "data-fx": e.id, title: e.name,
+                           "aria-label": e.name + ", slot " + (i + 1) + " of " + n,
+                           onclick: function () { select(e.id); },
+                           onkeydown: function (ev) { tileKey(ev, e.id); }},
+      icon(e), h("span", {class: "tname"}, shortName(e)), h("span", {class: "tslot"}, String(i + 1)));
+    var rm = h("button", {type: "button", class: "tile-rm", title: "Take " + e.name + " out of the chain (switches it off)",
+                          "aria-label": "Take " + e.name + " out", onclick: function (ev) { ev.stopPropagation(); setEnable(e.id, false); }}, "×");
+    var t = h("div", {class: "tile" + kind(e), "data-id": e.id, draggable: "true"}, btn, rm);
+    dragSource(t, e.id, "chain");
+    dropOnTile(t, e.id);
+    return t;
+  }
+
+  function renderLib(act) {
+    var box = document.getElementById("fxlist");
+    GME.clear(box);
+    var present = S.chain.order;
+    var rest = defaultOrder().concat(present.filter(function (id) { return S.info.chain_default.indexOf(id) < 0; }))
+      .filter(function (id) { return act.indexOf(id) < 0; });
+    rest.forEach(function (id) {
+      var e = effectOf(id);
+      var row = h("div", {class: "lib-row" + kind(e), "data-id": id, draggable: "true"},
+        h("button", {type: "button", class: "lib-btn", "data-fx": id, title: "Show the settings of " + e.name,
+                     onclick: function () { select(id); }}, icon(e), h("span", {class: "lib-name"}, e.name)),
+        h("button", {type: "button", class: "lib-add", title: "Put " + e.name + " at the end of the chain",
+                     "aria-label": "Add " + e.name, onclick: function () { addAt(id, active().length); }}, "+"));
+      dragSource(row, id, "lib");
+      box.appendChild(row);
+    });
+    if (!rest.length) box.appendChild(h("p", {class: "note"}, "Every effect is in the chain."));
   }
 
   function defaultOrder() {                                      /* info.chain_default, only the effects present */
     return S.info.chain_default.filter(function (id) { return S.chain.order.indexOf(id) >= 0; });
   }
 
-  function tile(e, editable) {
-    var enable = S.params[e.enable];
-    var led = h("button", {type: "button", class: "led", role: "switch", "data-fx": e.id, "data-role": "led",
-                           disabled: !(enable && enable.available),
-                           onclick: function (ev) { ev.stopPropagation(); setEnable(e.id, !effectOf(e.id).on); }});
-    var btn = h("button", {type: "button", class: "tile-btn", "data-fx": e.id, "data-role": "btn",
-                           onclick: function () { select(e.id); },
-                           onkeydown: function (ev) { tileKey(ev, e.id); }},
-      h("span", {class: "tname"}, shortName(e)), h("span", {class: "tslot"}, ""));
-    var t = h("div", {class: "tile", "data-id": e.id, draggable: editable ? "true" : null}, led, btn);
-    if (editable) enableDrag(t);
-    return t;
+  /* on/off of one effect (= into / out of the chain), optimistic */
+  function setEnable(id, on) {
+    var e = effectOf(id), p = e && S.params[e.enable];
+    if (p && p.available) onChange(e.enable, on);
+  }
+  function enableChanged(paramId, on) {
+    S.chain.effects.forEach(function (e) { if (e.enable === paramId) e.on = !!on; });
+    renderBoard();
+    renderEditor(false);
   }
 
-  /* LED and editor switch both end up in onChange (see enableChanged) */
-  function setEnable(id, on) {
-    var e = effectOf(id);
-    if (e && S.params[e.enable]) {
-      var c = S.controls[e.enable];
-      if (c) c.update(on, on ? 1 : 0);                           /* the editor switch, when it is shown */
-      onChange(e.enable, on);
+  /* Put effect id at position k of the chain and switch it on.  The full order only changes if it has to:
+     the effect goes just before the effect that will follow it in the chain (or after the one before it). */
+  function addAt(id, k) {
+    var act = active().filter(function (x) { return x !== id; }), order = S.chain.order;
+    if (S.chain.editable && act.length) {
+      order = order.filter(function (x) { return x !== id; });
+      order.splice(k < act.length ? order.indexOf(act[k]) : order.indexOf(act[act.length - 1]) + 1, 0, id);
     }
-  }
-  function enableChanged(paramId, on) {                          /* optimistic update of the strip */
-    S.chain.effects.forEach(function (e) { if (e.enable === paramId) e.on = !!on; });
-    updateTiles();
+    function on() { if (!effectOf(id).on) setEnable(id, true); }
+    S.sel = id;
+    if (order.join(",") === S.chain.order.join(",")) return on();
+    moveTo(order).then(function (ok) { if (ok) on(); });
   }
 
   function tileKey(ev, id) {
-    var k = ev.key;
+    var k = ev.key, act = active(), i = act.indexOf(id);
+    if (k === "Delete" || k === "Backspace") {
+      ev.preventDefault();
+      var next = act[i + 1] || act[i - 1];
+      setEnable(id, false);
+      if (next) document.querySelector('#chain [data-fx="' + next + '"]').focus();
+      return;
+    }
     if (k !== "ArrowLeft" && k !== "ArrowRight") return;
-    var order = S.chain.order, i = order.indexOf(id), d = k === "ArrowLeft" ? -1 : 1;
+    var d = k === "ArrowLeft" ? -1 : 1;
     if (ev.altKey) {
       ev.preventDefault();                                       /* Alt+arrow is "back" in browsers */
-      var j = i + d;
-      if (!S.chain.editable || j < 0 || j >= order.length) return;
-      var next = order.slice();
-      next.splice(i, 1);
-      next.splice(j, 0, id);
-      moveTo(next);
+      if (S.chain.editable && i + d >= 0 && i + d < act.length) addAt(id, i + d);
     } else if (!ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
       ev.preventDefault();
-      var to = order[i + d];
+      var to = act[i + d];
       if (!to) return;
       select(to);
-      document.querySelector('#chain .tile-btn[data-fx="' + to + '"]').focus();
+      document.querySelector('#chain [data-fx="' + to + '"]').focus();
     }
   }
 
-  /* New order: shown at once, POSTed at once.  On an error the strip snaps back to the real order. */
+  /* New full order: shown at once, POSTed at once; resolves true when the FPGA took it.  On an error the
+     chain snaps back to the real order. */
   function moveTo(order) {
-    if (order.join(",") === S.chain.order.join(",")) return;
+    if (order.join(",") === S.chain.order.join(",")) return Promise.resolve(true);
     var byId = {};
     S.chain.effects.forEach(function (e) { byId[e.id] = e; });
     S.chain.order = order;
     S.chain.effects = order.map(function (id) { return byId[id]; });
     S.chainBusy++;
-    renderStrip();
+    renderBoard();
     renderEditor(false);
-    api("POST", "/api/chain", {order: order}).then(function (r) {
+    return api("POST", "/api/chain", {order: order}).then(function (r) {
       markDirty();
       if (--S.chainBusy === 0) renderChain(r);
+      return true;
     }).catch(function (e) {
       S.chainBusy--;
       toast(e.message, true);
       if (!S.chainBusy) refresh(true);
+      return false;
     });
   }
 
-  function enableDrag(t) {
-    var id = t.getAttribute("data-id");
-    function clear() { t.classList.remove("ins-before", "ins-after"); }
+  /* ---------- drag and drop: list -> chain (switch on there), chain -> chain (move), chain -> list (off) ---------- */
+  function dragSource(el, id, from) {
+    el.addEventListener("dragstart", function (ev) {
+      S.drag = {id: id, from: from};
+      el.classList.add("drag");
+      document.body.classList.add("dragging");
+      ev.dataTransfer.setData("text/plain", id);
+      ev.dataTransfer.effectAllowed = "move";
+    });
+    el.addEventListener("dragend", function () { el.classList.remove("drag"); endDrag(); });
+  }
+  function endDrag() {                                           /* also after a drop: the source may be gone by then */
+    S.drag = null;
+    document.body.classList.remove("dragging");
+    Array.prototype.forEach.call(document.querySelectorAll(".ins-before, .ins-after, .drop-ok"), function (x) {
+      x.classList.remove("ins-before", "ins-after", "drop-ok");
+    });
+  }
+  function canDropInChain() { return S.drag && (S.drag.from === "lib" || S.chain.editable); }
+  function dropOnTile(t, id) {
     function after(ev) {                                         /* right half of the tile = insert after it */
       var r = t.getBoundingClientRect();
       return ev.clientX >= r.left + r.width / 2;
     }
-    t.addEventListener("dragstart", function (ev) {
-      S.dragId = id;
-      t.classList.add("drag");
-      ev.dataTransfer.setData("text/plain", id);
-      ev.dataTransfer.effectAllowed = "move";
-    });
-    t.addEventListener("dragend", function () {
-      S.dragId = null;
-      t.classList.remove("drag");
-      Array.prototype.forEach.call(document.querySelectorAll("#chain .tile"), function (x) { x.classList.remove("ins-before", "ins-after"); });
-    });
     t.addEventListener("dragover", function (ev) {
-      if (!S.dragId) return;
+      if (!canDropInChain() || S.drag.id === id) return;
       ev.preventDefault();
+      ev.stopPropagation();
       ev.dataTransfer.dropEffect = "move";
       var a = after(ev);
       t.classList.toggle("ins-after", a);
       t.classList.toggle("ins-before", !a);
     });
-    t.addEventListener("dragleave", clear);
+    t.addEventListener("dragleave", function () { t.classList.remove("ins-before", "ins-after"); });
     t.addEventListener("drop", function (ev) {
+      var d = S.drag;
       ev.preventDefault();
-      clear();
-      var from = S.dragId;
-      S.dragId = null;
-      if (!from || from === id) return;
-      var order = S.chain.order.filter(function (x) { return x !== from; });
-      order.splice(order.indexOf(id) + (after(ev) ? 1 : 0), 0, from);
-      moveTo(order);
-      var b = document.querySelector('#chain .tile-btn[data-fx="' + from + '"]');
-      if (b) b.focus();
+      ev.stopPropagation();
+      endDrag();
+      if (!d || d.id === id) return;
+      var act = active().filter(function (x) { return x !== d.id; });
+      addAt(d.id, act.indexOf(id) + (after(ev) ? 1 : 0));
+    });
+  }
+  function initDropZones() {
+    var strip = document.getElementById("chain"), lib = document.getElementById("fxlib");
+    strip.addEventListener("dragover", function (ev) {           /* on the strip, not on a tile: end of the chain */
+      if (!canDropInChain()) return;
+      ev.preventDefault();
+      strip.classList.add("drop-ok");
+    });
+    strip.addEventListener("dragleave", function (ev) { if (!strip.contains(ev.relatedTarget)) strip.classList.remove("drop-ok"); });
+    strip.addEventListener("drop", function (ev) {
+      var d = S.drag;
+      ev.preventDefault();
+      endDrag();
+      if (d) addAt(d.id, active().filter(function (x) { return x !== d.id; }).length);
+    });
+    lib.addEventListener("dragover", function (ev) {
+      if (!S.drag || S.drag.from !== "chain") return;
+      ev.preventDefault();
+      lib.classList.add("drop-ok");
+    });
+    lib.addEventListener("dragleave", function (ev) { if (!lib.contains(ev.relatedTarget)) lib.classList.remove("drop-ok"); });
+    lib.addEventListener("drop", function (ev) {
+      var d = S.drag;
+      ev.preventDefault();
+      endDrag();
+      if (d && d.from === "chain") setEnable(d.id, false);
     });
   }
 
-  /* The editor is rebuilt only when another effect is selected; the header text is patched. */
+  /* The editor is rebuilt only when another effect is selected; the header is patched. */
   function renderEditor(force) {
     var box = document.getElementById("editor"), e = S.sel && effectOf(S.sel);
     if (!e) { GME.clear(box); S.editorSel = null; return; }
-    var slot = "slot " + (S.chain.order.indexOf(e.id) + 1) + " of " + S.chain.order.length;
-    if (S.editorSel === S.sel && !force) { S.slotEl.textContent = slot; return; }
+    var act = active(), pos = act.indexOf(e.id);
+    var where = pos >= 0 ? "slot " + (pos + 1) + " of " + act.length : "not in the chain (off)";
+    var inout = e.on ? "Take out of the chain" : "Add to the chain";
+    if (S.editorSel === S.sel && !force) {
+      S.slotEl.textContent = where;
+      S.inoutEl.textContent = inout;
+      return;
+    }
     S.editorSel = S.sel;
     GME.clear(box);
     (S.editorIds || []).forEach(function (id) { delete S.controls[id]; });
     S.editorIds = [];
     var enable = S.params[e.enable];
-    S.slotEl = h("span", {class: "ed-slot"}, slot);
-    var head = h("div", {class: "ed-head"}, h("h2", {class: "ed-name"}, e.name), S.slotEl);
+    S.slotEl = h("span", {class: "ed-slot"}, where);
+    S.inoutEl = h("button", {class: "btn", disabled: !(enable && enable.available), onclick: function () {
+      var x = effectOf(S.sel);
+      if (x.on) setEnable(x.id, false); else addAt(x.id, active().length);
+    }}, inout);
+    var head = h("div", {class: "ed-head"}, icon(e), h("h2", {class: "ed-name"}, e.name), S.slotEl, S.inoutEl);
     var body = h("div", {class: "ed-body"});
-    if (enable && enable.available) {
-      var sw = makeControl(enable);
-      sw.el.className = "ctl switch";
-      sw.el.title = "Switch " + e.name + " on or off";
-      head.appendChild(sw.el);
-      S.editorIds.push(enable.id);
-    }
     if (e.id === "dyn") {                                        /* special: live gain-reduction meter (DYN_GR) */
       body.appendChild(h("div", {class: "grmeter wide", title: "How much the dynamics stage turns the signal down (compressor and gate)"},
         h("label", {}, "Gain reduction"),
@@ -294,7 +368,7 @@
         S.editorIds.push(p.id);
       });
     }
-    box.appendChild(h("div", {class: "card", "data-id": e.id}, head, body));
+    box.appendChild(h("div", {class: "card" + kind(e), "data-ed": e.id}, head, body));
     S.editorIds.forEach(function (id) {                          /* the new controls start from the last state */
       if (S.state && id in S.state.values) S.controls[id].update(S.state.values[id], S.state.raw[id]);
     });
@@ -558,6 +632,7 @@
       info.params.forEach(function (p) { S.params[p.id] = p; });
       info.effects.forEach(function (e) { S.enableOf[e.enable] = e.id; });
       document.getElementById("order-default").addEventListener("click", function () { moveTo(defaultOrder()); });
+      initDropZones();
       if (!S.params.mute || !S.params.mute.available) document.getElementById("mute").hidden = true;
       renderSettings();
       return Promise.all([loadPresets(), refresh(true)]);

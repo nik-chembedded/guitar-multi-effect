@@ -67,16 +67,21 @@ Errors are JSON `{error: text}` with HTTP 4xx. Writes are serialised by one lock
 
 * **Top bar:** connection state, FPGA version, codec / PLL status, input and output
   meters, mute button.
-* **Signal chain strip** (revised 2026-10-27 for step E): one row `IN → pedals → OUT` in the order
-  reported by `/api/chain` (default Dynamics → Overdrive → Distortion → Cabinet → EQ →
-  Chorus/Flanger/Vibrato → Tremolo → Echo → Reverb). Each pedal tile shows its short name (`short` in
-  `params.json` effects), its slot number and an LED that switches the effect on or off. Off effects keep
-  their place, dimmed. **Reorder** (when `editable`, VERSION ≥ 0x0209): drag a tile (left / right half of
-  the target = before / after), or Alt+←/→ on the focused tile; plain ←/→ moves the selection. Each move is
-  POSTed at once (the FPGA applies it with its ≈ 5 ms fade, no staged Apply); on an error the strip snaps
-  back. "Default order" restores `chain_default`. The order is part of presets.
-* **Editor** below the strip: the controls of the selected pedal only (sliders with display units; selects
-  for types, waveforms), its slot and on/off switch. Specials: Dynamics gain-reduction meter (DYN_GR),
+* **Effects list + signal chain** (revised 2026-10-28 for step E): **in the chain = on.** The FPGA always
+  runs all effects in the `/api/chain` order and bypasses the ones that are off, so the chain row
+  `IN → pedals → OUT` shows only the effects that are on, in their order; the list on the left (above it
+  below 1250 px) holds the others. Each effect has an icon (`icon` in `params.json` effects, drawn in
+  `www/icons.js`), a colour by kind (`kind`: drive / tone / mod / time) and a short name (`short`).
+  Drag from the list into the chain (left / right half of a pedal = before / after it, empty strip = end)
+  or click `+` (end): the effect goes there and is switched on. Drag back to the list, `×`, Delete, or the
+  editor button: switched off, its place in the full order is left alone (no fade). **Reorder** (when
+  `editable`, VERSION ≥ 0x0209): drag inside the chain or Alt+←/→; plain ←/→ moves the selection. The full
+  order only changes when it has to (the effect goes just before its new neighbour); each change is POSTed
+  at once (the FPGA applies it with its ≈ 5 ms fade, no staged Apply), then the effect is switched on; on an
+  error the chain snaps back. "Default order" puts the chain in `chain_default` order. Not editable: an added
+  effect goes to its fixed place. The order is part of presets.
+* **Editor** below the chain: the controls of the selected effect (in the chain or the list; sliders; selects
+  for types, waveforms), its slot and an add / take-out button. Specials: Dynamics gain-reduction meter (DYN_GR),
   cabinet slots (the 10 slots by name, load progress, active bank); the EQ gains are model-level parameters
   (the FPGA takes coefficients, see `board/README.md`). The selection is remembered in the browser.
 * **Preset bar:** one row: select (selecting loads), `*` when anything was changed since the last load /
