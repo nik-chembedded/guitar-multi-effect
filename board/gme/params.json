@@ -57,7 +57,11 @@
   {"reg": 43, "name": "eq_apply", "rw": "W", "bits": "-", "min_version": 519, "desc": "any write applies the loaded EQ coefficient set", "action": "eq"},
   {"reg": 44, "name": "dyn_gr", "rw": "R", "bits": "[15:0]", "min_version": 519, "desc": "dynamics gain reduction, unsigned Q8 log2 units (read-only meter)", "action": "meter"},
   {"reg": 45, "name": "od_level", "rw": "R/W", "bits": "[15:0]", "min_version": 520, "desc": "overdrive output level, signed Q8 log2 units (0 = unity)"},
-  {"reg": 46, "name": "dist_level", "rw": "R/W", "bits": "[15:0]", "min_version": 520, "desc": "distortion output level, signed Q8 log2 units (0 = unity)"}
+  {"reg": 46, "name": "dist_level", "rw": "R/W", "bits": "[15:0]", "min_version": 520, "desc": "distortion output level, signed Q8 log2 units (0 = unity)"},
+  {"reg": 48, "name": "chain_0", "rw": "R/W", "bits": "[15:0]", "min_version": 521, "desc": "effect order shadow, slots 0..3: one effect id per nibble, slot 0 in bits 3:0 (ids = enable bits of register 0)", "action": "chain"},
+  {"reg": 49, "name": "chain_1", "rw": "R/W", "bits": "[15:0]", "min_version": 521, "desc": "effect order shadow, slots 4..7", "action": "chain"},
+  {"reg": 50, "name": "chain_2", "rw": "R/W", "bits": "[3:0]", "min_version": 521, "desc": "effect order shadow, slot 8", "action": "chain"},
+  {"reg": 51, "name": "chain_apply", "rw": "R/W", "bits": "[1:0]", "min_version": 521, "desc": "any write applies the shadow order (rejected unless a permutation of 0..8) with a ~5 ms output fade; read: bit0 fade running, bit1 last list rejected", "action": "chain"}
  ],
  "params": [
   {"id": "dyn_on", "name": "Dynamics on", "group": "dyn", "reg": 0, "lsb": 7, "width": 1, "type": "bool", "min": 0, "max": 1, "default": 0, "unit": "", "mul": 1, "div": 1, "decimals": 0, "help": "Enable Dynamics (bypassed when off)", "min_version": 519, "in_preset": false},

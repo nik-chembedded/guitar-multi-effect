@@ -119,6 +119,22 @@ def main(argv=None):
         return " > ".join(ch["order"]) + (" (editable)" if ch["editable"] else "")
     check("GET /api/chain", chain)
 
+    def reorder():                                  # step E: a reversed order through the API, read back, restored
+        ch = box["chain"]
+        if not ch["editable"]:
+            return "skipped (order is fixed in this image)"
+        old = list(ch["order"])
+        try:
+            call(base, "POST", "/api/chain", {"order": old[::-1]})
+            now = call(base, "GET", "/api/chain")["order"]
+            need(now == old[::-1], "wrote %s, read back %s" % (",".join(old[::-1]), ",".join(now)))
+        finally:
+            call(base, "POST", "/api/chain", {"order": old})
+        back = call(base, "GET", "/api/chain")["order"]
+        need(back == old, "order not restored (%s)" % ",".join(back))
+        return "reversed, read back, restored"
+    check("POST /api/chain (reverse and restore)", reorder)
+
     def levels():
         lv = call(base, "GET", "/api/levels")
         need(0 <= lv["in"] <= 65535 and 0 <= lv["out"] <= 65535, "level out of range")

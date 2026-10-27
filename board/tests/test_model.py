@@ -81,9 +81,12 @@ def test_mock_old_image_has_no_cab_logic():
 
 
 def test_mock_unknown_addresses():
-    d = gd.Mock()
+    d = gd.Mock(version=0x0208)
     d.write(0x30, 5)
     assert d.read(0x30) == 0
+    d = gd.Mock()
+    d.write(0x34, 5)
+    assert d.read(0x34) == 0
     d.write(0x2F, 5)
     assert d.read(0x2F) == 5
     with pytest.raises(gd.DeviceError):

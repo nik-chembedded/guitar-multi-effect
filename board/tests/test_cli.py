@@ -121,7 +121,7 @@ def test_mock_flag_and_wrapper(tmp_path):
         r = subprocess.run([sys.executable, script, "--mock", "--mock-state", str(tmp_path / "st.json"), "--data-dir", str(tmp_path), "status"],
                            capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
-        assert r.stdout.startswith("version 0x0208, status 0x0005")
+        assert r.stdout.startswith("version 0x0209, status 0x0005")
         r = subprocess.run([sys.executable, script, "--mock", "--mock-state", str(tmp_path / "st.json"), "--data-dir", str(tmp_path), "selftest"],
                            capture_output=True, text=True)
         assert "selftest OK" in r.stdout
@@ -156,7 +156,7 @@ def test_mock_state_file_semantics(tmp_path):
     assert a.read(6) == 77 and a.read(5) == 1234     # a sees b's write, keeps its own
     assert gd.Mock(state_file=f).read(5) == 1234     # a new process starts from the file
     a.write(0x10, 9)
-    assert a.read(0x10) == 0x0208                    # read-only registers are not taken from the file
+    assert a.read(0x10) == 0x0209                    # read-only registers are not taken from the file
     open(f, "w").write("garbage")
     assert a.read(5) == 1234                         # a broken file is ignored
 

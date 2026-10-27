@@ -142,7 +142,7 @@
     var def = defaultOrder().filter(function (id) { return act.indexOf(id) >= 0; });
     document.getElementById("order-default").disabled = !ch.editable || def.join(",") === act.join(",");
     document.getElementById("orderhint").textContent = (ch.editable
-      ? "Drag an effect from the list into the chain, or back out to remove it. In the chain: the LED switches it on / off, drag or Alt+←/→ moves it, Delete takes it out. Changes apply at once (short fade)."
+      ? "Drag an effect from the list into the chain, or back out to remove it. In the chain: the LED switches it on / off, drag or Alt+←/→ moves it, Delete takes it out. Changes apply at once (a short fade, ~5 ms, when the order changes)."
       : "Fixed order in this FPGA (VERSION " + S.info.fpga_version_hex + "): an effect you add goes to its fixed place. The LED switches an effect on / off.");
   }
 

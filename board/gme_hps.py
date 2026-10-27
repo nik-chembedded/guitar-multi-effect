@@ -33,7 +33,9 @@ register value, as in the old command line):
     python gme_hps.py get   echo_time trem_rate  (no argument: all parameters)
     python gme_hps.py params                     (the parameter table)
     python gme_hps.py cab   list | N | on | off | status   (cabinet simulator, FPGA VERSION >= 0x0205)
-    python gme_hps.py chain                      (effect order)
+    python gme_hps.py chain                      (effect order, read from the FPGA)
+    python gme_hps.py chain dyn od dist cab eq mod trem echo reverb   (set the order, VERSION >= 0x0209)
+    python gme_hps.py chain reset                (factory order)
     python gme_hps.py preset list | save NAME | delete NAME
 
 Dynamics (VERSION >= 0x0207, enable bit DYN): dyn=none|gate|comp|gate+comp, gate_db / comp_db = thresholds
@@ -278,7 +280,7 @@ def run(argv, dev=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--no-check", action="store_true", help="skip the VERSION check")
     ap.add_argument("--mock", action="store_true", help="use an in-memory register file instead of /dev/mem")
-    ap.add_argument("--mock-version", type=num, default=0x0208, help="VERSION of the mock (default 0x0208)")
+    ap.add_argument("--mock-version", type=num, default=0x0209, help="VERSION of the mock (default 0x0209)")
     ap.add_argument("--mock-state", default=None, metavar="FILE",
                     help="with --mock: keep the mock registers in this JSON file, shared between calls "
                          "(default ~/.gme_mock_state.json)")
@@ -307,6 +309,24 @@ def run(argv, dev=None):
         return dispatch(m, a)
     except (gm.ParamError, gm.CabinetError, gm.NotEditable, gd.DeviceError, StoreError) as e:
         raise SystemExit(str(e))
+
+
+def cmd_chain(m, args):
+    if args:
+        if len(args) == 1 and args[0].lower() == "reset":
+            order = [i for i in m.table.chain_default if m.version >= m.table.fx_by_id[i]["min_version"]]
+        else:
+            order = []
+            for x in args:
+                fid = m.table.legacy_effect_names.get(x.upper(), x.lower())
+                if fid not in m.table.fx_by_id:
+                    raise SystemExit("unknown effect '%s' (%s)" % (x, ", ".join(e["id"] for e in m.table.effects)))
+                order.append(fid)
+        m.set_chain(order)
+    ch = m.chain()
+    for i, e in enumerate(ch["effects"]):
+        print("%d. %-28s %s" % (i + 1, e["name"], "on" if e["on"] else "off"))
+    print("order %s" % ("editable" if ch["editable"] else "fixed (FPGA VERSION %04X)" % m.version))
 
 
 def dispatch(m, a):
@@ -344,10 +364,7 @@ def dispatch(m, a):
     elif a.cmd == "params":
         show_params(m)
     elif a.cmd == "chain":
-        ch = m.chain()
-        for i, e in enumerate(ch["effects"]):
-            print("%d. %-28s %s" % (i + 1, e["name"], "on" if e["on"] else "off"))
-        print("order %s" % ("editable" if ch["editable"] else "fixed (FPGA VERSION %04X)" % m.version))
+        cmd_chain(m, a.args)
     elif a.cmd == "cab":
         cmd_cab(m, a.args)
     elif a.cmd == "eq":

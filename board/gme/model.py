@@ -19,7 +19,7 @@ from . import device
 from .device import (DeviceError, WrongImage, REG_VERSION, REG_STATUS, REG_LEVEL_IN, REG_LEVEL_OUT,
                      REG_CONTROL, REG_CODEC, REG_CAB_CTRL, REG_CAB_ADDR, REG_CAB_DATA_LO,
                      REG_CAB_DATA_HI, REG_EQ_ADDR, REG_EQ_DATA_LO, REG_EQ_DATA_HI, REG_EQ_APPLY,
-                     REG_DYN_GR, CAB_VERSION, DYN_VERSION, Q8_PER_DB)
+                     REG_DYN_GR, REG_CHAIN0, REG_CHAIN2, REG_CHAIN_APPLY, CAB_VERSION, DYN_VERSION, Q8_PER_DB)
 
 try:
     string_types = (basestring,)        # noqa: F821  (Python 2)
@@ -29,9 +29,9 @@ except NameError:
 HERE = os.path.dirname(os.path.abspath(__file__))
 TABLE_PATH = os.path.join(HERE, "params.json")
 
-# FPGA VERSION from which the effect chain order can be changed (step E, routing).
-# None = no image supports it yet, the order is the fixed hardware order.
-ROUTING_VERSION = None
+# FPGA VERSION from which the effect chain order can be changed (step E, routing: CHAIN_0..2 + CHAIN_APPLY).
+# None = no image supports it, the order is the fixed hardware order.
+ROUTING_VERSION = device.ROUTING_VERSION
 
 CAB_TAPS = 2048
 CAB_COEF_BITS = 18
@@ -311,7 +311,7 @@ def load_table():
     return _table
 
 
-def open_device(mock=False, mock_version=0x0208, check=True, state_file=None):
+def open_device(mock=False, mock_version=0x0209, check=True, state_file=None):
     """The DevMem backend on the board, or the Mock; refuses a foreign FPGA image."""
     dev = device.Mock(version=mock_version, state_file=state_file) if mock else device.DevMem()
     if check:
@@ -710,10 +710,14 @@ class Model(object):
             word = self.dev.read(0)
             avail = [e["id"] for e in self.table.effects if self.version >= e["min_version"]]
             order = None
-            if self.chain_editable() and self.store is not None:
-                saved = self.store.settings().get("chain")
-                if saved and sorted(saved) == sorted(avail):
-                    order = list(saved)
+            if self.chain_editable():
+                hw = self._chain_decode(self.dev.read(r) for r in range(REG_CHAIN0, REG_CHAIN2 + 1))
+                if hw is not None and sorted(hw) == sorted(avail):          # the hardware is the truth
+                    order = hw
+                elif self.store is not None:
+                    saved = self.store.settings().get("chain")
+                    if saved and sorted(saved) == sorted(avail):
+                        order = list(saved)
             if order is None:
                 order = [i for i in self.table.chain_default if i in avail]
             # members: the effects the user put into the chain (on or bypassed); one that is on always is one
@@ -750,10 +754,47 @@ class Model(object):
             avail = [e["id"] for e in self.table.effects if self.version >= e["min_version"]]
             if not isinstance(order, list) or sorted(order) != sorted(avail):
                 raise ParamError("order must list every effect exactly once: %s" % ", ".join(avail))
+            words = self._chain_encode(order)
+            for i, w in enumerate(words):
+                self.dev.write(REG_CHAIN0 + i, w)
+            self.dev.write(REG_CHAIN_APPLY, 1)          # applies with a ~5 ms output fade; a new apply during it is fine
+            if self.dev.read(REG_CHAIN_APPLY) & 2:
+                raise ParamError("the FPGA rejected the effect order (not a permutation of the effect ids)")
             if self.store is not None:
                 self.store.update_settings(chain=list(order))
-            # the routing registers of step E are written here once they exist
             return self.chain()
+
+    def _chain_encode(self, order):
+        """Effect ids (slot order) -> the three shadow words, one enable-bit number per nibble."""
+        nib = [self.table.fx_by_id[fid]["bit"] for fid in order]
+        nib += [0] * (12 - len(nib))
+        return [sum(nib[4 * w + k] << (4 * k) for k in range(4)) for w in range(3)]
+
+    def _chain_decode(self, words):
+        """Shadow words -> list of effect ids, or None when they are not a permutation of the effect bits."""
+        words = list(words)
+        bits = [(words[i // 4] >> (4 * (i % 4))) & 0xF for i in range(9)]
+        by_bit = dict((e["bit"], e["id"]) for e in self.table.effects)
+        if sorted(bits) != sorted(by_bit) or words[2] > 0xF:
+            return None
+        return [by_bit[b] for b in bits]
+
+    def chain_resync(self):
+        """Write the stored effect order to the FPGA (a freshly programmed FPGA starts with the default
+        order).  True when something was written; nothing when the image cannot reorder, no order is
+        stored, or the FPGA already has it."""
+        if not self.chain_editable() or self.store is None:
+            return False
+        saved = self.store.settings().get("chain")
+        avail = [e["id"] for e in self.table.effects if self.version >= e["min_version"]]
+        if not saved or sorted(saved) != sorted(avail):
+            return False
+        with self.lock:
+            hw = self._chain_decode(self.dev.read(r) for r in range(REG_CHAIN0, REG_CHAIN2 + 1))
+            if hw == list(saved):
+                return False
+            self.set_chain(list(saved))
+        return True
 
     # -------------------------------------------------------------- cabinets
     def cab_available(self):

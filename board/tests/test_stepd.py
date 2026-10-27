@@ -98,7 +98,7 @@ def test_mock_old_image_has_no_eq_or_dyn_logic():
 
 def test_mock_default_version_and_cab_pointer_readback():
     d = gd.Mock()
-    assert d.read(0x10) == 0x0208
+    assert d.read(0x10) == 0x0209
     d.write(0x1C, 5)
     d.write(0x1D, 1)
     d.write(0x1E, 0)

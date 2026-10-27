@@ -175,7 +175,9 @@ def test_table_covers_register_map():
         assert table_regs[reg]["rw"] == rw, (reg, rw, table_regs[reg]["rw"])
     actions = dict((r["reg"], r["action"]) for r in T.registers if "action" in r)
     assert actions == {0x15: "codec", 0x1C: "cab", 0x1D: "cab", 0x1E: "cab", 0x28: "eq", 0x29: "eq", 0x2A: "eq",
-                       0x2B: "eq", 0x2C: "meter"}
+                       0x2B: "eq", 0x2C: "meter",
+                       0x30: "chain", 0x31: "chain", 0x32: "chain", 0x33: "chain"}
+    assert set(r["min_version"] for r in T.registers if 0x30 <= r["reg"] <= 0x33) == {0x0209}
     # every bit of the effects register is a parameter
     assert set(p.lsb for p in T.params if p.reg == 0) == set(range(9))
     assert [r["min_version"] for r in T.registers if r["reg"] in (0x1F, 0x20)] == [0x0206, 0x0206]

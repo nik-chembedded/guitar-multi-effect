@@ -60,14 +60,14 @@ def test_init_start_status_stop(initenv):
     r = init(d, env, "start")
     assert r.returncode == 0, r.stderr
     assert "started" in r.stdout
-    assert get(port, "/api/info")["fpga_version"] == 0x0208
+    assert get(port, "/api/info")["fpga_version"] == 0x0209
     assert init(d, env, "status").returncode == 0
     assert "already running" in init(d, env, "start").stdout
     pid = int(open(str(tmp / "pid")).read())
     r = init(d, env, "restart")
     assert r.returncode == 0
     assert int(open(str(tmp / "pid")).read()) != pid
-    assert get(port, "/api/state")["status"]["version"] == 0x0208
+    assert get(port, "/api/state")["status"]["version"] == 0x0209
     assert init(d, env, "stop").returncode == 0
     assert init(d, env, "status").returncode == 3
     assert not os.path.exists(str(tmp / "pid"))

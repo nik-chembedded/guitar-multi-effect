@@ -408,7 +408,7 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--mock", action="store_true", help="in-memory register file instead of /dev/mem")
-    ap.add_argument("--mock-version", type=lambda s: int(s, 0), default=0x0208)
+    ap.add_argument("--mock-version", type=lambda s: int(s, 0), default=0x0209)
     ap.add_argument("--mock-state", default=None, metavar="FILE",
                     help="with --mock: share the mock registers with other processes through this JSON file "
                          "(e.g. the same file as gme_hps.py --mock --mock-state)")
@@ -432,6 +432,11 @@ def main(argv=None):
             print("EQ coefficients restored from settings.json")
     except gm.ParamError as e:
         print("EQ: %s" % e)
+    try:
+        if model.chain_resync():                   # a new FPGA image starts with the default effect order
+            print("effect order restored from settings.json")
+    except (gm.ParamError, gm.NotEditable) as e:
+        print("effect order: %s" % e)
     try:
         r = model.cab_resync()                     # a new FPGA image plays the built-in default cabinet
         if r:

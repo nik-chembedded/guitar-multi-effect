@@ -39,10 +39,18 @@ REG_EQ_APPLY = 0x2B
 REG_DYN_GR = 0x2C
 REG_OD_LEVEL = 0x2D
 REG_DIST_LEVEL = 0x2E
+REG_CHAIN0 = 0x30               # effect order shadow: slots 0..3, one effect id per nibble (slot 0 in bits 3:0)
+REG_CHAIN1 = 0x31               # slots 4..7
+REG_CHAIN2 = 0x32               # slot 8 (bits 3:0)
+REG_CHAIN_APPLY = 0x33          # any write applies the shadow list; read: bit0 busy (fade), bit1 rejected
 
 CAB_VERSION = 0x0205
 DYN_VERSION = 0x0207            # dynamics, EQ, DYN_GR (step D5)
 LEVEL_VERSION = 0x0208          # output level of the overdrive / distortion (step D6)
+ROUTING_VERSION = 0x0209        # effect order selectable at run time (step E)
+CHAIN_RESET = (0x6307, 0x2148, 0x0005)      # dyn od dist cab eq mod trem echo reverb
+CHAIN_FADE_FRAMES = 255         # apply: 128 frames down, switch, 128 up (busy ~5.3 ms)
+FRAME_RATE = 48000.0
 Q8_PER_DB = 256 / 6.0206        # Q8 log2 units per dB
 COMP_RATIOS = (1.0, 2.0, 4.0, 8.0, float("inf"))
 
@@ -105,14 +113,19 @@ class Mock(object):
       the dynamics stage and the compressor are on, it is the compressor reduction
       (over the threshold, shift ratio, minus make-up) in unsigned Q8 log2 units;
       else 0.  The gate attenuation is not emulated.
-    * Other registers up to 0x2F read back what was written; above read 0.
+    * Routing (VERSION >= 0x0209): CHAIN_0..2 (0x30..0x32) are shadow registers that read back what was
+      written (reset 0x6307, 0x2148, 0x0005 = default order); a write to CHAIN_APPLY (0x33) checks the list:
+      a permutation of 0..8 becomes chain_active (counted in chain_applies) and CHAIN_APPLY reads busy
+      (bit0) for 255 frames (5.3 ms) of the clock; anything else is rejected (bit1 reads 1, nothing changes).
+      A new apply during the fade replaces the list (the newest wins).
+    * Other registers up to 0x2F (0x33 with routing) read back what was written; above read 0.
     * max_concurrent records the highest number of overlapping calls, so tests
       can verify that access is serialised; write_delay widens the window.
     """
 
     mock = True
 
-    def __init__(self, version=0x0208, clock=None, write_delay=0.0, nak=False, status=0x0005,
+    def __init__(self, version=0x0209, clock=None, write_delay=0.0, nak=False, status=0x0005,
                  state_file=None):
         self.version = version
         self.clock = clock or time.time
@@ -135,6 +148,12 @@ class Mock(object):
         self.eq_shadow = [0] * 16
         self.eq_active = [0] * 16
         self.eq_applies = 0
+        self.chain_active = self._nibbles(CHAIN_RESET)       # order in use (list of 9 effect ids)
+        self.chain_applies = 0
+        self.chain_rejected = False
+        self.chain_busy_until = None
+        if self._has_routing():
+            self.regs[REG_CHAIN0:REG_CHAIN2 + 1] = list(CHAIN_RESET)
         self.max_concurrent = 0
         self._active = 0
         self._guard = threading.Lock()
@@ -199,6 +218,20 @@ class Mock(object):
 
     def _has_dyn(self):
         return self.version >= DYN_VERSION
+
+    def _has_routing(self):
+        return self.version >= ROUTING_VERSION
+
+    def _last_reg(self):
+        return REG_CHAIN_APPLY if self._has_routing() else 0x2F
+
+    @staticmethod
+    def _nibbles(words):
+        """Three shadow words -> list of 9 effect ids (slot 0 first)."""
+        return [(words[i // 4] >> (4 * (i % 4))) & 0xF for i in range(9)]
+
+    def _chain_busy(self):
+        return self.chain_busy_until is not None and self.clock() < self.chain_busy_until
 
     def _dyn_gr(self):
         """Compressor gain reduction (Q8 log2 units) for the current input level."""
@@ -265,7 +298,9 @@ class Mock(object):
             if self.codec_dropped:
                 v |= 4
             return v
-        if reg > 0x2F:
+        if reg == REG_CHAIN_APPLY and self._has_routing():
+            return (1 if self._chain_busy() else 0) | (2 if self.chain_rejected else 0)
+        if reg > self._last_reg():
             return 0
         return self.regs[reg]
 
@@ -286,7 +321,7 @@ class Mock(object):
     def _write(self, reg, value):
         if reg < 0 or reg >= NWORDS:
             raise DeviceError("register %d outside the mapped span" % reg)
-        if reg in (REG_VERSION, REG_STATUS, REG_LEVEL_IN, REG_LEVEL_OUT) or reg > 0x2F:
+        if reg in (REG_VERSION, REG_STATUS, REG_LEVEL_IN, REG_LEVEL_OUT) or reg > self._last_reg():
             return
         if reg == REG_DYN_GR and self._has_dyn():
             return
@@ -295,6 +330,19 @@ class Mock(object):
             self.regs[reg] = value & 2
             if value & 1:
                 self.codec_busy_reads = 3
+            return
+        if self._has_routing() and REG_CHAIN0 <= reg <= REG_CHAIN_APPLY:
+            if reg == REG_CHAIN_APPLY:
+                ids = self._nibbles(self.regs[REG_CHAIN0:REG_CHAIN2 + 1])
+                if sorted(ids) == list(range(9)):
+                    self.chain_active = ids
+                    self.chain_rejected = False
+                    self.chain_applies += 1
+                    self.chain_busy_until = self.clock() + CHAIN_FADE_FRAMES / FRAME_RATE
+                else:
+                    self.chain_rejected = True
+            else:
+                self.regs[reg] = value & (0xF if reg == REG_CHAIN2 else 0xFFFF)
             return
         if reg == REG_CODEC:
             if self.codec_busy_reads > 0:
