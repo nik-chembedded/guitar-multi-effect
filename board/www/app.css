@@ -69,7 +69,7 @@ main { padding: 16px 20px 60px; max-width: 1700px; margin: 0 auto; }
 .strip.drop-ok { border-color: var(--accent); border-style: dashed; }
 .io { align-self: center; flex: none; padding: 0 4px; color: var(--dim); font-weight: 700; font-size: 13px; letter-spacing: .08em; }
 .conn { flex: 0 0 16px; align-self: center; height: 2px; background: var(--dim); position: relative; margin-right: 4px; }
-.conn.last { flex: 1 0 16px; }
+.conn.first, .conn.last { flex: 1 0 16px; }
 .conn::after { content: ""; position: absolute; right: -4px; top: -4px; border: 5px solid transparent; border-left: 7px solid var(--dim); border-right: 0; }
 .strip-empty { flex: 0 1 360px; align-self: center; margin-right: 4px; padding: 22px 12px; text-align: center; color: var(--dim);
   border: 1px dashed var(--line); border-radius: 8px; }

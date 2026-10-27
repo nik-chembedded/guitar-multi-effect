@@ -138,12 +138,12 @@
     var box = document.getElementById("chain");
     GME.clear(box);
     box.appendChild(h("span", {class: "io", title: "Guitar input"}, "IN"));
-    act.forEach(function (id, i) {
-      box.appendChild(h("span", {class: "conn", "aria-hidden": "true"}));
+    act.forEach(function (id, i) {                               /* first and last cable stretch: the pedals sit in the middle */
+      box.appendChild(h("span", {class: i ? "conn" : "conn first", "aria-hidden": "true"}));
       box.appendChild(tile(effectOf(id), i, act.length));
     });
     if (!act.length) {
-      box.appendChild(h("span", {class: "conn", "aria-hidden": "true"}));
+      box.appendChild(h("span", {class: "conn first", "aria-hidden": "true"}));
       box.appendChild(h("div", {class: "strip-empty"}, "Every effect is off: drag effects here from the list"));
     }
     box.appendChild(h("span", {class: "conn last", "aria-hidden": "true"}));
