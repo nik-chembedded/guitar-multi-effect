@@ -5,11 +5,13 @@
 (function () {
   var h = GME.h, api = GME.api, toast = GME.toast;
   var S = {info: null, params: {}, state: null, controls: {}, chainSig: "", chain: null, chainBusy: 0, sel: null,
-           editorSel: null, editorIds: [], enableOf: {}, dirty: false, presets: [], cabBusy: false, online: false};
+           editorSel: null, editorIds: [], sections: [], vals: {}, enableOf: {}, dirty: false, presets: [], cabBusy: false, online: false};
 
   /* ---------- controls bookkeeping ---------- */
   function onChange(id, value) {
     GME.sender.set(id, value);
+    S.vals[id] = value;
+    applyWhen();
     var p = S.params[id];
     if (p && p.group !== "system") markDirty();                  /* the loaded preset no longer matches */
     if (S.enableOf[id]) enableChanged(id, value);
@@ -48,8 +50,11 @@
     if (!S.chainBusy) renderChain(st.chain);                     /* not while a new order is on its way */
     Object.keys(st.values).forEach(function (id) {
       var c = S.controls[id];
-      if (c && !c.active && !GME.sender.has(id)) c.update(st.values[id], st.raw[id]);
+      if (GME.sender.has(id) || (c && c.active)) return;
+      S.vals[id] = st.values[id];
+      if (c) c.update(st.values[id], st.raw[id]);
     });
+    applyWhen();
     var mute = st.values.mute;                                   /* special: mute button */
     document.getElementById("mute").classList.toggle("on", !!mute);
     renderCab(st.cab);
@@ -363,17 +368,56 @@
     if (e.id === "cab") {                                        /* special: cabinet slots */
       body.appendChild(h("div", {id: "cabbody", class: "cabbody wide"}));
     } else {
-      paramsOf(e.id, e.enable).forEach(function (p) {
-        body.appendChild(makeControl(p).el);
-        S.editorIds.push(p.id);
-      });
+      layoutControls(body, paramsOf(e.id, e.enable));
     }
     box.appendChild(h("div", {class: "card" + kind(e), "data-ed": e.id}, head, body));
     S.editorIds.forEach(function (id) {                          /* the new controls start from the last state */
       if (S.state && id in S.state.values) S.controls[id].update(S.state.values[id], S.state.raw[id]);
     });
+    applyWhen();
     if (S.state) renderCab(S.state.cab);
   }
+
+  /* Controls without "section" first, then one framed section per "section" name (in table order).  A
+     "section_switch" bool goes into the section title and dims the section while it is off. */
+  function layoutControls(body, params) {
+    var secs = {};
+    S.sections = [];
+    params.forEach(function (p) {
+      var c = makeControl(p);
+      S.editorIds.push(p.id);
+      if (!p.section) return body.appendChild(c.el);
+      var s = secs[p.section];
+      if (!s) {
+        s = secs[p.section] = {head: h("div", {class: "sec-head"}, h("span", {class: "sec-title"}, p.section)),
+                               body: h("div", {class: "sec-body"}), sw: null};
+        s.el = h("div", {class: "sec"}, s.head, s.body);
+        body.appendChild(s.el);
+        S.sections.push(s);
+      }
+      if (p.section_switch && p.type === "bool") {
+        c.el.className = "ctl switch";
+        c.el.title = "Switch " + p.section.toLowerCase() + " on or off";
+        s.head.insertBefore(c.el, s.head.firstChild);
+        s.sw = p.id;
+      } else {
+        s.body.appendChild(c.el);
+      }
+    });
+  }
+
+  /* dims a section whose switch is off and a control whose "gui_when" does not hold (it stays usable) */
+  function applyWhen() {
+    (S.sections || []).forEach(function (s) { if (s.sw) s.el.classList.toggle("off", !S.vals[s.sw]); });
+    S.editorIds.forEach(function (id) {
+      var p = S.params[id], w = p.gui_when, c = S.controls[id];
+      if (!w || !c) return;
+      var ok = w["in"].indexOf(S.vals[w.param]) >= 0;
+      c.el.classList.toggle("inactive", !ok);
+      c.el.setAttribute("data-when", ok ? "" : "used only when " + title(S.params[w.param]) + " is " + w["in"].join(" / "));
+    });
+  }
+  function title(p) { return p ? (p.gui_label || p.name) : "?"; }
 
   /* ---------- cabinet (special) ---------- */
   function renderCab(cab) {

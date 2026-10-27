@@ -80,15 +80,25 @@ Errors are JSON `{error: text}` with HTTP 4xx. Writes are serialised by one lock
   at once (the FPGA applies it with its ≈ 5 ms fade, no staged Apply), then the effect is switched on; on an
   error the chain snaps back. "Default order" puts the chain in `chain_default` order. Not editable: an added
   effect goes to its fixed place. The order is part of presets.
-* **Editor** below the chain: the controls of the selected effect (in the chain or the list; sliders; selects
-  for types, waveforms), its slot and an add / take-out button. Specials: Dynamics gain-reduction meter (DYN_GR),
-  cabinet slots (the 10 slots by name, load progress, active bank); the EQ gains are model-level parameters
-  (the FPGA takes coefficients, see `board/README.md`). The selection is remembered in the browser.
+* **Editor** below the chain: the controls of the selected effect (in the chain or the list), its slot and an
+  add / take-out button. The selection is remembered in the browser. Controls (`www/controls.js`, all from the table):
+  * int / signed → **knob** (270°, coloured arc by kind, from the centre for ranges across 0). Turned with the
+    mouse around its centre, grabbed anywhere, no jump (Shift = ¼ turn rate); wheel, arrows, Page Up / Down,
+    Home / End; double-click = default; click the value to type one in the shown unit. `gui_taper: "log"`
+    spreads the low end (rates). `gui_commit: "release"` (EQ) sends once when let go.
+  * enum with ≤ 5 choices → **button row**; longer → select. bool → switch.
+  * `section`: controls are framed per section (Dynamics: Noise gate / Compressor; Chorus: LFO / Delay line;
+    Reverb: Room); a `section_switch` bool sits in the section title and dims the section while off.
+    `gui_label`: the short name inside a section. `gui_when: {param, in: [labels]}`: dimmed with a note
+    while it has no effect (Reverb size / damping only for Room = Custom, tremolo rate only in the free modes).
+    Dimmed controls stay usable.
+  * Specials: Dynamics gain-reduction meter (DYN_GR), cabinet slots (the 10 slots by name, load progress,
+    active bank); the EQ gains are model-level parameters (the FPGA takes coefficients, see `board/README.md`).
 * **Preset bar:** one row: select (selecting loads), `*` when anything was changed since the last load /
   save, Save (overwrites a user preset; Save as for a factory one), Save as, Delete.
 * **Settings:** codec headphone / line volume, input gain; network info.
 * **Expert page:** all registers raw (read / write) for debugging.
-* Moving a slider sends at most ~20 updates/s (throttled); the FPGA smooths the
+* Turning a knob sends at most ~20 updates/s (throttled); the FPGA smooths the
   values anyway, so there is no zipper noise.
 * Desktop layout (≥ 1280 px wide) first; it must stay usable down to ~1000 px.
 
