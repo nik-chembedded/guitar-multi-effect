@@ -55,9 +55,9 @@ start=$(date +%s)
 
 cd "$SIM_DIR/cocotb"
 if [ -n "$SELECT" ]; then
-  pytest -v -s -rA "${PAR[@]}" -k "$SELECT" > "$LOG" 2>&1
+  pytest -v -s -rA --durations=12 "${PAR[@]}" -k "$SELECT" > "$LOG" 2>&1
 else
-  pytest -v -s -rA "${PAR[@]}" > "$LOG" 2>&1
+  pytest -v -s -rA --durations=12 "${PAR[@]}" > "$LOG" 2>&1
 fi
 rc=$?
 
@@ -65,5 +65,6 @@ rc=$?
 grep -E "TESTS=[0-9]+ PASS|^(PASSED|FAILED) test_runner.py::\S+|waveform:|^ERROR " "$LOG" \
   | sed -E 's/^\s+//; s/\*\*//g'
 grep -E "^=+ .*(passed|failed|error).* =+$" "$LOG" | tail -1
+grep -E "^[0-9.]+s call " "$LOG" | head -12 | sed "s/^/slowest: /"
 echo "time: $(( $(date +%s) - start )) s  (exit $rc)"
 exit $rc

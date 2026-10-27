@@ -7,9 +7,27 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The suites are split over four parallel jobs (each on its own runner, tests in parallel inside
+  # the job with pytest-xdist, one GHDL simulation per core). One GHDL simulation of the longest
+  # test (test_system_level, real 1024-clock frames) takes ~25 min on one core, so every job
+  # keeps a wide margin below its timeout. Together the jobs select every test of test_runner.py
+  # exactly once (sim/cocotb/README.md, "CI").
   cocotb-ghdl:
+    name: cocotb-ghdl (${{ matrix.name }})
     runs-on: ubuntu-24.04
     timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: system
+            k: "test_system"
+          - name: chain
+            k: "test_fx_chain or test_trem or test_timing_invariance or test_cab_xfade or test_dyn_eq_xfade or test_xfade"
+          - name: reference-wav
+            k: "test_refv2 or test_wav"
+          - name: blocks
+            k: "test_dynamics or test_eq3 or test_reverbfv or test_cabfir or test_moddelay or test_lfo or test_fxlib or test_smooth or test_i2s or test_avmm or test_codec"
     steps:
       - uses: actions/checkout@v4
 
@@ -24,49 +42,22 @@ jobs:
           python-version: "3.12"
 
       - name: Install cocotb
-        run: pip install "cocotb~=2.0" numpy pytest
+        run: pip install "cocotb~=2.0" numpy pytest pytest-xdist
 
       - name: Check generated IP models are up to date
+        if: matrix.name == 'blocks'
         run: |
           python sim/models/gen_ip_models.py
           git diff --exit-code sim/models/ip
 
-      - name: Effect tests, 16- and 24-bit chain (cocotb + GHDL)
-        working-directory: sim/cocotb
-        run: pytest -v -k "test_fx_chain or test_fx_chain_24"
-
-      - name: Fixed-point library, smoothing, click-free on/off, generated LFO, tremolo
-        working-directory: sim/cocotb
-        run: pytest -v -k "test_fxlib or test_smooth or test_xfade or test_lfo or test_lfo_vs_v1 or test_trem or test_moddelay"
-
-      - name: Cabinet FIR (small configurations, 16/24 bit; full 2048 taps ~7 min) + cabinet stage with fades
-        working-directory: sim/cocotb
-        run: pytest -v -k "test_cabfir or test_cab_xfade"
-
-      - name: Freeverb reverb block (16/24 bit, one simulation per testcase)
-        working-directory: sim/cocotb
-        run: pytest -v -n auto -k test_reverbfv
-
-      - name: Dynamics (gate + compressor) and 3-band EQ blocks (one simulation per testcase), stage fades, timing invariance
-        working-directory: sim/cocotb
-        run: pytest -v -n auto -k "test_dynamics or test_eq3 or test_dyn_eq_xfade or test_timing_invariance"
-
-      - name: I2S core + v2 reference (36 presets, 24-bit chain, bit-exact)
-        working-directory: sim/cocotb
-        run: pytest -v -k "test_i2s or test_refv2"
-
-      - name: HPS control slave, I2C/codec and full system tests
-        working-directory: sim/cocotb
-        run: pytest -v -k "test_avmm or test_codec or test_system"
-
-      - name: WAV regression (0.25 s per preset)
+      - name: Tests (${{ matrix.name }})
         working-directory: sim/cocotb
         env:
           GME_WAV_SECONDS: "0.25"
-        run: pytest -v -k test_wav
+        run: pytest -v -n auto --dist load --durations=10 -k "${{ matrix.k }}"
 
       - name: Upload processed audio
-        if: always()
+        if: always() && matrix.name == 'reference-wav'
         uses: actions/upload-artifact@v4
         with:
           name: wav-outputs

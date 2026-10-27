@@ -7,6 +7,7 @@ the VHDL testbenches (one signed 16-bit integer per line, 48 kHz, mono).
   wavconv.py to-wav  samples.txt output.wav
   wavconv.py info    input.wav
   wavconv.py clicks  input.txt output.txt [--limit 0.05]   (gain discontinuities)
+  wavconv.py compare samples.txt other.wav                 (sample-exact comparison, exit 1 if different)
 
 to-txt mixes to mono, resamples to 48 kHz (linear interpolation) and scales the
 signal so its peak is --peak (default 16000 = -6 dBFS; 0 keeps the level).
@@ -113,6 +114,23 @@ def cmd_clicks(args):
         sys.exit(1)
 
 
+def cmd_compare(args):
+    """Sample-exact comparison of a sample text file with a 16-bit WAV (ModelSim vs GHDL output)."""
+    a = read_txt(args.input)
+    with wave.open(args.other, "rb") as w:
+        raw = w.readframes(w.getnframes())
+    b = array.array("h")
+    b.frombytes(raw)
+    if sys.byteorder == "big":
+        b.byteswap()
+    n = min(len(a), len(b))
+    bad = [i for i in range(n) if a[i] != b[i]]
+    print("%d vs %d samples, %d differ%s" % (len(a), len(b), len(bad) + abs(len(a) - len(b)),
+                                              (", first at %d (%d vs %d)" % (bad[0], a[bad[0]], b[bad[0]])) if bad else ""))
+    if bad or len(a) != len(b):
+        sys.exit(1)
+
+
 def cmd_info(args):
     with wave.open(args.input, "rb") as w:
         print("%s: %d ch, %d bit, %d Hz, %.2f s" % (args.input, w.getnchannels(), w.getsampwidth() * 8,
@@ -138,6 +156,10 @@ def main():
     c.add_argument("--min-level", type=int, default=3000, help="ignore quieter input samples")
     c.add_argument("--limit", type=float, default=0.05, help="max allowed 1-sample gain step")
     c.set_defaults(func=cmd_clicks)
+    k = sub.add_parser("compare", help="sample-exact comparison of a sample text file with a WAV")
+    k.add_argument("input", help="sample text file")
+    k.add_argument("other", help="16-bit WAV")
+    k.set_defaults(func=cmd_compare)
     i = sub.add_parser("info")
     i.add_argument("input")
     i.set_defaults(func=cmd_info)

@@ -20,9 +20,14 @@ through the chain's write port before the run (flat for the other presets).
 Step D6 (output level of the overdrive / distortion) added level_od_dist at the end of PRESETS and
 recorded only it (GME_REF_ONLY=level_od_dist); the 35 earlier presets stayed bit-exact (level 0 = unity).
 
-All presets run in one simulation from power-up, in a fixed order, with
-deterministic 24-bit stimuli (the state carried between presets, delay lines and
-LFO phases, is therefore the same in both modes). Registers change instantly
+The presets run in CHUNKS (CHUNKS below, one simulation each, from power-up, the test runner runs them
+in parallel): within a chunk they run in a fixed order with deterministic 24-bit stimuli, the state carried
+between presets (delay lines, LFO phases) is therefore the same in both modes. Stimulus seeds are
+200 + the preset's index in PRESETS, independent of the chunking. GME_REF_CHUNK=<n> runs chunk n.
+Cleanup after step D: the 36 references were re-recorded in this chunked form (previously one
+simulation of all presets; the unchunked check had been run first and all 36 matched bit-exact, so
+the new references record the same verified design; only the state carried into each chunk's
+first presets differs). Registers change instantly
 (XFADE off); the click-free switching and the smoothing have their own tests.
 
 test_golden24: overdrive and distortion bit-exact to golden.py with full 24-bit
@@ -32,6 +37,7 @@ import math
 import os
 import random
 import sys
+import time
 from pathlib import Path
 
 import cocotb
@@ -115,6 +121,22 @@ PRESETS = {
                            echo_repeat=80),
                       dict(od_level=q8(3), dist_level=q8(-9), od_drive=9000)),
 }
+# Simulation chunks of PRESETS (contiguous, in PRESETS order; the cost is roughly balanced). Moving a preset
+# between chunks changes its start state: re-record the references of the chunks concerned.
+CHUNKS = [
+    ["bypass", "overdrive", "dist_soft_255", "dist_soft_128"],
+    ["dist_medium_255", "dist_medium_128", "dist_hard_255", "dist_hard_128"],
+    ["trem_w0", "trem_w1", "trem_w2", "trem_w3"],
+    ["trem_w4", "trem_w5", "trem_w6", "trem_w7"],
+    ["trem_w2_d128", "trem_free", "chorus", "flanger"],
+    ["flanger_neg", "vibrato", "echo_a", "echo_b"],
+    ["echo_frac", "reverb_t0", "reverb_t1", "reverb_t2"],
+    ["reverb_t3", "combo_all", "combo_change", "dyn_gate"],
+    ["dyn_comp", "eq_3band", "combo_d5", "level_od_dist"],
+]
+assert [n for c in CHUNKS for n in c] == list(PRESETS), "CHUNKS must list every preset once, in PRESETS order"
+CHUNK = os.environ.get("GME_REF_CHUNK")                      # None: every chunk (tool use only)
+
 ZERO = {k: 0 for k in ("effects_enable", "od_drive", "od_gain", "trem_depth", "trem_wave", "trem_rate",
                        "echo_time", "echo_frac", "echo_level", "echo_repeat", "chorus_rate", "chorus_level",
                        "chorus_depth", "mod_base", "mod_fb", "mod_shape", "dist_mix", "dist_type",
@@ -143,7 +165,12 @@ async def test_presets(dut):
     assert not unknown, "GME_REF_ONLY names unknown presets: %s" % sorted(unknown)
     assert MODE == "record" or not ONLY, "GME_REF_ONLY needs GME_REF_MODE=record"
     failures = []
+    assert CHUNK is not None and 0 <= int(CHUNK) < len(CHUNKS), "GME_REF_CHUNK must be 0..%d" % (len(CHUNKS) - 1)
+    chunk = CHUNKS[int(CHUNK)]
     for i, (name, (regs, change)) in enumerate(PRESETS.items()):
+        if name not in chunk:
+            continue
+        t0 = time.time()
         await set_regs(fx, {"eq": (0, 0, 0), **ZERO, **regs})
         x = stimulus(200 + i)
         if change:                                   # the registers change before frame 3000
@@ -156,7 +183,7 @@ async def test_presets(dut):
         path = REF_DIR / (name + ".npy")
         if MODE == "record" and (not ONLY or name in ONLY):
             np.save(path, y)
-            dut._log.info("recorded %-14s peak %d", name, int(np.abs(y[y != NONE]).max()))
+            dut._log.info("recorded %-14s peak %d (%.0f s)", name, int(np.abs(y[y != NONE]).max()), time.time() - t0)
             continue
         ref = np.load(path)
         bad = np.nonzero(ref != y)[0]
@@ -165,11 +192,11 @@ async def test_presets(dut):
                             % (name, len(bad), bad[0], ref[bad[0]], y[bad[0]]))
             dut._log.error(failures[-1])
         else:
-            dut._log.info("%-14s bit-exact (%d frames)", name, len(y))
+            dut._log.info("%-14s bit-exact (%d frames, %.0f s)", name, len(y), time.time() - t0)
     assert not failures, "%d presets differ from the v2 reference" % len(failures)
     if ONLY:
-        dut._log.info("recorded %d presets, the other %d are bit-exact to the existing references",
-                      len(ONLY), len(PRESETS) - len(ONLY))
+        dut._log.info("chunk %s: recorded %d presets, the other %d are bit-exact to the existing references",
+                      CHUNK, len(ONLY & set(chunk)), len(chunk) - len(ONLY & set(chunk)))
 
 
 def rand24(n, seed):

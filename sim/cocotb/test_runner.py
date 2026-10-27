@@ -59,15 +59,35 @@ def run(toplevel, test_module, sources, testcase=None, parameters=None, extra_en
             print("waveform: %s  (%.1f MB) - open with gtkwave" % (w, w.stat().st_size / 1e6))
 
 
-def test_fx_chain():
-    run("fx_chain", "test_fx_chain", IP_MODELS + FX_RTL,
-        testcase=os.environ.get("TESTCASE"))
+# The effect tests of test_fx_chain.py in groups of roughly equal cost; every group is its own simulation
+# (from power-up) and runs in parallel, at 16 and at 24 bit. test_dyn_eq_fade needs XFADE: test_dyn_eq_xfade.
+FX_CHAIN_GROUPS = {
+    "level":      ["test_level"],
+    "reverb":     ["test_reverb"],
+    "tremolo":    ["test_tremolo"],
+    "dist":       ["test_distortion", "test_bypass", "test_overdrive"],
+    "dynamics":   ["test_dynamics_chain"],
+    "eq_mod":     ["test_eq_chain", "test_chorus", "test_echo", "test_echo_frac"],
+    "reverb_cab": ["test_reverb_chain_model", "test_cab"],
+}
 
 
-def test_fx_chain_24():
-    """The same 7 effect tests on the 24-bit chain (16-bit stimulus x 256)."""
-    run("fx_chain", "test_fx_chain", IP_MODELS + FX_RTL, testcase=os.environ.get("TESTCASE"),
-        parameters={"DW": 24}, extra_env={"GME_DW": "24"}, tag="_24")
+def test_fx_chain_groups_complete():
+    """Every cocotb test of test_fx_chain.py is in a group of FX_CHAIN_GROUPS (or run elsewhere)."""
+    import re
+    names = set(re.findall(r"^async def (test_\w+)\(dut\)", (HERE / "test_fx_chain.py").read_text(), re.M))
+    grouped = [t for g in FX_CHAIN_GROUPS.values() for t in g]
+    assert len(grouped) == len(set(grouped))
+    assert set(grouped) | {"test_dyn_eq_fade"} == names, sorted(names ^ (set(grouped) | {"test_dyn_eq_fade"}))
+
+
+@pytest.mark.parametrize("dw", [16, 24])
+@pytest.mark.parametrize("group", list(FX_CHAIN_GROUPS))
+def test_fx_chain(dw, group):
+    """The effect tests on the 16-bit (bit-exact to v1) and the 24-bit chain (16-bit stimulus x 256)."""
+    run("fx_chain", "test_fx_chain", IP_MODELS + FX_RTL, testcase=",".join(FX_CHAIN_GROUPS[group]),
+        parameters={"DW": dw} if dw != 16 else None, extra_env={"GME_DW": str(dw)} if dw != 16 else None,
+        tag="_%d_%s" % (dw, group))
 
 
 def test_cab_xfade():
@@ -125,11 +145,11 @@ def test_moddelay():
     run("mod_delay", "test_moddelay", srcs, parameters={"DW": 24}, extra_env={"GME_DW": "24"}, tag="_24")
 
 
-def test_trem():
+@pytest.mark.parametrize("dw", [16, 24])
+def test_trem(dw):
     """Tremolo on the generated LFO, bit-exact to the Python model (16 and 24 bit)."""
-    run("fx_chain", "test_trem", IP_MODELS + FX_RTL, tag="_trem")
-    run("fx_chain", "test_trem", IP_MODELS + FX_RTL, parameters={"DW": 24},
-        extra_env={"GME_DW": "24"}, tag="_trem24")
+    run("fx_chain", "test_trem", IP_MODELS + FX_RTL, parameters={"DW": dw} if dw != 16 else None,
+        extra_env={"GME_DW": str(dw)} if dw != 16 else None, tag="_trem%d" % dw)
 
 
 def test_fxlib():
@@ -241,33 +261,58 @@ SYS_RTL = (IP_MODELS + FX_RTL + CTRL_RTL +
                               "gme_core.vhd")])
 
 
-def test_system():
-    """gme_core end to end: codec init, control over the Avalon slave (HPS), I2S audio."""
-    run("gme_core", "test_system", SYS_RTL, testcase=os.environ.get("TESTCASE"),
-        parameters={"INIT_WAIT_CLKS": 2000})
+SYSTEM_TESTS = ["test_overdrive_via_hps", "test_mute_and_codec_write", "test_cabinet", "test_boot_and_bypass",
+                "test_reverb_regs"]
 
 
-def test_system_dyneq():
+def test_system_tests_complete():
+    """Every cocotb test of test_system.py has a runner entry."""
+    import re
+    names = set(re.findall(r"^async def (test_\w+)\(dut\)", (HERE / "test_system.py").read_text(), re.M))
+    assert names == set(SYSTEM_TESTS) | {"test_level_via_hps", "test_dynamics_eq"}, sorted(names)
+
+
+@pytest.mark.parametrize("testcase", SYSTEM_TESTS)
+def test_system(testcase):
+    """gme_core end to end: codec init, control over the Avalon slave (HPS), I2S audio. Every testcase boots
+    the design itself and is its own simulation (they run in parallel). test_level_via_hps and
+    test_dynamics_eq (16-tap cabinet) have their own entries below."""
+    run("gme_core", "test_system", SYS_RTL, testcase=testcase,
+        parameters={"INIT_WAIT_CLKS": 2000}, tag="_" + testcase)
+
+
+@pytest.mark.parametrize("part", ["eq", "dyn"])
+def test_system_dyneq(part):
     """gme_core with a 16-tap cabinet (the cabinet is off): dynamics and EQ over the Avalon registers on real
-    1024-clock frames (test_system.test_dynamics_eq)."""
+    1024-clock frames (test_system.test_dynamics_eq, EQ part / dynamics part, one simulation each)."""
     run("gme_core", "test_system", SYS_RTL, testcase="test_dynamics_eq",
-        parameters={"INIT_WAIT_CLKS": 2000, **CAB16}, extra_env={"GME_SYS_DYNEQ": "1"}, tag="_dyneq")
+        parameters={"INIT_WAIT_CLKS": 2000, **CAB16}, extra_env={"GME_SYS_DYNEQ": part}, tag="_dyneq_" + part)
 
 
 def test_system_level():
     """gme_core with a 16-tap cabinet (the cabinet is off): OD_LEVEL over the Avalon registers on real
-    1024-clock frames, exact gains and glide (test_system.test_level_via_hps, 4700 frames)."""
+    1024-clock frames, exact gains and glide (test_system.test_level_via_hps, 3100 frames)."""
     run("gme_core", "test_system", SYS_RTL, testcase="test_level_via_hps",
         parameters={"INIT_WAIT_CLKS": 2000, **CAB16}, extra_env={"GME_SYS_LEVEL": "1"}, tag="_level")
 
 
-def test_refv2():
-    """24-bit chain bit-exact to the v2 references (GME_REF_MODE=record to re-record; with GME_REF_ONLY=a,b only those presets),
-    plus overdrive / distortion bit-exact to golden.py with full 24-bit input."""
-    run("fx_chain", "test_refv2", IP_MODELS + FX_RTL, parameters={"DW": 24},
+from test_refv2 import CHUNKS as REFV2_CHUNKS          # noqa: E402  (preset chunks, one simulation each)
+
+
+@pytest.mark.parametrize("chunk", range(len(REFV2_CHUNKS)), ids=["c%d" % i for i in range(len(REFV2_CHUNKS))])
+def test_refv2(chunk):
+    """24-bit chain bit-exact to the v2 references, one chunk of presets per simulation (from power-up;
+    GME_REF_MODE=record to re-record; with GME_REF_ONLY=a,b only those presets are written)."""
+    run("fx_chain", "test_refv2", IP_MODELS + FX_RTL, parameters={"DW": 24}, testcase="test_presets",
         extra_env={"GME_DW": "24", "GME_REF_MODE": os.environ.get("GME_REF_MODE", "check"),
-                   "GME_REF_ONLY": os.environ.get("GME_REF_ONLY", "")},
-        tag="_refv2")
+                   "GME_REF_ONLY": os.environ.get("GME_REF_ONLY", ""), "GME_REF_CHUNK": str(chunk)},
+        tag="_refv2_c%d" % chunk)
+
+
+def test_refv2_golden24():
+    """Overdrive and distortion bit-exact to golden.py with full 24-bit random input (own simulation)."""
+    run("fx_chain", "test_refv2", IP_MODELS + FX_RTL, parameters={"DW": 24}, testcase="test_golden24",
+        extra_env={"GME_DW": "24"}, tag="_golden24")
 
 
 WAV_PRESETS = ["dry", "overdrive", "dist_medium", "tremolo", "tremolo_saw", "chorus", "flanger", "vibrato",

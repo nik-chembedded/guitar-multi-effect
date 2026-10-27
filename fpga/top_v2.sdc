@@ -21,7 +21,7 @@ set seqblk [get_registers {*|u_fx|CHORUS_left|* *|u_fx|ECHO_left|* *|u_fx|CAB_le
 set fx   [remove_from_collection [get_registers {*|u_fx|*}] $seqblk]
 set rx   [get_registers {*|u_i2s|rx_l_out*}]   ;# right channel unused (mono effects)
 set regs [get_registers {*|u_ctrl|u_regs|regs*}]
-set sm   [get_registers {*|u_sm_*|y*}]           ;# smoothed parameters (step C), update on sample_tick
+set sm   [get_registers {*u_sm_*|y*}]             ;# smoothed parameters (step C), update on sample_tick. NB: the instance is "param_smooth:smooth_on:u_sm_xxx" (generate label), so there is no "|" before u_sm_ (the old *|u_sm_* matched nothing)
 
 set_multicycle_path -setup -end 16 -from $fx   -to $fx
 set_multicycle_path -hold  -end 15 -from $fx   -to $fx
