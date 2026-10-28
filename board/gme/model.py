@@ -758,6 +758,8 @@ class Model(object):
             for i, w in enumerate(words):
                 self.dev.write(REG_CHAIN0 + i, w)
             self.dev.write(REG_CHAIN_APPLY, 1)          # applies with a ~5 ms output fade; a new apply during it is fine
+            # the reject flag is final 3 FPGA clocks after the write; the first read only lets that time pass
+            self.dev.read(REG_CHAIN_APPLY)
             if self.dev.read(REG_CHAIN_APPLY) & 2:
                 raise ParamError("the FPGA rejected the effect order (not a permutation of the effect ids)")
             if self.store is not None:

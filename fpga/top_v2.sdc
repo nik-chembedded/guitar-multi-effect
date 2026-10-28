@@ -23,6 +23,11 @@ set rx   [get_registers {*|u_i2s|rx_l_out*}]   ;# right channel unused (mono eff
 set regs [get_registers {*|u_ctrl|u_regs|regs*}]
 set sm   [get_registers {*u_sm_*|y*}]             ;# smoothed parameters (step C), update on sample_tick. NB: the instance is "param_smooth:smooth_on:u_sm_xxx" (generate label), so there is no "|" before u_sm_ (the old *|u_sm_* matched nothing)
 
+# Step E (effect order): fx_route's slot registers (u_fx|u_route|slot_q), the chain input register (u_fx|in_q), the order
+# registers (src / last / g) and the muxes between them are plain `fx` registers, so they are in this group and need no
+# exception of their own. The paths from a slot register into the sequencer blocks above (seqblk, seqram) are real
+# single-clock paths through one 10:1 mux (the stage input); they are met without a relaxation (E2, fitter seed 2:
+# sys_clk setup slack +2.119 ns, hold +0.088 ns), so none was added.
 set_multicycle_path -setup -end 16 -from $fx   -to $fx
 set_multicycle_path -hold  -end 15 -from $fx   -to $fx
 set_multicycle_path -setup -end 16 -from $rx   -to $fx

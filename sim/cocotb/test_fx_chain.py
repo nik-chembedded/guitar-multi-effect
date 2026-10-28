@@ -15,13 +15,15 @@ import random
 from pathlib import Path
 
 import cocotb
-from cocotb.triggers import RisingEdge
+from cocotb.triggers import ClockCycles, RisingEdge
 
 import golden
 from dynamics_model import Dynamics
 from eq3_model import EQ3
 from reverbfv_model import ReverbFV
-from fxdriver import CAB, CHORUS, DIST, DYN, ECHO, EQ, OD, REVERB, TREM, FxChain, find_latency
+from fxdriver import (CAB, CHORUS, DEFAULT_ORDER, DIST, DYN, ECHO, EQ, ID_CAB, ID_DIST, ID_DYN, ID_ECHO, ID_EQ, ID_MOD,
+                      ID_OD, ID_REVERB, ID_TREM, OD, REVERB, STAGE_SIGNALS, TREM, FxChain, find_latency, pack_order,
+                      unpack_order)
 
 N = 2000
 IP = Path(__file__).resolve().parents[2] / "fpga" / "ip"
@@ -125,12 +127,16 @@ async def test_dynamics_chain(dut):
     await frames(loud(400) + quiet(400) + loud(400), 1, **aggressive)
     assert lat2 == lat, "stage off added latency: %d -> %d frames" % (lat, lat2)
 
-    # per output index k: dyn_out at the overdrive's sample_tick k - lat is W[k-lat-1] if the stage was on
-    # in frame k-lat-1 (g = 256), else the chain input of frame k - lat itself
+    # per output index k: the stage output that fx_route's slot register takes over at the sample_tick of
+    # frame j + 1, j = k - lat, is W[j] if the stage was on in frame j (g = 256: the crossfade moves at the tick
+    # of frame j), else the chain input X[j] itself. (Step E: the stage input is the chain input register in_q,
+    # which already holds X[j] when the block starts one clock after the tick of frame j, so the model result W[j]
+    # is the block's result of that frame; the slot register takes it over one frame later. Before step E the
+    # chain was combinational up to the overdrive: W[j-1] at the tick of frame j.)
     bad = []
     for k in range(lat + 4, len(X)):
         j = k - lat
-        exp = W[j - 1] if EN[j - 1] else X[j]
+        exp = W[j] if EN[j] else X[j]
         if Y[k] != exp:
             bad.append((k, Y[k], exp))
     assert not bad, "dynamics chain: %d mismatches, first at frame %d: got %s expected %s" % (len(bad), *bad[0])
@@ -149,7 +155,7 @@ async def test_dynamics_chain(dut):
 async def test_eq_chain(dut):
     """EQ stage (enable bit 8, between the cabinet and the modulated delay): bit off = exact bypass with
     the latency of the chain without it (also after use, with coefficients written and running); bit on =
-    eq3_model fed with the stage input (signal cab_out at half_tick), bit-exact, one frame later; coefficient
+    eq3_model fed with the stage input (signal eq_in at half_tick), bit-exact, one frame later; coefficient
     sets from tools/eq_coefs written through the write port, taken over at apply only (a half-written set
     is not used)."""
     import sys
@@ -158,7 +164,7 @@ async def test_eq_chain(dut):
 
     fx = FxChain(dut)
     await fx.start()
-    fx.probe, fx.probe_sig = [], "cab_out"
+    fx.probe, fx.probe_sig = [], "eq_in"
     dw, m = fx.dw, (1 << (fx.dw - 1)) - 1
     rnd = random.Random(22)
     model = EQ3(dw)
@@ -223,11 +229,14 @@ async def test_eq_chain(dut):
     await frames(band(500), 1)
     assert lat2 == lat, "stage off added latency: %d -> %d frames" % (lat, lat2)
 
-    # at the modulated delay's half_tick of frame j: the stage output is W[j-1] when on in frame j, else X[j]
+    # the stage output that fx_route's slot register takes over at the sample_tick after the EQ's half_tick of
+    # frame j (j = k - lat, X[j] = the stage input, constant for the whole frame) is the model result W[j] when
+    # the stage was on in frame j, else X[j]. (Before step E the next stage read the EQ output at its own
+    # half_tick of the same frame, the same edge as the EQ strobe: the result of the frame before, W[j-1].)
     bad = []
     for k in range(lat + 4, len(X)):
         j = k - lat
-        exp = W[j - 1] if EN[j] else X[j]
+        exp = W[j] if EN[j] else X[j]
         if Y[k] != exp:
             bad.append((k, Y[k], exp))
     assert not bad, "EQ chain: %d mismatches, first at frame %d: got %s expected %s" % (len(bad), *bad[0])
@@ -371,13 +380,14 @@ async def test_level(dut):
 
     # --- every level, one per frame -------------------------------------------------------
     # (the level is registered together with the sample it belongs to: the overdrive uses the level valid at
-    # the strobe of frame n for x[n]; the distortion sits behind the (bypassed, but registered) overdrive, so
-    # it sees x[n] one strobe later and uses levels[n+1])
+    # the strobe at which it takes x[n]. Step E: x[n] reaches the overdrive's input two strobes after frame n
+    # (chain input register in_q, then the slot register of the dynamics stage), so it uses levels[n+2]; the
+    # distortion sits behind the (bypassed) overdrive and its slot register, one more strobe, and takes the level of the strobe after the one that takes the sample, as before step E: levels[n+4])
     levels = list(range(-1100, 601))
     assert len(levels) == len(x)
     for drive, gain, label in ((12345, 3, "clipping, saturating"), (20000, 1, "gain 1")):
         fx.set(effects_enable=OD, od_drive=drive, od_gain=gain, od_level=0)
-        exp = [golden.overdrive([s], drive, gain, dw=dw, level=lv)[0] for s, lv in zip(x, levels)]
+        exp = [golden.overdrive([s], drive, gain, dw=dw, level=lv)[0] for s, lv in zip(x, levels[2:])]
         y = []
         for s, lv in zip(x, levels):
             fx.set(od_level=lv)
@@ -389,7 +399,7 @@ async def test_level(dut):
     for dtype, name, mix in ((0, "soft", 255), (1, "medium", 255), (2, "hard", 255), (2, "hard", 100)):
         curve = golden.load_mif(IP / ("distortion_%s.mif" % name))
         fx.set(effects_enable=DIST, dist_type=dtype, dist_mix=mix, dist_level=0)
-        exp = [golden.distortion([s], curve, mix, dw=dw, level=lv)[0] for s, lv in zip(x, levels[1:])]
+        exp = [golden.distortion([s], curve, mix, dw=dw, level=lv)[0] for s, lv in zip(x, levels[4:])]
         y = []
         for s, lv in zip(x, levels):
             fx.set(dist_level=lv)
@@ -442,11 +452,11 @@ async def test_level(dut):
     # --- saturation, no wrap ---------------------------------------------------------------------
     loud = [round(0.9 * hi * math.sin(2 * math.pi * 441 * i / 48000)) for i in range(600)]
     fx.set(effects_enable=OD, od_drive=65535, od_gain=1, od_level=512, dist_level=0)
-    s0 = await fx.run(loud, tail=4, raw=True)
+    s0 = await fx.run(loud, tail=16, raw=True)         # (tail: the chain latency, so that nothing of this run is left in the pipeline)
     assert max(s0) == hi and min(s0) == lo, "overdrive +12 dB must saturate at the limits: %d .. %d" % (min(s0), max(s0))
     assert_no_wrap("overdrive +12 dB saturation", s0, limit=(1 << dw) * 3 // 4)
     fx.set(effects_enable=DIST, dist_type=2, dist_mix=255, dist_level=512)
-    s1 = await fx.run([hi, -hi] * 50, tail=4, raw=True)
+    s1 = await fx.run([hi, -hi] * 50, tail=16, raw=True)
     assert max(s1) == (255 * hi) >> 8 and min(s1) == (255 * -hi) >> 8,         "hard curve at full scale +12 dB: %d .. %d (limit: the wet sample saturated at +-%d, mix 255/256)" % (min(s1), max(s1), hi)
     s1 = await fx.run(sine_x, tail=4, raw=True)
     assert_no_wrap("distortion +12 dB", s1, limit=(1 << dw) * 3 // 4)
@@ -490,7 +500,7 @@ async def test_chorus(dut):
             fx.set(chorus_depth=10)                  # sweep 90 .. 110 from here
     y = [s or 0 for s in await fx.run(x, on_frame=on_frame)]
     for k in range(len(x) // 250):
-        p0 = next((n for n in range(k * 250 + 30, k * 250 + 40) if y[n] > 6000), None)
+        p0 = next((n for n in range(k * 250 + 30, k * 250 + 70) if y[n] > 6000), None)   # (impulse k + chain latency)
         if p0 is None or p0 + 240 >= len(y):
             continue
         seg = [abs(v) for v in y[p0 + 20:p0 + 200]]
@@ -539,7 +549,7 @@ async def test_echo_frac(dut):
     x = [rnd.randint(-m, m) for _ in range(1500)]
     y = [s or 0 for s in await fx.run(x, raw=True)]
     # output = dry (chain latency d) + level * echo (d + l): find both
-    d, lat = next((d, l) for d in range(0, 8) for l in range(290, 320)
+    d, lat = next((d, l) for d in range(0, 40) for l in range(290, 320)
                   if all(y[n] == x[n - d] + ((40000 * x[n - d - l]) >> 16) for n in range(700, 1500)))
     fx.set(echo_frac=128)
     x2 = [rnd.randint(-m, m) for _ in range(1500)]
@@ -555,11 +565,13 @@ async def test_echo_frac(dut):
 async def test_reverb_chain_model(dut):
     """(Runs before test_reverb: the model starts with empty lines, so does the chain.)
     FX_chain reverb output equals the block's Python model (reverbfv_model) fed with the reverb
-    input of the chain (echo_out) - bit-exact, with room presets and size / damp / mix changes."""
+    input of the chain (rev_in, held for the whole frame by fx_route) - bit-exact, one frame later (the output
+    goes through the slot register of the reverb), with room presets and size / damp / mix changes."""
+
     fx = FxChain(dut)
     await fx.start(effects_enable=REVERB, reverb_mix=200)
     model = ReverbFV(dw=fx.dw)
-    fx.probe = []
+    fx.probe, fx.probe_sig = [], "rev_in"
     rnd = random.Random(5)
     m = 12000 << fx.shift
     n_total = 0
@@ -571,10 +583,12 @@ async def test_reverb_chain_model(dut):
         x = [rnd.randint(-m, m) if n < 600 else (m if n % 200 == 0 else 0) for n in range(1500)]
         fx.probe.clear()
         y = await fx.run(x, raw=True)
-        for n, (xin, out) in enumerate(zip(fx.probe, y)):
-            exp = model.step(xin, enable, size, damp, mix)
-            assert out == exp, "size %d damp %d mix %d en %d frame %d: chain %s, model %d" % (
-                size, damp, mix, enable, n, out, exp)
+        # y[n + 1] = the stage result of frame n (the slot register of the reverb takes it over at the next tick);
+        # y[0] is still the previous setting's last frame and is not compared
+        exps = [model.step(xin, enable, size, damp, mix) for xin in fx.probe]
+        for n in range(len(exps) - 1):
+            assert y[n + 1] == exps[n], "size %d damp %d mix %d en %d frame %d: chain %s, model %d" % (
+                size, damp, mix, enable, n, y[n + 1], exps[n])
         n_total += len(y)
     dut._log.info("FX_chain reverb == reverbfv_model for %d frames (7 settings, incl. clamp and bypass)", n_total)
 
@@ -707,3 +721,331 @@ async def test_cab(dut):
     bad = [i for i in range(500, 700 - lat - 1) if y[i + lat + 1] != w2[i]]
     assert not bad, "bank 0 rewritten: %d mismatches, first at %d" % (len(bad), bad[0])
     dut._log.info("cab: write to the idle bank + switch back OK")
+
+
+# ---------------------------------------------------------------------------
+# Effect order (step E): fx_route inside FX_chain. test_routing (all effects on) checks the wiring in every
+# frame, the equal latency of every order, the rejection of invalid lists and the click-free order change;
+# test_route_models (own runner entries, one order per simulation) checks the audio of model-covered effects
+# bit-exact against the Python models in different orders.
+ALL_FX = OD | TREM | ECHO | DIST | CHORUS | REVERB | CAB | DYN | EQ
+
+
+def random_orders(n, seed):
+    """n distinct random permutations of the 9 effect ids, none equal to the default order."""
+    rnd = random.Random(seed)
+    seen = {tuple(DEFAULT_ORDER)}
+    out = []
+    while len(out) < n:
+        o = list(range(9))
+        rnd.shuffle(o)
+        if tuple(o) not in seen:
+            seen.add(tuple(o))
+            out.append(o)
+    return out
+
+
+def set_all_on(fx):
+    """Every effect on, moderate settings (the same family as test_invariance)."""
+    fx.set(effects_enable=ALL_FX, od_drive=6000, od_gain=2, dist_type=1, dist_mix=128, cab_ctrl=(3 << 4) | (2 << 1),
+           chorus_level=128, chorus_depth=40, chorus_rate=900, mod_base=100, trem_wave=8 + 1, trem_rate=2200,
+           trem_depth=120, echo_time=90, echo_level=24000, echo_repeat=100, reverb_type=2, reverb_mix=90,
+           dyn_ctrl=0)
+
+
+@cocotb.test()
+async def test_routing(dut):
+    """Effect order (step E) through the chain ports chain_order / chain_apply, all nine effects on:
+      (a) 30 random orders (and the power-up order): in steady state, in EVERY frame, the input of the effect in
+          slot k equals the output the effect in slot k-1 had at the last sample_tick (slot register; the chain
+          input register in_q for slot 0, which holds this frame's input sample), and every stage's input /
+          output signal is the one of its id in fx_in / fx_out; chain_active shows the order; the latency
+          (impulse, effects off) is identical for every order;
+      (c) invalid lists (nibble twice, nibble >= 9, all zero) are rejected: chain_rejected = 1, no fade, the
+          order stays, a valid apply clears the flag;
+      (d) the order change fades: no output step larger than the steady states' own, a dip to ~0 at the switch."""
+    fx = FxChain(dut)
+    dw = fx.dw
+    mask = (1 << dw) - 1
+    await fx.start()
+    rnd = random.Random(2024)
+    m = (1 << (dw - 1)) - 1
+    state = dict(order=list(DEFAULT_ORDER), check=False, x=0, fo=0, frames=0)
+
+    def pre_tick():
+        state["fo"] = int(dut.fx_out.value)
+
+    def mid_frame():
+        if not state["check"]:
+            return
+        fi, fo, inq = int(dut.fx_in.value), int(dut.fx_out.value), int(dut.in_q.value)
+        order = state["order"]
+        assert inq == state["x"] & mask, "in_q %d is not this frame's input sample %d" % (inq, state["x"] & mask)
+        for k, e in enumerate(order):
+            want = inq if k == 0 else (state["fo"] >> (order[k - 1] * dw)) & mask
+            got = (fi >> (e * dw)) & mask
+            assert got == want, "order %s: input of effect %d (slot %d) is %d, expected %s %d" % (
+                order, e, k, got, "in_q" if k == 0 else "slot_q of effect %d" % order[k - 1], want)
+        for e, (sin, sout) in STAGE_SIGNALS.items():
+            assert int(getattr(dut, sin).value) == (fi >> (e * dw)) & mask, "stage %s is not fx_in(%d)" % (sin, e)
+            assert int(getattr(dut, sout).value) == (fo >> (e * dw)) & mask, "stage %s is not fx_out(%d)" % (sout, e)
+        state["frames"] += 1
+
+    fx.pre_tick, fx.mid_frame = pre_tick, mid_frame
+
+    async def frames(n, amp=0.3):
+        """n frames of noise (checked when state['check'])."""
+        out = []
+        for _ in range(n):
+            state["x"] = rnd.randint(-int(amp * m), int(amp * m))
+            out.append(await fx.frame(state["x"], raw=True))
+        return out
+
+    async def settle(limit=800):
+        """Frames until the order change is over (busy = 0); returns how many it took."""
+        for n in range(limit):
+            await frames(1)
+            if int(dut.chain_busy.value) == 0:
+                return n + 1
+        raise AssertionError("chain_busy did not fall within %d frames" % limit)
+
+    async def impulse_latency():
+        """Effects off: frames from an impulse to its appearance at the output."""
+        fx.set(effects_enable=0)
+        await frames(48, amp=0.0)
+        amp = 1 << (dw - 4)
+        out = []
+        for n in range(48):
+            state["x"] = amp if n == 4 else 0
+            out.append(await fx.frame(state["x"], raw=True))
+        hits = [i for i, v in enumerate(out) if v]
+        assert hits and out[hits[0]] == amp and len(hits) == 1, "impulse response %s" % out
+        return hits[0] - 4
+
+    set_all_on(fx)
+    # power-up order, unchanged by the order logic
+    assert int(dut.chain_active.value) == pack_order(DEFAULT_ORDER) and int(dut.chain_busy.value) == 0
+    await frames(40)
+    state["check"] = True
+    await frames(12)
+    lats = [await impulse_latency()]
+    state["check"] = False
+    orders = random_orders(30, 7)
+    for i, order in enumerate(orders):
+        set_all_on(fx)
+        await fx.apply_order(order)
+        state["check"] = False
+        took = await settle()
+        assert took >= 250, "order change took only %d frames" % took
+        assert unpack_order(int(dut.chain_active.value)) == order, "chain_active %s, applied %s" % (
+            unpack_order(int(dut.chain_active.value)), order)
+        assert int(dut.chain_rejected.value) == 0
+        state["order"] = order
+        await frames(30)                               # pipeline filled with the new order
+        state["check"] = True
+        await frames(12)
+        lats.append(await impulse_latency())
+    state["check"] = False
+    assert len(set(lats)) == 1, "latency differs between orders: %s" % lats
+    assert state["frames"] >= 31 * 12
+    dut._log.info("30 random orders + power-up order: structure checked in %d frames, latency %d frames for every order",
+                  state["frames"], lats[0])
+
+    # (c) invalid lists
+    set_all_on(fx)
+    good = state["order"]
+    invalid = ([3, 3, 0, 1, 2, 4, 5, 6, 7], [0, 1, 2, 3, 4, 5, 6, 7, 9], [0] * 9, [15, 14, 13, 12, 11, 10, 9, 8, 7],
+               [1, 2, 3, 4, 5, 6, 7, 8, 1])
+    for bad in invalid:
+        await fx.apply_order(bad)
+        await ClockCycles(dut.clk, 3)
+        assert int(dut.chain_rejected.value) == 1 and int(dut.chain_busy.value) == 0, "invalid list %s not rejected" % bad
+        await frames(40)
+        assert int(dut.chain_busy.value) == 0 and unpack_order(int(dut.chain_active.value)) == good
+    state["check"] = True
+    await frames(12)                                  # still routed by the old order (checked in every frame)
+    state["check"] = False
+    await fx.apply_order(DEFAULT_ORDER)
+    await ClockCycles(dut.clk, 3)
+    assert int(dut.chain_rejected.value) == 0 and int(dut.chain_busy.value) == 1, "a valid apply clears the reject flag"
+    await settle()
+    dut._log.info("%d invalid lists rejected (flag set, no fade, order kept); a valid apply clears the flag", len(invalid))
+
+    # (d) click-free order change: overdrive + cabinet on a sine, order A (OD before CAB) -> B (CAB before OD)
+    fx.set(effects_enable=OD | CAB, od_drive=6000, od_gain=2, cab_ctrl=(3 << 4) | (2 << 1))
+    order_a = list(DEFAULT_ORDER)
+    order_b = [ID_DYN, ID_CAB, ID_DIST, ID_OD, ID_EQ, ID_MOD, ID_TREM, ID_ECHO, ID_REVERB]
+    sig = [round(0.4 * m * math.sin(2 * math.pi * 1000 * i / 48000)) for i in range(6000)]
+    pos = [0]
+
+    async def play(n):
+        out, act = [], []
+        for _ in range(n):
+            out.append(await fx.frame(sig[pos[0] % len(sig)], raw=True))
+            act.append(unpack_order(int(dut.chain_active.value)))
+            pos[0] += 1
+        return out, act
+
+    await fx.apply_order(order_a)
+    await play(400)
+    ya, _ = await play(300)                                # steady state A
+    await fx.apply_order(order_b)
+    y_fade, act = await play(500)                          # fade down, switch, fade up (256 frames) + steady B
+    yb, _ = await play(300)                                # steady state B
+    await fx.apply_order(order_a)
+    y_back, act_back = await play(500)
+    step = lambda v: max(abs(v[i] - v[i - 1]) for i in range(1, len(v)))     # noqa: E731
+    ref = max(step(ya), step(yb))
+    assert ya != yb and max(abs(v) for v in ya) > 0.05 * m, "test setup: the two orders must sound different"
+    for name, y, a, tgt in (("A -> B", y_fade, act, order_b), ("B -> A", y_back, act_back, order_a)):
+        sw = next(i for i, o in enumerate(a) if o == tgt)
+        steps = step(y)
+        dip = max(abs(v) for v in y[sw - 1:sw + 3])
+        dut._log.info("order change %s: max step %d (steady states' %d), switch at frame %d, |y| there <= %d of peak %d",
+                      name, steps, ref, sw, dip, max(abs(v) for v in ya))
+        assert steps <= 1.25 * ref, "%s: output step %d above the steady states' own (%d)" % (name, steps, ref)
+        assert dip <= 0.05 * max(abs(v) for v in ya), "%s: no dip to ~0 at the switch (|y| %d)" % (name, dip)
+        assert 100 <= sw <= 160, "%s: switch after %d frames, expected about 128 + latency" % (name, sw)
+
+
+ROUTE_ORDERS = [
+    list(DEFAULT_ORDER),
+    [ID_EQ, ID_CAB, ID_DIST, ID_OD, ID_DYN, ID_MOD, ID_TREM, ID_ECHO, ID_REVERB],     # the five reversed, the rest after them
+    [ID_TREM, ID_OD, ID_MOD, ID_DYN, ID_ECHO, ID_CAB, ID_DIST, ID_REVERB, ID_EQ],     # off effects interleaved
+]
+
+
+@cocotb.test()
+async def test_route_models(dut):
+    """Audio of the effects in a selectable order against the Python models, bit-exact. Dynamics (compressor,
+    dynamics_model), overdrive and distortion (golden.py), cabinet (cab_conv, 16 taps) and EQ (eq3_model) are on, the
+    other four effects are off and keep their place; the order index comes from GME_ROUTE_ORDER (0 = default, 1 =
+    the five reversed, 2 = interleaved with the off effects), one simulation each so that every model starts with
+    the chain's power-up state. The model chain is the composition of the effects in that order; the hardware delays
+    it by the (fixed) latency of the slots: y[n + L] == model[n] for every n after the first frames. The orders give
+    different audio (checked against the default order's model)."""
+    import os
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+    import cab_coefs
+    import eq_coefs as ec
+
+    idx = int(os.environ.get("GME_ROUTE_ORDER", "0"))
+    order = ROUTE_ORDERS[idx]
+    fx = FxChain(dut)
+    dw = fx.dw
+    m = (1 << (dw - 1)) - 1
+    await fx.start()
+    h0 = cab_coefs.read_mif(str(Path(__file__).resolve().parents[2] / "sim" / "models" / "cab_test16.mif"))[:16]
+    sh0 = 2
+    curve = golden.load_mif(IP / "distortion_medium.mif")
+    # (no make-up gain: with the compressor on and silence in, the gain glides towards the make-up value, and the
+    # dynamics stage in a later slot has been doing that for the frames before the first sample reaches it; the model
+    # starts at x[0]. Without make-up the zero-input state is the model's start state in every slot.)
+    dyn_regs = dict(dyn_ctrl=2, comp_thresh=q8(-22), comp_ratio=2, comp_attack=3, comp_release=8, comp_makeup=0)
+    ints, sh, _ = ec.coefficient_set_full(6, -4, 9)
+    scale = ec.scale_word(sh)
+
+    def chain_model(ord_, x):
+        s = list(x)
+        dyn, eq = Dynamics(dw), EQ3(dw)
+        for a in range(15):
+            eq.write(a, ints[a])
+        eq.write(15, scale)
+        eq.apply()
+        for e in ord_:
+            if e == ID_DYN:
+                s = [dyn.step(v, 1, gate_en=0, comp_en=1, **{k: val for k, val in dyn_regs.items() if k != "dyn_ctrl"})
+                     for v in s]
+            elif e == ID_OD:
+                s = golden.overdrive(s, 6000, 2, dw=dw)
+            elif e == ID_DIST:
+                s = golden.distortion(s, curve, 128, dw=dw)
+            elif e == ID_CAB:
+                s = cab_conv(s, h0, sh0, dw)
+            elif e == ID_EQ:
+                s = [eq.step(v, 1) for v in s]
+        return s
+
+    rnd = random.Random(40 + idx)
+    n_frames = 1500
+    x = [round(0.55 * m * math.sin(2 * math.pi * 330 * i / 48000) * (1.0 if (i // 150) % 2 == 0 else 0.1)
+               + rnd.uniform(-0.04, 0.04) * m) for i in range(n_frames)]
+    want = chain_model(order, x)
+    assert idx == 0 or want != chain_model(DEFAULT_ORDER, x), "test setup: this order must sound different from the default"
+    assert max(abs(v) for v in want) > 0.05 * m
+
+    if order != DEFAULT_ORDER:
+        await fx.apply_order(order)
+    for _ in range(300):                                  # the order fade (silence in, silence out)
+        await fx.frame(0, raw=True)
+        if int(dut.chain_busy.value) == 0:
+            break
+    assert int(dut.chain_busy.value) == 0 and unpack_order(int(dut.chain_active.value)) == order
+    await fx.eq_write(ints, scale)
+    fx.set(effects_enable=DYN | OD | DIST | CAB | EQ, od_drive=6000, od_gain=2, dist_type=1, dist_mix=128,
+           cab_ctrl=(3 << 4) | (2 << 1), **dyn_regs)
+    y = await fx.run(x, tail=60, raw=True)
+    assert all(v is not None for v in y), "X/U in the output"
+    lat = next((L for L in range(0, 50) if all(y[n + L] == want[n] for n in range(8, n_frames))), None)
+    if lat is None:                                       # diagnostics: the alignment with the fewest differing frames
+        cnt, L = min((sum(1 for n in range(8, n_frames) if y[n + L] != want[n]), L) for L in range(0, 50))
+        first = next(n for n in range(8, n_frames) if y[n + L] != want[n])
+        raise AssertionError("order %s: no exact alignment; best latency %d has %d of %d frames different, first at %d "
+                             "(chain %d, model %d)" % (order, L, cnt, n_frames - 8, first, y[first + L], want[first]))
+    dut._log.info("order %s: %d frames bit-exact to the model chain at latency %d (dynamics, overdrive, distortion, "
+                  "cabinet, EQ; off effects keep their place)", order, n_frames, lat)
+
+
+# step E: the latency of every slot (docs/register_map.md, section 11). Measured with an impulse; the effect is
+# set so that its dry path (or, for the cabinet, its first coefficient) shows the impulse.
+LATENCY_OFF = 11                       # frames, all effects off: 1 each for DYN, CAB, EQ and the four half_tick effects
+                                       # (MOD, TREM, ECHO, REVERB), 2 each for OD and DIST (their block registers at the
+                                       # sample_tick, the slot register one tick later); the order does not matter
+LATENCY_EXTRA = {"OD": 1, "TREM": 0, "ECHO": 0, "DIST": 1, "MOD": 0, "REVERB": 0, "CAB": 1, "DYN": 0, "EQ": 0}
+
+
+@cocotb.test()
+async def test_latency(dut):
+    """Latency of the chain with every effect off (fixed per slot, the same for every order: see LATENCY_OFF) and the
+    extra frames of each effect when it is on (OD, DIST and the cabinet one frame, the others none), measured with an
+    impulse in the default order, and the same sum with OD, DIST and the cabinet on in three other orders. Runs in its own simulation (the delay lines are empty)."""
+    fx = FxChain(dut)
+    dw = fx.dw
+    await fx.start()
+    amp = 1 << (dw - 4)
+    dry = {"OD": dict(od_drive=65535, od_gain=1), "TREM": dict(trem_depth=0), "ECHO": dict(echo_level=0),
+           "DIST": dict(dist_mix=0), "MOD": dict(chorus_level=0), "REVERB": dict(reverb_mix=0), "CAB": dict(cab_ctrl=(3 << 4) | (2 << 1)),
+           "DYN": dict(dyn_ctrl=0), "EQ": dict()}
+    bits = dict(OD=OD, TREM=TREM, ECHO=ECHO, DIST=DIST, MOD=CHORUS, REVERB=REVERB, CAB=CAB, DYN=DYN, EQ=EQ)
+
+    async def latency(**regs):
+        fx.set(**regs)
+        await fx.run([0] * 40, raw=True)
+        out = await fx.run([amp if n == 4 else 0 for n in range(60)], raw=True)
+        hits = [i for i, v in enumerate(out) if v]
+        assert hits, "no output for the impulse with %s" % regs
+        return hits[0] - 4, out[hits[0]]
+
+    l_off, v = await latency(effects_enable=0)
+    assert v == amp
+    got = {}
+    for name, regs in dry.items():
+        got[name], v = await latency(effects_enable=bits[name], **regs)
+    extra = {k: g - l_off for k, g in got.items()}
+    dut._log.info("latency: all effects off %d frames; extra frames when on: %s", l_off, extra)
+    assert l_off == LATENCY_OFF, "latency with all effects off: %d frames, expected %d" % (l_off, LATENCY_OFF)
+    assert extra == LATENCY_EXTRA, "extra latency per effect %s, expected %s" % (extra, LATENCY_EXTRA)
+
+    # the same with effects on, in other orders (OD, DIST and the cabinet on: LATENCY_OFF + 3 in every order)
+    fx.set(**dry["OD"], **dry["DIST"], **dry["CAB"])
+    for order in ([ID_DIST, ID_OD, ID_DYN, ID_CAB, ID_EQ, ID_MOD, ID_TREM, ID_ECHO, ID_REVERB],
+                  [ID_DYN, ID_DIST, ID_OD, ID_CAB, ID_EQ, ID_MOD, ID_TREM, ID_ECHO, ID_REVERB],
+                  [ID_REVERB, ID_ECHO, ID_TREM, ID_MOD, ID_EQ, ID_CAB, ID_DIST, ID_OD, ID_DYN]):
+        await fx.apply_order(order)
+        await fx.run([0] * 300, raw=True)                  # order fade
+        assert unpack_order(int(dut.chain_active.value)) == order
+        l_on, v = await latency(effects_enable=OD | DIST | CAB)
+        assert l_on == LATENCY_OFF + 3, "order %s: latency with OD, DIST, CAB on is %d frames, expected %d" % (order, l_on, LATENCY_OFF + 3)
+    dut._log.info("latency with OD, DIST and the cabinet on: %d frames in every order tried", LATENCY_OFF + 3)
+

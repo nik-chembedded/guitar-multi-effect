@@ -58,11 +58,12 @@ async def test_trem(dut):
             fx.set(effects_enable=TREM, trem_wave=wave, trem_rate=rate, trem_depth=depth)
         ys.append(await fx.frame(x, raw=True))
 
-    # the input reaches the tremolo after the bypassed stages (latency L), and the
-    # model's tick index may be offset by a frame: search both
+    # the input reaches the tremolo after the chain input register and the slot registers of the stages in
+    # front of it (step E: a fixed number of frames), and the model's tick index may be offset by a frame:
+    # search both (any (latency, offset) with zero mismatches is an exact alignment)
     best = None
-    for lat in range(0, 6):
-        for off in range(-2, 3):
+    for lat in range(0, 20):
+        for off in range(-2, 20):
             xin = [0] * max(0, off) + xs[:len(xs) - max(0, off)] if off >= 0 else xs[-off:] + [0] * (-off)
             exp = model(xin, settings)
             bad = sum(1 for n in range(100, len(xs) - lat) if ys[n + lat] != exp[n])

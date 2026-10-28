@@ -77,7 +77,7 @@ else                                 # the real thing: altsyncram wrappers and R
   compile "$FPGA_DIR"/ip/*.vhd "$RTL/fx_dpram.vhd" "$RTL/cab_coef_ram.vhd"
 fi
 for f in fx_pkg fx_xfade lfo_sine_pkg nco_lfo level_gain overdrive distortion mod_delay tremolo_v2 echo \
-         fv_comb fv_allpass reverb_fv cab_fir cab_stage dynamics biquad eq3 fx_bypass dyn_stage eq_stage FX_chain; do
+         fv_comb fv_allpass reverb_fv cab_fir cab_stage dynamics biquad eq3 fx_bypass dyn_stage eq_stage fx_route FX_chain; do
   compile "$RTL/$f.vhd"
 done
 compile "$SIM_DIR"/tb/tb_fx_wav.vhd

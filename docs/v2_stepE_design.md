@@ -45,12 +45,21 @@ then, because A's register map and software stay the same. **Recommendation: A.*
   bits of register 0, so the software uses one id table).
 * `src[e]` = the effect before *e* in the order, or the chain input for slot 0, computed from the slot list when the order
   is applied. The output takes `slot_q` of the effect in the last slot.
-* **Off effects keep their place** (they are bypassed by their own crossfade, as today). The latency therefore depends
-  neither on the order nor on which effects are on. Turning an effect on or off does not move the signal in time.
+* **Off effects keep their place** (they are bypassed by their own crossfade, as today). The latency therefore does not
+  depend on the order. Turning an effect on or off moves the signal in time only by the effect's own delay (measured in E2:
+  none for most, one frame for Overdrive, Distortion and Cabinet, as before step E).
 * The block strobes stay as they are. Each effect loads its input from a register that changes only at `sample_tick`,
-  so every block sees a stable input at its own strobe, in any order. The exact frames per slot (1 for effects on
-  `half_tick`, 2 for those on `sample_tick` or with a long sequencer such as the cabinet) are measured in E2 and listed
-  in the register map.
+  so every block sees a stable input at its own strobe, in any order. The I2S receive word changes in the middle of the
+  frame, so `FX_chain` registers the chain input at `sample_tick` (`in_q`) and feeds `fx_route.chain_in` from it; without
+  it the latency of the first slot would depend on the strobe of the effect in it.
+* **Measured latency (E2, `test_fx_chain::test_latency`, 1 frame = 20.83 µs).** Per stage with the effect off: Dynamics,
+  Cabinet, EQ 1 frame each (combinational bypass, the slot register is the only delay), Chorus, Tremolo, Echo, Reverb 1 frame
+  each (their block registers at `half_tick`, the slot register takes it over at the next `sample_tick`), Overdrive and Distortion
+  2 frames each (block register at `sample_tick`, slot register one tick later). **Total with every effect off: 11 frames
+  (229 µs), the same for every order** (30 random orders measured). An effect that is on adds its own delay: Overdrive, Distortion
+  and Cabinet one more frame, the others none (Dynamics and EQ no longer add the frame they added in VERSION 0x0208: their
+  block now runs in the frame of its input and the slot register is the one delay), so at most **14 frames (292 µs)** with all on.
+  Before step E: 4 frames with every effect off.
 * `dyn_gr`, the cabinet / EQ write ports and all parameters are unchanged.
 
 ### 3.2 Changing the order without a click

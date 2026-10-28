@@ -16,8 +16,9 @@ from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge
 EFFECT_REGS = ["effects_enable", "od_drive", "od_gain", "trem_wave", "trem_depth", "echo_time",
                "echo_repeat", "echo_level", "dist_mix", "dist_type", "chorus_level",
                "chorus_depth", "chorus_rate", "reverb_mix", "reverb_type"]
-VERSION = 0x0208
+VERSION = 0x0209
 DYN_GR_VALUE = 0x0ABC            # driven on the dyn_gr input (register 0x2C, read-only)
+CHAIN_STATUS_VALUE = 0x0002      # driven on chain_status (register 0x33 CHAIN_APPLY: bit0 busy, bit1 rejected)
 CODEC = 0x15
 
 
@@ -78,6 +79,7 @@ async def setup(dut):
     dut.level_in.value = 0x1234
     dut.level_out.value = 0x4321
     dut.dyn_gr.value = DYN_GR_VALUE
+    dut.chain_status.value = CHAIN_STATUS_VALUE
     h = AvmmHost(dut)
     await ClockCycles(dut.clk, 5)
     dut.rst.value = 0
@@ -107,7 +109,7 @@ async def test_write_read_all(dut):
         got = await h.read(reg)
         assert got == v & 0xFFFF, "reg %d read 0x%08X, wrote 0x%08X" % (reg, got, v)
         assert int(getattr(dut, EFFECT_REGS[reg]).value) == v & 0xFFFF, "output %s" % EFFECT_REGS[reg]
-    ext = [rnd.getrandbits(32) for _ in range(0x16, 0x30)]     # extension registers (step D)
+    ext = [rnd.getrandbits(32) for _ in range(0x16, 0x34)]     # extension registers (steps D, E)
     for i, v in enumerate(ext):
         await h.write(0x16 + i, v)
     bus = int(dut.ext.value)
@@ -115,10 +117,13 @@ async def test_write_read_all(dut):
         if 0x16 + i == 0x2C:                                   # DYN_GR (D5): read-only meter, see test_dynamics_eq_regs
             assert await h.read(0x2C) == DYN_GR_VALUE and (bus >> (16 * i)) & 0xFFFF == 0
             continue
+        if 0x16 + i == 0x33:                                   # CHAIN_APPLY (E): reads the status, the write is not stored
+            assert await h.read(0x33) == CHAIN_STATUS_VALUE and (bus >> (16 * i)) & 0xFFFF == 0
+            continue
         assert await h.read(0x16 + i) == v & 0xFFFF, "ext register 0x%02X" % (0x16 + i)
         assert (bus >> (16 * i)) & 0xFFFF == v & 0xFFFF, "ext bus slice 0x%02X" % (0x16 + i)
-    dut._log.info("15 effect + 25 extension registers written / read back (bits 31..16 ignored, read 0); "
-                  "0x2C is read-only")
+    dut._log.info("15 effect + 29 extension registers written / read back (bits 31..16 ignored, read 0); "
+                  "0x2C is read-only, 0x33 reads the chain status")
 
 
 @cocotb.test()
@@ -189,7 +194,7 @@ async def test_dynamics_eq_regs(dut):
 async def test_level_regs(dut):
     """Output levels (D6): 0x2D OD_LEVEL and 0x2E DIST_LEVEL are ordinary 16-bit read/write registers (signed
     Q8 log2 units, the sign is kept: -1020 reads back 0xFC04), reset to 0 (unity), each in its own slice of the
-    ext bus (neighbours 0x2C DYN_GR and 0x2F untouched), one write event each; VERSION 0x0208."""
+    ext bus (neighbours 0x2C DYN_GR and 0x2F untouched), one write event each; VERSION 0x0209."""
     h = await setup(dut)
     events = []
 
@@ -210,7 +215,7 @@ async def test_level_regs(dut):
         assert ext(0x2D) == od and ext(0x2E) == di and ext(0x2C) == 0 and ext(0x2F) == 0
     assert await h.read(0x2D) == 0x8000 and await h.read(0x2E) == 0x7FFF
     assert [e[0] for e in events] == [0x2D, 0x2E] * 3 and events[0][1] == (-1020 & 0xFFFF) and events[1][1] == 512, events
-    assert await h.read(0x10) == VERSION == 0x0208
+    assert await h.read(0x10) == VERSION == 0x0209
     dut._log.info("OD_LEVEL (0x2D) / DIST_LEVEL (0x2E) read/write with write events, reset 0, VERSION 0x%04X", VERSION)
 
 
@@ -219,7 +224,7 @@ async def test_invalid_and_readonly(dut):
     """Unknown addresses read 0; writes to them and to read-only registers change nothing."""
     h = await setup(dut)
     await h.write(2, 0x1111)
-    for reg in (0x0F, 0x30, 0x3F):
+    for reg in (0x0F, 0x34, 0x3F):
         await h.write(reg, 0xFFFF)
         assert await h.read(reg) == 0, "unknown register 0x%02X must read 0" % reg
     await h.write(0x10, 0xDEAD)
@@ -371,8 +376,57 @@ async def test_ext_write_event(dut):
     await h.write(0x1D, 0x5500, byteenable=0x4)                # byte 2 only: ignored, no event
     await h.write(0x05, 0x1111)                                # effect register
     await h.write(0x15, 0x0010)                                # CODEC
-    await h.write(0x30, 0x1111)                                # invalid
+    await h.write(0x34, 0x1111)                                # invalid
     await h.write(0x14, 0x0002)                                # CONTROL
     await ClockCycles(dut.clk, 5)
     assert events[n:] == [] and await h.read(0x1D) == 0x0034, "unexpected write events %s" % events[n:]
-    dut._log.info("CAB registers 0x1B..0x1E read back; ext write events only for byte-1 writes of 0x16..0x2F")
+    dut._log.info("CAB registers 0x1B..0x1E read back; ext write events only for byte-1 writes of 0x16..0x33")
+
+
+@cocotb.test()
+async def test_chain_regs(dut):
+    """Effect order (step E): CHAIN_0..2 (0x30 .. 0x32) are ordinary 16-bit read/write registers whose RESET values
+    are the default order (0x6307, 0x2148, 0x0005: the first registers that do not reset to 0), each in its own
+    slice of the ext bus, one write event each; CHAIN_APPLY (0x33) reads the status input (bit0 busy, bit1
+    rejected), a write is not stored (ext slice stays 0, the read still returns the status) but gives a write event
+    (only when it contains byte 1); neighbours 0x2E and 0x34 untouched. Power-up and reset give the same values."""
+    h = await setup(dut)
+    events = []
+
+    async def monitor():
+        while True:
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            if int(dut.ext_we.value):
+                events.append((int(dut.ext_wa.value), int(dut.ext_wd.value)))
+
+    cocotb.start_soon(monitor())
+    ext = lambda r: (int(dut.ext.value) >> (16 * (r - 0x16))) & 0xFFFF       # noqa: E731
+    reset = {0x30: 0x6307, 0x31: 0x2148, 0x32: 0x0005}
+    for r, v in reset.items():
+        assert await h.read(r) == v and ext(r) == v, "reset value of 0x%02X" % r
+    assert await h.read(0x33) == CHAIN_STATUS_VALUE and ext(0x33) == 0
+    for vals in ({0x30: 0xFEDC, 0x31: 0xBA98, 0x32: 0x7654}, {0x30: 0x0000, 0x31: 0xFFFF, 0x32: 0x0008}):
+        for r, v in vals.items():
+            await h.write(r, 0xBEEF0000 | v)
+        for r, v in vals.items():
+            assert await h.read(r) == v and ext(r) == v, "register 0x%02X" % r
+        assert ext(0x2E) == 0 and ext(0x2F) == 0
+    n = len(events)
+    await h.write(0x33, 0xFFFF1234)
+    await ClockCycles(dut.clk, 3)
+    assert events[n:] == [(0x33, 0x1234)], events[n:]
+    assert ext(0x33) == 0 and await h.read(0x33) == CHAIN_STATUS_VALUE, "a write to 0x33 must not be stored"
+    n = len(events)
+    await h.write(0x33, 0x00FF, byteenable=0x1)                # byte 0 only: no event
+    await h.write(0x33, 0x0000, byteenable=0x1)
+    await ClockCycles(dut.clk, 3)
+    assert events[n:] == [], "byte-0-only stores of 0x33 gave events %s" % events[n:]
+    assert [e[0] for e in events[:6]] == [0x30, 0x31, 0x32] * 2
+    dut.rst.value = 1                                          # reset restores the order
+    await ClockCycles(dut.clk, 3)
+    dut.rst.value = 0
+    await ClockCycles(dut.clk, 2)
+    for r, v in reset.items():
+        assert await h.read(r) == v and ext(r) == v, "value of 0x%02X after reset" % r
+    dut._log.info("CHAIN_0..2 reset 0x6307 / 0x2148 / 0x0005, read/write with events; CHAIN_APPLY reads the status")

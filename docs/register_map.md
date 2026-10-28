@@ -12,7 +12,7 @@ as the 32-bit word at **`0xFF200000 + 4·n`** (tool: [`tools/gme_hps.py`](../too
 | Byte enables  | honoured: byte / halfword stores change only those bytes, so they give the same result as one 32-bit store |
 | Address       | register *n* at byte offset 4·*n* from `0xFF200000` |
 | Access        | effect registers R/W, status registers R |
-| Reset value   | 0 (all effects off) |
+| Reset value   | 0 (all effects off); the only exceptions are CHAIN_0 … CHAIN_2 (0x30 … 0x32, the default effect order, step E) |
 
 Every register is 16 bits wide. The parameters keep their 16-bit scale with the 24-bit
 effects (e.g. Overdrive Drive is still a 16-bit amplitude). Levels, depths, mixes,
@@ -39,7 +39,7 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 12  | Mod Rate        | W   | `[15:0]`  | Modulation LFO rate            | 0.01 Hz (step D2; v1: clock divider). Smoothed. |
 | 13  | Reverb Mix      | W   | `[7:0]`   | Reverb Mixed Signal Value     | Dry/wet mix, 0 = dry (exactly the input) … 255 = wet. Smoothed. |
 | 14  | Reverb Type     | W   | `[3:0]`   | Reverb Type Selection         | Room preset 0 … 3, or 4 = custom size / damp (registers 0x1F / 0x20), see [(4)](#4-reverb-type-selection). Changes glide (size and damp are smoothed). |
-| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0208` = step D6 (output level of the overdrive / distortion, registers 0x2D / 0x2E); `0x0207` = step D5 (dynamics, EQ: bits 7 / 8, registers 0x21 … 0x2C); `0x0206` = step D4 (Freeverb reverb, REVERB_SIZE / REVERB_DAMP); `0x0205` = step D3 (cabinet FIR, CAB registers); `0x0204` = step D2 (modulated delay, fractional echo); `0x0203` = D1 (generated LFO); `0x0202` = step C (24-bit); `0x0201` = HPS control, 16-bit |
+| 0x10 | VERSION        | R   | `[15:0]`  | | `0x0209` = step E (the effect order is selectable at run time, registers 0x30 … 0x33); `0x0208` = step D6 (output level of the overdrive / distortion, registers 0x2D / 0x2E); `0x0207` = step D5 (dynamics, EQ: bits 7 / 8, registers 0x21 … 0x2C); `0x0206` = step D4 (Freeverb reverb, REVERB_SIZE / REVERB_DAMP); `0x0205` = step D3 (cabinet FIR, CAB registers); `0x0204` = step D2 (modulated delay, fractional echo); `0x0203` = D1 (generated LFO); `0x0202` = step C (24-bit); `0x0201` = HPS control, 16-bit |
 | 0x11 | STATUS         | R   | `[2:0]`   | | bit0 codec init done, bit1 codec NAK (init), bit2 PLL locked |
 | 0x12 | LEVEL_IN       | R   | `[15:0]`  | | input peak level (left, 16-bit magnitude, decays ~1/256 per sample) |
 | 0x13 | LEVEL_OUT      | R   | `[15:0]`  | | output peak level |
@@ -69,7 +69,11 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 0x2C | DYN_GR         | R   | `[15:0]`  | | **read-only** gain-reduction meter of the dynamics stage, unsigned Q8 log2 units (÷ 42.52 = dB); 0 while the stage is off. Writes are ignored |
 | 0x2D | OD_LEVEL       | R/W | `[15:0]`  | | overdrive output level, **signed**, Q8 log2 units (1 unit = 0.0235 dB, register = dB × 42.52): −1024 … +512 = −24 … +12 dB, **0 = exactly unity** (reset value; the output is then bit-identical to VERSION ≤ 0x0207); values outside the range are clamped. Smoothed (glides), see [(10)](#10-output-level-of-the-overdrive-and-distortion-step-d6) |
 | 0x2E | DIST_LEVEL     | R/W | `[15:0]`  | | distortion output level, same format, applies to the shaped (wet) signal before the dry/wet mix |
-| 0x16 … 0x2F | (extension) | R/W | | | registers of step D; unused ones (0x17, 0x2F) read back what was written |
+| 0x30 | CHAIN_0        | R/W | `[15:0]`  | | **effect order**, slots 0 … 3: one effect id per nibble, slot 0 in bits 3:0. Reset `0x6307`. A shadow register: the order is used only after CHAIN_APPLY, see [(11)](#11-effect-order-step-e) |
+| 0x31 | CHAIN_1        | R/W | `[15:0]`  | | effect order, slots 4 … 7 (slot 4 in bits 3:0). Reset `0x2148` |
+| 0x32 | CHAIN_2        | R/W | `[3:0]`   | | effect order, slot 8. Reset `0x0005` |
+| 0x33 | CHAIN_APPLY    | R/W | `[1:0]`   | | **any write** checks the list in 0x30 … 0x32 and applies it with the ~5 ms output fade (the written value is not stored). Read (live status): bit0 = order change running, bit1 = the last list was rejected (not a permutation of 0 … 8) |
+| 0x16 … 0x33 | (extension) | R/W | | | registers of steps D and E; unused ones (0x17, 0x2F) read back what was written |
 
 ## Field encodings
 
@@ -87,11 +91,12 @@ Unknown addresses read 0 and ignore writes; writes to the read-only registers ar
 | 7   | Dynamics (gate + compressor, step D5) | Bypass | Enable |
 | 8   | EQ (3 bands, step D5) | Bypass | Enable |
 
-Signal chain order (fixed in `FX_chain.vhd`):
+Signal chain order (VERSION ≥ 0x0209: selectable, see [(11)](#11-effect-order-step-e); the power-up / reset order is):
 `Dynamics → Overdrive → Distortion → Cabinet → EQ → Chorus → Tremolo → Echo → Reverb`
 
-Dynamics, cabinet and EQ cost **no latency when off** (the stage output is its input); each adds one sample
-(20.8 µs) when on. Enabling / disabling fades over 256 samples like every other effect.
+An effect that is off keeps its place in the order (it passes its input on). The chain has a fixed latency per stage that
+does not depend on the order; overdrive, distortion and the cabinet add one more frame while they are on, see
+[(11)](#11-effect-order-step-e). Enabling / disabling fades over 256 samples like every other effect.
 
 ### (2) Tremolo Waveform Selection
 
@@ -194,12 +199,11 @@ One block (effect enable bit 4) with a fractional delay
 
 ### (7) Cabinet FIR (step D3)
 
-A 2048-tap FIR (42.7 ms at 48 kHz, `cab_fir.vhd`) between distortion and chorus, enable bit 6.
+A 2048-tap FIR (42.7 ms at 48 kHz, `cab_fir.vhd`), enable bit 6; in the default order between distortion and EQ.
 Two coefficient banks of 2048 × 18-bit signed values (Q1.17 scaled up by 2^shift, block floating
 point, built by `tools/cab_coefs.py`); output `y = sat(Σ h[k]·x[n−k] >> (17 + shift))`. Bank 0
-holds the default cabinet (cabinet 0, shift 3) at power-up, bank 1 is zero. The cabinet costs one
-sample (20.8 µs) of latency when it is on and **nothing when it is off** (the stage output is then
-the distortion output itself).
+holds the default cabinet (cabinet 0, shift 3) at power-up, bank 1 is zero. The cabinet adds one
+frame (20.8 µs) of latency when it is on (the stage output is its input when it is off), see [(11)](#11-effect-order-step-e).
 
 | Register | Meaning |
 |----------|---------|
@@ -228,7 +232,7 @@ for every tap write CAB_DATA_LO and CAB_DATA_HI, then CAB_CTRL with the new bank
 ### (8) Dynamics (step D5)
 
 Noise gate and compressor in one block (`dynamics.vhd`, one level detector, one gain multiplier), the **first** stage of
-the chain (enable bit 7). `DYN_CTRL` bit 0 switches the gate, bit 1 the compressor; with both off and bit 7 on the stage
+the default chain order (enable bit 7). `DYN_CTRL` bit 0 switches the gate, bit 1 the compressor; with both off and bit 7 on the stage
 is a transparent one-sample delay. Levels are in **Q8 log2 units**: 1 unit = 1/256 of a factor 2 = 0.0235 dB,
 register value = dB × 42.52 (signed 16-bit two's complement), e.g. −20 dBFS = −850 (`0xFCAE`), −45 dBFS = −1913,
 +6 dB make-up = 255.
@@ -250,7 +254,7 @@ register value = dB × 42.52 (signed 16-bit two's complement), e.g. −20 dBFS =
 ### (9) EQ (step D5)
 
 Three biquad sections in series (`eq3.vhd`): low shelf (100 Hz), peaking mid (800 Hz, Q 0.9), high shelf (3.5 kHz),
-−12 … +12 dB each (`tools/eq_coefs.py`, RBJ cookbook), between the cabinet and the modulated delay (enable bit 8).
+−12 … +12 dB each (`tools/eq_coefs.py`, RBJ cookbook), enable bit 8; in the default order between the cabinet and the modulated delay.
 The coefficients come from the host (Q2.16, 18 bit): 15 signed coefficients, section × 5 + (b0 b1 b2 a1 a2), then address 15 =
 **scale word** (2 bits per section, section 0 in bits 1:0: the section's feed-forward sum is multiplied by 2^n, needed by a
 boosting shelf whose b0 exceeds 2). Power-up: transparent.
@@ -277,3 +281,50 @@ to the one without the stage (all older references stay bit-exact).
   1600), so a change glides linearly in dB and never clicks. The smoothers start at unity (not at −24 dB) after reset.
 * **Presets:** `gme_hps.py` presets carry the levels that make them as loud as the clean signal (`tools/level_presets.py`).
   Board tool: `gme_hps.py set od_db=-3 dist_db=-6` (dB) or `od_level=… dist_level=…` (raw values).
+
+### (11) Effect order (step E)
+
+**Encoding.** Each effect has a fixed id, the number of its enable bit in register 0 (so software uses one id table):
+
+| Id | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|----|---|---|---|---|---|---|---|---|---|
+| Effect | Overdrive | Tremolo | Echo | Distortion | Chorus / flanger / vibrato | Reverb | Cabinet | Dynamics | EQ |
+
+The order is a list of the nine ids, **slot 0 (the first effect the signal passes) first**, one id per 4-bit nibble:
+`CHAIN_0` = slots 0 … 3 (slot 0 in bits 3:0), `CHAIN_1` = slots 4 … 7, `CHAIN_2` = slot 8 (bits 3:0). The value of the whole
+list is Σ id(slot k) · 16^k. The reset (and power-up) order is today's chain, `Dynamics, Overdrive, Distortion, Cabinet, EQ,
+Chorus, Tremolo, Echo, Reverb` = ids `7 0 3 6 8 4 1 2 5` = `CHAIN_0 = 0x6307`, `CHAIN_1 = 0x2148`, `CHAIN_2 = 0x0005` (the first
+registers that do not reset to 0; a reset of the FPGA restores them). Example, Reverb first and Dynamics last of the
+default list: ids `5 0 3 6 8 4 1 2 7` → `CHAIN_0 = 0x6305`, `CHAIN_1 = 0x2148`, `CHAIN_2 = 0x0007`.
+
+**Applying.** The three registers are shadow registers: writing them changes nothing audible. A write to `CHAIN_APPLY` (0x33; any
+value; like all registers with side effects the write must contain byte 1, i.e. a 32-bit or halfword store) checks the list and starts
+the change:
+
+* **Validation in hardware:** the list must be a permutation of 0 … 8 (every id once, no nibble above 8). Otherwise nothing changes
+  (a running order change goes on), the status bit 1 (`rejected`) is set, and no fade starts. A valid apply clears bit 1. A bad write
+  can therefore never route nothing to the output or feed an effect twice.
+* **Fade:** the chain output fades to 0 over 128 samples (2.7 ms), the new order is switched in at the zero, then the output fades back in over 128
+  samples (total dip about 5.3 ms, no click). The effects' own states (echo, reverb and modulation tails, the cabinet history, the
+  compressor) keep running; only the place in the chain changes. An apply during the fade replaces the list that is waiting.
+* **Status:** reading `CHAIN_APPLY` gives bit 0 = `busy` (from the write of `CHAIN_APPLY`, also for a read right behind it, until the output is back to full level; poll it until it is 0, then read bit 1),
+  bit 1 = `rejected`. Writes are not stored. `CHAIN_0 … 2` read back what was written (the list that is *written*, not necessarily
+  the one in use).
+
+**Off effects keep their place:** an effect whose enable bit is 0 still sits in its slot and passes its input on (through its own
+crossfade), so switching an effect on or off never changes the order or moves the signal in time by more than the effect's own delay.
+
+**Latency.** The chain input is registered once per frame, and every effect has an output register in its slot, so the signal takes a
+fixed number of frames per stage, **the same for every order** (measured with an impulse, `test_fx_chain::test_latency`; 1 frame = 20.83 µs):
+
+| Stage (effects off) | frames |
+|---------------------|-------:|
+| Dynamics, Cabinet, EQ | 1 each |
+| Chorus / flanger / vibrato, Tremolo, Echo, Reverb (strobe at half-frame) | 1 each |
+| Overdrive, Distortion (strobe at the frame start, one extra register) | 2 each |
+| **Total, all effects off** | **11 frames = 229 µs** |
+
+An effect that is **on** adds its own delay: Overdrive, Distortion and the Cabinet one more frame each (Dynamics, EQ, modulation,
+tremolo, echo and reverb: none), so at most **14 frames = 292 µs** with everything on (about 10 cm of sound travel; before step E:
+4 frames with everything off). The numbers do not depend on the order, because the sum over all nine slots is the same.
+Board tool (step E4): `gme_hps.py chain`, `gme_hps.py chain dyn od dist cab eq mod trem echo reverb`, `gme_hps.py chain reset`.

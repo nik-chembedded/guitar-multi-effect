@@ -38,6 +38,24 @@ PARAMS = ("effects_enable", "od_drive", "od_gain", "trem_depth", "trem_wave",
           "od_level", "dist_level")        # D6: output levels, signed Q8 log2 units
 
 
+# step E: effect ids = the enable bits above (0 OD, 1 TREM, 2 ECHO, 3 DIST, 4 MOD, 5 REVERB, 6 CAB, 7 DYN, 8 EQ)
+ID_OD, ID_TREM, ID_ECHO, ID_DIST, ID_MOD, ID_REVERB, ID_CAB, ID_DYN, ID_EQ = range(9)
+DEFAULT_ORDER = [ID_DYN, ID_OD, ID_DIST, ID_CAB, ID_EQ, ID_MOD, ID_TREM, ID_ECHO, ID_REVERB]
+# stage input / output signals of FX_chain per effect id (fx_in(id) / fx_out(id) slices of the fx_route ports)
+STAGE_SIGNALS = {ID_OD: ("od_in", "od_out"), ID_TREM: ("trem_in", "trem_out"), ID_ECHO: ("echo_in", "echo_out"),
+                 ID_DIST: ("dist_in", "dist_out"), ID_MOD: ("chorus_in", "chorus_out"), ID_REVERB: ("rev_in", "rev_out"),
+                 ID_CAB: ("cab_in", "cab_out"), ID_DYN: ("dyn_in", "dyn_out"), ID_EQ: ("eq_in", "eq_out")}
+
+
+def pack_order(order):
+    """List of effect ids (slot 0 first) -> the 36-bit chain_order word (slot 0 in bits 3:0)."""
+    return sum(int(v) << (4 * k) for k, v in enumerate(order))
+
+
+def unpack_order(word):
+    return [(int(word) >> (4 * k)) & 15 for k in range(9)]
+
+
 def to_s16(v):
     return v - 65536 if v >= 32768 else v
 
@@ -53,7 +71,9 @@ class FxChain:
         self.dw = int(os.environ.get("GME_DW", "16"))
         self.shift = self.dw - 16
         self.probe = None          # list: frame() appends the signal named probe_sig seen at half_tick
-        self.probe_sig = "echo_out"   # the reverb input; "cab_out" = the EQ stage input
+        self.probe_sig = "echo_out"   # signal read at half_tick by probe (any FX_chain signal, e.g. "rev_in" = reverb input)
+        self.pre_tick = None          # callable(): called in frame() right before sample_tick is raised (values seen by the tick edge)
+        self.mid_frame = None         # callable(): called in frame() right before half_tick is raised
 
     async def start(self, **params):
         d = self.dut
@@ -64,6 +84,8 @@ class FxChain:
             getattr(d, name).value = 0
         d.data_in_left.value = 0
         d.data_in_right.value = 0
+        d.chain_order.value = pack_order(DEFAULT_ORDER)       # step E: effect order (default = today's)
+        d.chain_apply.value = 0
         for name, v in (("cab_cw_en", 0), ("cab_cw_bank", 0), ("cab_cw_addr", 0), ("cab_cw_data", 0),
                         ("eq_cw_en", 0), ("eq_cw_addr", 0), ("eq_cw_data", 0), ("eq_apply", 0)):
             getattr(d, name).value = v
@@ -82,6 +104,15 @@ class FxChain:
             if name not in PARAMS:
                 raise ValueError("unknown parameter " + name)
             getattr(self.dut, name).value = int(value) & (0xFF if name == "echo_frac" else 0xFFFF)
+
+    async def apply_order(self, order):
+        """Write the shadow list chain_order and pulse chain_apply for one clock (call between frames)."""
+        d = self.dut
+        d.chain_order.value = pack_order(order)
+        await RisingEdge(d.clk)
+        d.chain_apply.value = 1
+        await RisingEdge(d.clk)
+        d.chain_apply.value = 0
 
     async def cab_write(self, bank, coefs, first=0):
         """Write cabinet coefficients (signed 18-bit) through the chain's write port, one per clock."""
@@ -117,12 +148,16 @@ class FxChain:
         v = int(sample) if raw else int(sample) << self.shift
         d.data_in_left.value = v & ((1 << self.dw) - 1)
         await ClockCycles(d.clk, CLK_PER_HALF)
+        if self.pre_tick is not None:
+            self.pre_tick()
         d.sample_tick.value = 1
         await RisingEdge(d.clk)
         d.sample_tick.value = 0
         await ClockCycles(d.clk, CLK_PER_HALF - 1)
         if self.probe is not None:
             self.probe.append(to_signed(int(getattr(d, self.probe_sig).value), self.dw))
+        if self.mid_frame is not None:
+            self.mid_frame()
         d.half_tick.value = 1
         await RisingEdge(d.clk)
         d.half_tick.value = 0
@@ -144,7 +179,7 @@ class FxChain:
         return out
 
 
-def find_latency(x, y, max_lat=16, start=64, length=400):
+def find_latency(x, y, max_lat=40, start=64, length=400):
     """Latency (frames) at which y best matches x."""
     best = None
     for lat in range(max_lat + 1):

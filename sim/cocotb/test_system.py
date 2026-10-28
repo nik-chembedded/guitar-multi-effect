@@ -65,7 +65,7 @@ def expect_mono(dac, words, fn):
     """dac (L, R) must be fn(left input, 24-bit) on both channels, at some latency."""
     x = [s24(l) for l, _ in words]                            # 24-bit effect input (step C)
     y = fn(x)
-    for lat in range(1, 16):
+    for lat in range(1, 40):
         ok = all(s24(dac[n + lat][0]) == y[n] and s24(dac[n + lat][1]) == y[n]
                  for n in range(10, len(words) - 10) if n + lat < len(dac))
         if ok:
@@ -114,6 +114,80 @@ async def test_overdrive_via_hps(dut):
 
 
 @cocotb.test()
+async def test_chain_via_hps(dut):
+    """Effect order (step E) over the bridge: VERSION 0x0209, reset values of CHAIN_0..2 (0x30 .. 0x32) and
+    CHAIN_APPLY (0x33) = 0; overdrive + distortion in the default order (OD first) give dist(od(x)); a new order
+    with the distortion first, written to 0x30 .. 0x32 and applied with a write to 0x33, is read back, busy
+    (0x33 bit 0) is seen and falls again (the ~5 ms fade), bit 1 stays 0, and the audio is od(dist(x)) (bit-exact,
+    24 bit: an order-sensitive pair); an invalid list (a nibble twice) is rejected (bit 1 = 1, no fade, the audio
+    unchanged), a valid apply clears bit 1."""
+    root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    curve = golden.load_mif(os.path.join(root, "fpga", "ip", "distortion_medium.mif"))
+    words = audio_words(N_FRAMES, 6)
+    x = [s24(l) for l, _ in words]
+    od = lambda v: golden.overdrive(v, 3000, 4, dw=24)                           # noqa: E731
+    dist = lambda v: golden.distortion(v, curve, 128, dw=24)                     # noqa: E731
+    assert dist(od(x)) != od(dist(x)), "test setup: the two orders must give different audio"
+    i2c, codec, host = await boot(dut, words)
+    await wait_init(dut, host)
+    assert await host.read(0x10) == VERSION == 0x0209
+    assert [await host.read(r) for r in (0x30, 0x31, 0x32, 0x33)] == [0x6307, 0x2148, 0x0005, 0], "reset values"
+
+    async def capture():
+        codec.adc, codec.dac, codec.frames_sent = words, [], 0
+        await ClockCycles(dut.clk, (N_FRAMES + 4) * 1024)
+
+    async def wait_idle():
+        """Poll CHAIN_APPLY until busy (bit 0) is 0; return the number of polls with busy = 1."""
+        busy = 0
+        for _ in range(200):
+            st = await host.read(0x33)
+            if not st & 1:
+                return busy, st
+            busy += 1
+            await ClockCycles(dut.clk, 5000)
+        raise AssertionError("chain busy for more than 200 polls")
+
+    for addr, val in ((1, 3000), (2, 4), (9, 1), (8, 128), (0, 0x0009)):         # OD drive / gain, medium curve, mix, OD + DIST
+        await host.write(addr, val)
+    await ClockCycles(dut.clk, SETTLE * 1024)
+    await capture()
+    lat_a = expect_mono(codec.dac, words, lambda v: dist(od(v)))
+
+    # DIST first: [DIST OD DYN CAB | EQ MOD TREM ECHO | REVERB]
+    for addr, val in ((0x30, 0x6703), (0x31, 0x2148), (0x32, 0x0005)):
+        await host.write(addr, val)
+    assert [await host.read(r) for r in (0x30, 0x31, 0x32)] == [0x6703, 0x2148, 0x0005], "shadow read-back"
+    await host.write(0x33, 0)
+    busy, st = await wait_idle()
+    assert busy >= 10 and st == 0, "apply: busy seen in %d polls, final status 0x%X (a fade of ~260 frames)" % (busy, st)
+    await capture()
+    lat_b = expect_mono(codec.dac, words, lambda v: od(dist(v)))
+
+    # invalid: DIST twice (slot 1 = 3 instead of 0)
+    await host.write(0x30, 0x6733)
+    await host.write(0x33, 0)
+    await ClockCycles(dut.clk, 20)
+    st = await host.read(0x33)
+    assert st == 2, "invalid list: CHAIN_APPLY reads 0x%X, expected rejected (bit 1) and no fade" % st
+    await ClockCycles(dut.clk, 3000 * 1024 // 10)
+    assert await host.read(0x33) == 2
+    await capture()
+    expect_mono(codec.dac, words, lambda v: od(dist(v)))
+    assert await host.read(0x30) == 0x6733, "the shadow register keeps what was written"
+    # a valid apply (back to the default order) clears bit 1
+    await host.write(0x30, 0x6307)
+    await host.write(0x33, 0)
+    busy, st = await wait_idle()
+    assert busy >= 10 and st == 0, "default order restored: busy in %d polls, status 0x%X" % (busy, st)
+    await capture()
+    expect_mono(codec.dac, words, lambda v: dist(od(v)))
+    dut._log.info("effect order over the bridge: reset 0x6307 / 0x2148 / 0x0005, DIST<->OD swap bit-exact "
+                  "(capture latencies %d / %d: the start of each capture moves with the stream), busy seen in %d polls, "
+                  "invalid list rejected, default order restored", lat_a, lat_b, busy)
+
+
+@cocotb.test()
 async def test_level_via_hps(dut):
     """Output level (D6) through the whole design: OD_LEVEL (0x2D) written over the bridge scales the overdrive
     output by the expected amount. A 1 kHz sine (2^19) through the overdrive (no clipping, gain 1) comes out
@@ -151,7 +225,7 @@ async def test_level_via_hps(dut):
     def rms(v):
         return math.sqrt(sum(t * t for t in v) / len(v))
 
-    lat = next(l for l in range(1, 16)
+    lat = next(l for l in range(1, 40)
                if all(y[n + l] == x[n] for n in range(250, 490)))
     win = lambda a, b: (x[a:b], y[a + lat:b + lat])                     # noqa: E731
     xa, ya = win(250, 490)
@@ -240,7 +314,7 @@ async def test_cabinet(dut):
     want = [sat24((amp * c) >> (17 + sh0)) for c in h0[:n_chk]]
     # the response starts (dry latency + 1 cabinet sample) after the impulse: find the offset
     # (checked against the dry latency at the end), then compare all taps
-    offs = [o for o in range(1, 16) if y[n_imp + o:n_imp + o + n_chk] == want]
+    offs = [o for o in range(1, 40) if y[n_imp + o:n_imp + o + n_chk] == want]
     assert len(offs) == 1, "default cabinet: no exact match of %d taps at any latency; y[%d:] = %s want %s" % (
         n_chk, n_imp, y[n_imp:n_imp + 12], want[:6])
     off = offs[0]

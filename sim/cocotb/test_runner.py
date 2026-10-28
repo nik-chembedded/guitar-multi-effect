@@ -29,7 +29,7 @@ FX_RTL = [RTL / f for f in ("fx_pkg.vhd", "fx_xfade.vhd", "lfo_sine_pkg.vhd", "n
                             "tremolo_v2.vhd", "echo.vhd", "fv_comb.vhd",
                             "fv_allpass.vhd", "reverb_fv.vhd", "cab_fir.vhd", "cab_stage.vhd",
                             "dynamics.vhd", "biquad.vhd", "eq3.vhd", "fx_bypass.vhd",
-                            "dyn_stage.vhd", "eq_stage.vhd", "FX_chain.vhd")]
+                            "dyn_stage.vhd", "eq_stage.vhd", "fx_route.vhd", "FX_chain.vhd")]
 # chain-level simulations use 16-clock frames: a 16-tap cabinet (2048 taps need 519 clocks per sample)
 CAB16 = {"CAB_TAPS": 16, "CAB_INIT": "cab_test16.mif"}
 GHDL_ARGS = ["--std=08", "-frelaxed"]
@@ -69,6 +69,8 @@ FX_CHAIN_GROUPS = {
     "dynamics":   ["test_dynamics_chain"],
     "eq_mod":     ["test_eq_chain", "test_chorus", "test_echo", "test_echo_frac"],
     "reverb_cab": ["test_reverb_chain_model", "test_cab"],
+    "routing":    ["test_routing"],
+    "latency":    ["test_latency"],
 }
 
 
@@ -78,7 +80,8 @@ def test_fx_chain_groups_complete():
     names = set(re.findall(r"^async def (test_\w+)\(dut\)", (HERE / "test_fx_chain.py").read_text(), re.M))
     grouped = [t for g in FX_CHAIN_GROUPS.values() for t in g]
     assert len(grouped) == len(set(grouped))
-    assert set(grouped) | {"test_dyn_eq_fade"} == names, sorted(names ^ (set(grouped) | {"test_dyn_eq_fade"}))
+    other = {"test_dyn_eq_fade", "test_route_models"}            # own runner entries
+    assert set(grouped) | other == names, sorted(names ^ (set(grouped) | other))
 
 
 @pytest.mark.parametrize("dw", [16, 24])
@@ -88,6 +91,17 @@ def test_fx_chain(dw, group):
     run("fx_chain", "test_fx_chain", IP_MODELS + FX_RTL, testcase=",".join(FX_CHAIN_GROUPS[group]),
         parameters={"DW": dw} if dw != 16 else None, extra_env={"GME_DW": str(dw)} if dw != 16 else None,
         tag="_%d_%s" % (dw, group))
+
+
+@pytest.mark.parametrize("dw", [16, 24])
+@pytest.mark.parametrize("order", [0, 1, 2], ids=["default", "reversed", "interleaved"])
+def test_routing_models(dw, order):
+    """Effect order (step E): dynamics, overdrive, distortion, cabinet and EQ in the default order, the five reversed
+    and interleaved with the off effects, bit-exact to the Python models (test_fx_chain.test_route_models), one
+    simulation per order from power-up, 16 and 24 bit."""
+    run("fx_chain", "test_fx_chain", IP_MODELS + FX_RTL, testcase="test_route_models",
+        parameters={"DW": dw} if dw != 16 else None,
+        extra_env={"GME_DW": str(dw), "GME_ROUTE_ORDER": str(order)}, tag="_rtm%d_%d" % (dw, order))
 
 
 def test_cab_xfade():
@@ -110,14 +124,15 @@ def test_dyn_eq_xfade():
 def test_timing_invariance():
     """The chain gives identical output samples with 16-clock frames (simulation) and 1024-clock frames
     (board): one configuration with all effects on (dynamics, overdrive, distortion, cabinet, EQ, mod delay,
-    tremolo, echo, reverb), 400 frames, two simulations (GME_HALF = 8 and 512)."""
+    tremolo, echo, reverb), 400 frames in the default order, then (step E) five random orders applied one after the
+    other (order fade included), two simulations (GME_HALF = 8 and 512)."""
     import numpy as np
     outs = {}
     for half in (8, 512):
         f = BUILD / ("invariance_%d.npy" % half)
         run("fx_chain", "test_invariance", IP_MODELS + FX_RTL, parameters={"DW": 24, "XFADE": True},
             extra_env={"GME_DW": "24", "GME_HALF": str(half), "GME_INV_OUT": str(f)}, tag="_inv%d" % half)
-        outs[half] = np.load(f)
+        outs[half] = np.concatenate([np.load(f), np.load(str(f).replace(".npy", "_orders.npy"))])
     a, b = outs[8], outs[512]
     assert a.shape == b.shape
     bad = np.nonzero(a != b)[0]
@@ -290,7 +305,7 @@ SYS_RTL = (IP_MODELS + FX_RTL + CTRL_RTL +
 
 
 SYSTEM_TESTS = ["test_overdrive_via_hps", "test_mute_and_codec_write", "test_cabinet", "test_boot_and_bypass",
-                "test_reverb_regs"]
+                "test_reverb_regs", "test_chain_via_hps"]
 
 
 def test_system_tests_complete():

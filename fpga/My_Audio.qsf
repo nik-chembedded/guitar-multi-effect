@@ -50,6 +50,7 @@ set_global_assignment -name VHDL_FILE rtl/eq3.vhd
 set_global_assignment -name VHDL_FILE rtl/fx_bypass.vhd
 set_global_assignment -name VHDL_FILE rtl/dyn_stage.vhd
 set_global_assignment -name VHDL_FILE rtl/eq_stage.vhd
+set_global_assignment -name VHDL_FILE rtl/fx_route.vhd
 set_global_assignment -name VHDL_FILE rtl/FX_chain.vhd
 set_global_assignment -name VHDL_FILE rtl/i2s_core.vhd
 set_global_assignment -name VHDL_FILE rtl/reg_file.vhd
@@ -411,3 +412,7 @@ set_instance_assignment -name PACKAGE_SKEW_COMPENSATION OFF -to HPS_DDR3_WE_N -t
 set_instance_assignment -name PACKAGE_SKEW_COMPENSATION OFF -to HPS_DDR3_RESET_N -tag __hps_sdram_p0
 set_instance_assignment -name PACKAGE_SKEW_COMPENSATION OFF -to HPS_DDR3_CK_P -tag __hps_sdram_p0
 set_instance_assignment -name PACKAGE_SKEW_COMPENSATION OFF -to HPS_DDR3_CK_N -tag __hps_sdram_p0
+
+# E2: fitter seed. The default seed left -0.071 ns of hold slack (slow 0C model) on the DSP input registers of the reverb comb filters (fv_comb store[], a path through the
+# clock network of the DSP block, not a path of the order logic); seed 2 gives a placement without it
+set_global_assignment -name SEED 2

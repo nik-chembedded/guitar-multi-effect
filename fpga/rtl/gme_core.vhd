@@ -23,7 +23,7 @@ entity gme_core is
     XFADE          : boolean  := true;             -- click-free effect on/off
     CAB_TAPS       : positive := 2048;             -- cabinet FIR length (D3)
     CAB_INIT       : string   := "cab_default.mif"; -- its power-up coefficients
-    VERSION        : std_logic_vector(15 downto 0) := x"0208"
+    VERSION        : std_logic_vector(15 downto 0) := x"0209"
   );
   port (
     clk        : in  std_logic;
@@ -61,7 +61,7 @@ architecture rtl of gme_core is
   signal effects_enable, od_drive, od_gain, trem_wave, trem_depth, echo_time, echo_repeat,
          echo_level, dist_mix, dist_type, chorus_level, chorus_depth, chorus_rate,
          reverb_mix, reverb_type : std_logic_vector(15 downto 0);
-  signal ext                    : std_logic_vector(26 * 16 - 1 downto 0);   -- registers 0x16 .. 0x2F
+  signal ext                    : std_logic_vector(30 * 16 - 1 downto 0);   -- registers 0x16 .. 0x33
   signal trem_rate, mod_base, mod_fb, mod_shape : std_logic_vector(15 downto 0);
   -- smoothed continuous parameters (to the chain)
   signal s_od_drive, s_trem_depth, s_echo_level, s_echo_repeat, s_dist_mix,
@@ -113,6 +113,14 @@ architecture rtl of gme_core is
   signal eq_cw_data             : std_logic_vector(17 downto 0) := (others => '0');
   signal eq_apply               : std_logic := '0';
   signal dyn_gr                 : std_logic_vector(15 downto 0);
+
+  -- effect order (E): CHAIN_0..2 (0x30 .. 0x32) -> fx_route shadow list, CHAIN_APPLY (0x33) pulses chain_apply
+  signal chain_apply            : std_logic := '0';
+  signal chain_busy, chain_rejected : std_logic;
+  signal chain_order            : std_logic_vector(35 downto 0);
+  signal chain_2                : std_logic_vector(15 downto 0);
+  signal chain_status           : std_logic_vector(15 downto 0);
+  signal chain_apply_ev         : std_logic;
 
   signal ext_we                 : std_logic;
   signal ext_wa                 : std_logic_vector(7 downto 0);
@@ -168,6 +176,8 @@ begin
       comp_attack => ext_reg(ext, 16#25#), comp_release => ext_reg(ext, 16#26#),
       comp_makeup => ext_reg(ext, 16#27#), dyn_gr => dyn_gr,
       eq_cw_en => eq_cw_en, eq_cw_addr => eq_cw_addr, eq_cw_data => eq_cw_data, eq_apply => eq_apply,
+      chain_order => chain_order, chain_apply => chain_apply,
+      chain_busy => chain_busy, chain_rejected => chain_rejected, chain_active => open,
       cab_ctrl => ext_reg(ext, 16#1B#), cab_cw_en => cab_cw_en, cab_cw_bank => cab_cw_bank,
       cab_cw_addr => cab_cw_addr, cab_cw_data => cab_cw_data,
       clk => clk, sample_tick => sample_tick, half_tick => half_tick,
@@ -230,6 +240,24 @@ begin
         elsif ext_wa = x"2B" then
           eq_apply <= '1';
         end if;
+      end if;
+    end if;
+  end process;
+
+  -- effect order: CHAIN_APPLY (0x33): any write pulses `apply` (the list in CHAIN_0..2 is checked and
+  -- applied with the output fade); a read returns bit0 = fade running, bit1 = last list rejected.
+  chain_2     <= ext_reg(ext, 16#32#);
+  chain_order <= chain_2(3 downto 0) & ext_reg(ext, 16#31#) & ext_reg(ext, 16#30#);
+  -- busy (bit 0) is also 1 from the clock after the write of CHAIN_APPLY until fx_route has taken the pulse (3 clocks), so a read right
+  -- behind the write already sees it; the reject flag is valid when this pending time is over
+  chain_status <= (0 => chain_busy or chain_apply or chain_apply_ev, 1 => chain_rejected, others => '0');
+  chain_apply_ev <= '1' when ext_we = '1' and ext_wa = x"33" else '0';
+  process(clk)
+  begin
+    if rising_edge(clk) then
+      chain_apply <= '0';
+      if rst = '0' and ext_we = '1' and ext_wa = x"33" then
+        chain_apply <= '1';
       end if;
     end if;
   end process;
@@ -311,7 +339,7 @@ begin
       echo_repeat => echo_repeat, echo_level => echo_level, dist_mix => dist_mix,
       dist_type => dist_type, chorus_level => chorus_level, chorus_depth => chorus_depth,
       chorus_rate => chorus_rate, reverb_mix => reverb_mix, reverb_type => reverb_type, ext => ext,
-      dyn_gr => dyn_gr,
+      dyn_gr => dyn_gr, chain_status => chain_status,
       codec_init => codec_init, mute => mute,
       ext_we => ext_we, ext_wa => ext_wa, ext_wd => ext_wd);
 

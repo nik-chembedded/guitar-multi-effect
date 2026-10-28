@@ -17,7 +17,7 @@
 -- bytes are collected and the I2C transfer starts on the write that contains
 -- byte 1 (bits 15..8); writes to bytes 2..3 only are ignored.
 --
--- Extension registers 0x16..0x2F (stored in reg_file) also produce a write event for
+-- Extension registers 0x16..0x33 (stored in reg_file) also produce a write event for
 -- registers with side effects (step D3, CAB_ADDR / CAB_DATA_HI): ext_we is a 1-cycle
 -- strobe one clock after a write that contains byte 1 (like CODEC), ext_wa / ext_wd the
 -- register number and the complete value written (bytes not enabled keep their old
@@ -32,7 +32,7 @@ use ieee.numeric_std.all;
 
 entity ctrl_avmm is
   generic (
-    VERSION : std_logic_vector(15 downto 0) := x"0208"
+    VERSION : std_logic_vector(15 downto 0) := x"0209"
   );
   port (
     clk        : in  std_logic;
@@ -58,12 +58,13 @@ entity ctrl_avmm is
     level_in   : in  std_logic_vector(15 downto 0);
     level_out  : in  std_logic_vector(15 downto 0);
     dyn_gr     : in  std_logic_vector(15 downto 0) := (others => '0');   -- register 0x2C, read-only (D5)
+    chain_status : in std_logic_vector(15 downto 0) := (others => '0');  -- register 0x33 (E): bit0 busy, bit1 rejected
     -- effect registers
     effects_enable, od_drive, od_gain, trem_wave, trem_depth,
     echo_time, echo_repeat, echo_level, dist_mix, dist_type,
     chorus_level, chorus_depth, chorus_rate, reverb_mix, reverb_type
                : out std_logic_vector(15 downto 0);
-    ext        : out std_logic_vector(26 * 16 - 1 downto 0);   -- registers 0x16 .. 0x2F
+    ext        : out std_logic_vector(30 * 16 - 1 downto 0);   -- registers 0x16 .. 0x33
     codec_init : out std_logic;
     mute       : out std_logic;
     -- write event of the extension registers (see above)
@@ -114,7 +115,7 @@ begin
       addr => word, wdata => reg_wdata, we => reg_we,
       rdata => reg_rdata, err => reg_err,
       status_in => status_in, level_in => level_in, level_out => level_out,
-      dyn_gr => dyn_gr,
+      dyn_gr => dyn_gr, chain_status => chain_status,
       effects_enable => effects_enable, od_drive => od_drive, od_gain => od_gain,
       trem_wave => trem_wave, trem_depth => trem_depth, echo_time => echo_time,
       echo_repeat => echo_repeat, echo_level => echo_level, dist_mix => dist_mix,
@@ -156,13 +157,13 @@ begin
   i2c_data <= data_r;
   codec_st <= (0 => i2c_busy or req_r, 1 => last_nak, 2 => dropped, others => '0');
 
-  -- write event of the extension registers (0x16 .. 0x2F), on writes with byte 1
+  -- write event of the extension registers (0x16 .. 0x33), on writes with byte 1
   process(clk)
   begin
     if rising_edge(clk) then
       xwe_r <= '0';
       if rst = '0' and avs_write = '1' and avs_byteenable(1) = '1'
-         and unsigned(word) >= 16#16# and unsigned(word) <= 16#2F# then
+         and unsigned(word) >= 16#16# and unsigned(word) <= 16#33# then
         xwe_r <= '1';
         xwa_r <= word;
         xwd_r <= reg_wdata;

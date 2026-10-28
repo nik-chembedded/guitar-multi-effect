@@ -3,6 +3,9 @@ test_refv2.py - v2 reference regression of the 24-bit effect chain.
 
 GME_REF_MODE=record : run every preset and save the outputs to ref_v2/<preset>.npy
 GME_REF_MODE=check  : (default) run the same presets and require identical output
+GME_REF_MODE=shift  : (step E2 tool) do not fail: for every preset report the shift d (frames) at which the new output
+                      equals the stored reference delayed by d (y[n + d] == ref[n]), the number of differing frames and the
+                      first one; used before re-recording after a change of the chain latency
 GME_REF_ONLY=a,b,.. : with GME_REF_MODE=record, write only these presets' files; every other
                       preset is still run and checked bit-exact in the same simulation (so a
                       step that changes some effects on purpose can prove the rest unchanged)
@@ -17,6 +20,14 @@ Step D5 (dynamics, EQ) added dyn_gate, dyn_comp, eq_3band and combo_d5 at the en
 recorded only them; the 31 earlier presets stayed bit-exact (dynamics and EQ are off in them: zero
 latency bypass). A preset key "eq" = (bass, mid, treble) dB writes that EQ set (tools/eq_coefs.py)
 through the chain's write port before the run (flat for the other presets).
+Step E2 (effect order, VERSION 0x0209) changed the chain latency (every effect now sits behind a slot register: 11 frames
+with all effects off instead of 4), so all 36 references were re-recorded once (GME_REF_ONLY with every preset). Before that
+every preset was run alone from power-up (GME_REF_PRESET, GME_REF_DIR) on the old and on the new RTL: the output is
+the old one delayed by 7 frames (6 with dynamics / EQ on: they no longer add a frame) bit-exact for bypass, dist_*, echo_a,
+reverb_t0..t3; it differs only where the design is not time-invariant: the LFO effects (tremolo, chorus, flanger, vibrato,
+combo_*: the LFO runs in absolute time, the signal reaches the effect later) and for some frames after the register change
+at frame 3000 (overdrive, echo_b, echo_frac, level_od_dist, combo_change, eq_3band: the change now acts on a signal that is
+delayed behind it). See docs/v2_stepE_design.md 3.1.
 Step D6 (output level of the overdrive / distortion) added level_od_dist at the end of PRESETS and
 recorded only it (GME_REF_ONLY=level_od_dist); the 35 earlier presets stayed bit-exact (level 0 = unity).
 
@@ -49,7 +60,7 @@ from fxdriver import CAB, CHORUS, DIST, DYN, ECHO, EQ, OD, REVERB, TREM, FxChain
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import eq_coefs as ec                                        # noqa: E402
 
-REF_DIR = Path(__file__).resolve().parent / "ref_v2"
+REF_DIR = Path(os.environ.get("GME_REF_DIR") or Path(__file__).resolve().parent / "ref_v2")     # (GME_REF_DIR: tool use only)
 MODE = os.environ.get("GME_REF_MODE", "check")
 ONLY = {n for n in os.environ.get("GME_REF_ONLY", "").split(",") if n}
 NONE = 1 << 30                    # marker for X/U output samples
@@ -136,6 +147,7 @@ CHUNKS = [
 ]
 assert [n for c in CHUNKS for n in c] == list(PRESETS), "CHUNKS must list every preset once, in PRESETS order"
 CHUNK = os.environ.get("GME_REF_CHUNK")                      # None: every chunk (tool use only)
+SINGLE = os.environ.get("GME_REF_PRESET")                    # one preset alone from power-up (tool use: shift / record into GME_REF_DIR)
 
 ZERO = {k: 0 for k in ("effects_enable", "od_drive", "od_gain", "trem_depth", "trem_wave", "trem_rate",
                        "echo_time", "echo_frac", "echo_level", "echo_repeat", "chorus_rate", "chorus_level",
@@ -163,10 +175,15 @@ async def test_presets(dut):
     REF_DIR.mkdir(exist_ok=True)
     unknown = ONLY - set(PRESETS)
     assert not unknown, "GME_REF_ONLY names unknown presets: %s" % sorted(unknown)
+    assert MODE in ("record", "check", "shift"), "GME_REF_MODE must be check, record or shift"
     assert MODE == "record" or not ONLY, "GME_REF_ONLY needs GME_REF_MODE=record"
     failures = []
-    assert CHUNK is not None and 0 <= int(CHUNK) < len(CHUNKS), "GME_REF_CHUNK must be 0..%d" % (len(CHUNKS) - 1)
-    chunk = CHUNKS[int(CHUNK)]
+    if SINGLE:
+        assert SINGLE in PRESETS and MODE in ("shift", "record") and os.environ.get("GME_REF_DIR"),             "GME_REF_PRESET needs a preset name, GME_REF_MODE=shift or record and GME_REF_DIR (tool use only)"
+        chunk = [SINGLE]
+    else:
+        assert CHUNK is not None and 0 <= int(CHUNK) < len(CHUNKS), "GME_REF_CHUNK must be 0..%d" % (len(CHUNKS) - 1)
+        chunk = CHUNKS[int(CHUNK)]
     for i, (name, (regs, change)) in enumerate(PRESETS.items()):
         if name not in chunk:
             continue
@@ -186,6 +203,25 @@ async def test_presets(dut):
             dut._log.info("recorded %-14s peak %d (%.0f s)", name, int(np.abs(y[y != NONE]).max()), time.time() - t0)
             continue
         ref = np.load(path)
+        if MODE == "shift":
+            best = None
+            for d in range(0, 41):
+                n = min(len(ref), len(y) - d)
+                nb = np.nonzero(ref[:n] != y[d:d + n])[0]
+                if best is None or len(nb) < best[1]:
+                    best = (d, len(nb), int(nb[0]) if len(nb) else -1, n)
+            d, n = best[0], best[3]
+            nb = np.nonzero(ref[:n] != y[d:d + n])[0]
+            runs = []                                # clusters of differing frames (gap < 50 frames): [first, last, count]
+            for i in nb:
+                if runs and i - runs[-1][1] < 50:
+                    runs[-1][1] = int(i)
+                    runs[-1][2] += 1
+                else:
+                    runs.append([int(i), int(i), 1])
+            dut._log.info("SHIFT %-14s d=%2d differing frames %5d of %d, clusters (first-last:count) %s", name, d, len(nb), n,
+                          " ".join("%d-%d:%d" % tuple(r) for r in runs[:8]))
+            continue
         bad = np.nonzero(ref != y)[0]
         if len(bad):
             failures.append("%s: %d mismatches, first at frame %d (ref %d, got %d)"
